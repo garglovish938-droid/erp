@@ -1,0 +1,46 @@
+# ===== Node / Next.js =====
+node_modules/
+.next/
+.vercel/
+npm-debug.log*
+yarn-error.log
+
+# ===== Python / Backend =====
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.pyc
+backend/.env
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ===== Database files (never commit live data) =====
+backend/erp.db
+backend/test_erp.db
+*.db
+*.sqlite
+
+# ===== Environment / Secrets =====
+.env
+.env.local
+.env.production
+.env.*.local
+
+# ===== Uploaded / Generated files =====
+backend/uploads/
+backend/backups/
+
+# ===== OS / Editor =====
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# ===== Test artifacts =====
+backend/test_api.py
+*.log
