@@ -6,10 +6,11 @@ class Settings:
 
     # Database configuration: supports Postgres (production) and SQLite (local dev)
     # In production (Railway), DATABASE_URL is injected automatically by the PostgreSQL plugin.
+    # SQLAlchemy 2.0 requires 'postgresql://' instead of 'postgres://'
     DATABASE_URL: str = os.getenv(
         "DATABASE_URL",
         "sqlite:///./erp.db"
-    )
+    ).replace("postgres://", "postgresql://", 1)
 
     # JWT security settings — ALWAYS override SECRET_KEY via environment variable in production!
     SECRET_KEY: str = os.getenv("SECRET_KEY", "allure_living_super_secret_key_123456789")
