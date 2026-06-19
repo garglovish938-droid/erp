@@ -1,13 +1,13 @@
 from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
-from backend.database import SessionLocal, Base, engine
-from backend.models import (
+from database import SessionLocal, Base, engine
+from models import (
     User, Category, InventoryItem, Supplier, Client, Project, ProjectBOM,
     StockTransaction, MaterialRequest, PurchaseOrder, Staff, Attendance,
     Notification, CustomFieldDefinition, CustomFieldValue, WorkflowDefinition,
     WorkflowStep, ApprovalRule, DashboardWidget, Task, Document, VersionHistory
 )
-from backend.auth import get_password_hash
+from auth import get_password_hash
 
 def seed_db():
     # Recreate tables to ensure clean slate
