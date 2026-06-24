@@ -7,7 +7,7 @@ from typing import List, Optional
 from models import (
     User, Category, InventoryItem, Supplier, Client, Project, ProjectBOM,
     StockTransaction, MaterialRequest, PurchaseOrder, Staff, Attendance,
-    Notification, ActivityLog, CustomFieldDefinition, CustomFieldValue,
+    Notification, ActivityLog, CustomFieldDefinition, CustomFieldValue, DailyExpense,
     WorkflowDefinition, WorkflowStep, ApprovalRule, DashboardWidget, Task,
     Document, VersionHistory, ProjectAssignment, DailyWorkLog, Shift, AttendanceRule
 )
