@@ -15,7 +15,7 @@ from schemas import (
     UserCreate, UserUpdate, CategoryCreate, InventoryItemCreate, InventoryItemUpdate,
     SupplierCreate, SupplierUpdate, ClientCreate, ClientUpdate, ProjectCreate,
     ProjectUpdate, ProjectBOMCreate, MaterialRequestCreate, PurchaseOrderCreate,
-    StaffCreate, StaffUpdate, AttendanceCreate, CustomFieldDefinitionCreate,
+    StaffCreate, StaffUpdate, AttendanceCreate, CustomFieldDefinitionCreate, CustomFieldValueCreate,
     WorkflowDefinitionCreate, ApprovalRuleCreate, DashboardWidgetCreate, TaskCreate,
     TaskUpdate, DocumentCreate, ShiftCreate, AttendanceRuleUpdate
 )
