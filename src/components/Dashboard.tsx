@@ -419,6 +419,17 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
     } else {
       fetchData();
     }
+
+    // Real-Time Sync Polling (every 15 seconds)
+    const pollInterval = setInterval(() => {
+      if (isWorker) {
+        fetchWorkerData();
+      } else {
+        fetchData();
+      }
+    }, 15000);
+
+    return () => clearInterval(pollInterval);
   }, [token, role]);
 
   const handleUpdateWidgetPosition = (id: string, dir: "left" | "right") => {

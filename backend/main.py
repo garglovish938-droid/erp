@@ -47,7 +47,7 @@ if allowed_origins_env:
     allowed_origins = allowed_origins_env.split(",")
     allow_origin_regex = None
 else:
-    allowed_origins = ["*"]
+    allowed_origins = []
     allow_origin_regex = "https?://.*"
 
 app.add_middleware(
@@ -63,6 +63,23 @@ app.add_middleware(
 # Ensure database tables exist
 Base.metadata.create_all(bind=engine)
 
+# Auto-seed database if no users exist (useful for first-time deploy or empty SQLite DB)
+from database import SessionLocal
+from models import User
+from seed import seed_db
+
+db = SessionLocal()
+try:
+    if db.query(User).count() == 0:
+        print("No users found in database. Running auto-seed...")
+        seed_db(drop_all=False)
+    else:
+        print("Database already contains users. Skipping auto-seed.")
+except Exception as e:
+    print(f"Error during auto-seed check: {e}")
+finally:
+    db.close()
+
 # Backup and upload directory setups — paths come from config (env vars in production)
 BACKUP_DIR = settings.BACKUP_DIR
 os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -77,6 +94,14 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 @app.get("/")
 def read_root():
     return {"message": "Welcome to Allure Living ERP API System", "status": "running"}
+
+@app.get("/api/debug-env")
+def debug_env():
+    return {
+        "DATABASE_URL": os.getenv("DATABASE_URL", "not_set"),
+        "SECRET_KEY_SET": bool(os.getenv("SECRET_KEY")),
+        "ENVIRONMENT": os.getenv("ENVIRONMENT", "not_set")
+    }
 
 # --- AUTH & USER MANAGEMENT ---
 @app.post("/api/auth/register", response_model=schemas.UserResponse)

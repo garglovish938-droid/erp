@@ -9,10 +9,11 @@ from models import (
 )
 from auth import get_password_hash
 
-def seed_db():
+def seed_db(drop_all: bool = True):
     # Recreate tables to ensure clean slate
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    if drop_all:
+        Base.metadata.drop_all(bind=engine)
+        Base.metadata.create_all(bind=engine)
     
     db: Session = SessionLocal()
     try:

@@ -112,6 +112,13 @@ export default function Projects({ token, role }: { token: string; role: string 
 
   useEffect(() => {
     fetchData();
+
+    // Real-Time Sync Polling (every 15 seconds)
+    const pollInterval = setInterval(() => {
+      fetchData();
+    }, 15000);
+
+    return () => clearInterval(pollInterval);
   }, [token, statusFilter]);
 
   // Fetch project specific documents and assignments when expanded
