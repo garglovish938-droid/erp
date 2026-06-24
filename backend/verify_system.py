@@ -5,7 +5,8 @@ import os
 
 BASE_URL = "http://127.0.0.1:8000"
 
-conn = sqlite3.connect('erp.db')
+db_path = 'backend/erp.db' if os.path.exists('backend/erp.db') else 'erp.db'
+conn = sqlite3.connect(db_path)
 c = conn.cursor()
 
 print("=" * 60)
@@ -84,7 +85,7 @@ endpoints = [
 
 admin_token = None
 try:
-    r = requests.post(f"{BASE_URL}/api/auth/login", json={"email": "admin@allureliving.com", "password": "Admin@1234"}, timeout=5)
+    r = requests.post(f"{BASE_URL}/api/auth/login", json={"email": "admin@allure.com", "password": "admin123"}, timeout=5)
     if r.status_code == 200:
         admin_token = r.json().get("access_token")
         print(f"  Admin Login: ✓ (token obtained)")
