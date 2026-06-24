@@ -22,7 +22,9 @@ from schemas import (
 
 # Activity Logger Helper
 def log_activity(db: Session, user_id: Optional[str], action: str, details: Optional[str] = None, ip_address: Optional[str] = None, device: Optional[str] = None):
-    log = ActivityLog(user_id=user_id, action=action, details=details, ip_address=ip_address, device=device)
+    # Truncate device (User-Agent) to 100 characters to match activity_logs.device database column constraint
+    safe_device = device[:100] if device else None
+    log = ActivityLog(user_id=user_id, action=action, details=details, ip_address=ip_address, device=safe_device)
     db.add(log)
     db.commit()
 
@@ -46,7 +48,9 @@ def log_detailed_activity(db: Session, user_id: Optional[str], module: str, acti
     }
     
     details_json = json.dumps(details_dict)
-    log = ActivityLog(user_id=user_id, action=action, details=details_json, ip_address=ip_address, device=device)
+    # Truncate device (User-Agent) to 100 characters to match activity_logs.device database column constraint
+    safe_device = device[:100] if device else None
+    log = ActivityLog(user_id=user_id, action=action, details=details_json, ip_address=ip_address, device=safe_device)
     db.add(log)
     db.commit()
 
