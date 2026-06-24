@@ -14,7 +14,7 @@ from models import (
 from schemas import (
     UserCreate, UserUpdate, CategoryCreate, InventoryItemCreate, InventoryItemUpdate,
     SupplierCreate, SupplierUpdate, ClientCreate, ClientUpdate, ProjectCreate,
-    ProjectUpdate, ProjectBOMCreate, MaterialRequestCreate, PurchaseOrderCreate,
+    ProjectUpdate, ProjectBOMCreate, MaterialRequestCreate, PurchaseOrderCreate, DailyExpenseCreate,
     StaffCreate, StaffUpdate, AttendanceCreate, CustomFieldDefinitionCreate, CustomFieldValueCreate,
     WorkflowDefinitionCreate, ApprovalRuleCreate, DashboardWidgetCreate, TaskCreate,
     TaskUpdate, DocumentCreate, ShiftCreate, AttendanceRuleUpdate
