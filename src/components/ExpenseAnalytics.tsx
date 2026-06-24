@@ -10,6 +10,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from "recharts";
 import { apiRequest } from "@/services/apiClient";
+import { API_BASE_URL } from "@/lib/api";
 
 interface ExpenseAnalyticsProps {
   token: string;
@@ -83,7 +84,6 @@ export default function ExpenseAnalytics({ token, role }: ExpenseAnalyticsProps)
   useEffect(() => { load(); }, [load]);
 
   const exportData = async () => {
-    const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
     const params = new URLSearchParams({ format: exportFormat });
     if (dateFilter.start) params.set("start_date", dateFilter.start);
     if (dateFilter.end) params.set("end_date", dateFilter.end);
@@ -92,7 +92,7 @@ export default function ExpenseAnalytics({ token, role }: ExpenseAnalyticsProps)
       const savedUser = localStorage.getItem("allure_erp_user");
       const userToken = savedUser ? JSON.parse(savedUser).token : token;
       
-      const res = await fetch(`${BASE}/api/purchases/export?${params}`, {
+      const res = await fetch(`${API_BASE_URL}/api/purchases/export?${params}`, {
         headers: {
           Authorization: `Bearer ${userToken}`
         }

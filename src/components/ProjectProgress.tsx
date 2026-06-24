@@ -6,6 +6,7 @@ import {
   Upload, CheckCircle, Image, ChevronDown, ChevronUp, RefreshCw, Plus
 } from "lucide-react";
 import { apiRequest } from "@/services/apiClient";
+import { API_BASE_URL } from "@/lib/api";
 
 interface ProjectProgressProps {
   token: string;
@@ -92,9 +93,8 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
       if (form.remarks) fd.append("remarks", form.remarks);
       workPhotos.forEach(photo => fd.append("work_photos", photo));
 
-      const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
       const userData = JSON.parse(localStorage.getItem("allure_erp_user") || "{}");
-      const res = await fetch(`${BASE}/api/projects/${selectedProject}/daily-log`, {
+      const res = await fetch(`${API_BASE_URL}/api/projects/${selectedProject}/daily-log`, {
         method: "POST",
         headers: { Authorization: `Bearer ${userData.token || token}` },
         body: fd
@@ -396,8 +396,8 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
                               {log.work_photos?.length > 0 && (
                                 <div className="flex gap-3 flex-wrap mt-2">
                                   {log.work_photos.map((p: string, idx: number) => (
-                                    <a key={idx} href={`http://localhost:8000${p}`} target="_blank" rel="noreferrer">
-                                      <img src={`http://localhost:8000${p}`} alt={`work-${idx}`}
+                                    <a key={idx} href={`${API_BASE_URL}${p}`} target="_blank" rel="noreferrer">
+                                      <img src={`${API_BASE_URL}${p}`} alt={`work-${idx}`}
                                         className="w-24 h-24 object-cover rounded-xl border border-slate-200 hover:opacity-80 transition-opacity" />
                                     </a>
                                   ))}

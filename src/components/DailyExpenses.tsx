@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import { apiRequest } from "@/services/apiClient";
+import { API_BASE_URL } from "@/lib/api";
 
 interface DailyExpensesProps {
   token: string;
@@ -97,11 +98,10 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
       if (form.project_id) fd.append("project_id", form.project_id);
       if (selectedFile) fd.append("file", selectedFile);
 
-      const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
       const savedUser = localStorage.getItem("allure_erp_user");
       const userToken = savedUser ? JSON.parse(savedUser).token : token;
 
-      const res = await fetch(`${BASE}/api/expenses`, {
+      const res = await fetch(`${API_BASE_URL}/api/expenses`, {
         method: "POST",
         headers: { Authorization: `Bearer ${userToken}` },
         body: fd
@@ -139,7 +139,6 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
   };
 
   const exportExpenses = async () => {
-    const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
     const params = new URLSearchParams({ format: exportFormat });
     if (filterStartDate) params.set("start_date", filterStartDate);
     if (filterEndDate) params.set("end_date", filterEndDate);
@@ -149,7 +148,7 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
       const savedUser = localStorage.getItem("allure_erp_user");
       const userToken = savedUser ? JSON.parse(savedUser).token : token;
 
-      const res = await fetch(`${BASE}/api/expenses/export?${params}`, {
+      const res = await fetch(`${API_BASE_URL}/api/expenses/export?${params}`, {
         headers: { Authorization: `Bearer ${userToken}` }
       });
       if (!res.ok) throw new Error("Export failed");
@@ -375,7 +374,7 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
                     <td className="py-3 px-4">{exp.creator?.full_name || "—"}</td>
                     <td className="py-3 px-4">
                       {exp.attachment_url ? (
-                        <a href={`http://localhost:8000${exp.attachment_url}`} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-indigo-650 hover:underline">
+                        <a href={`${API_BASE_URL}${exp.attachment_url}`} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-indigo-650 hover:underline">
                           <ImageIcon className="w-3.5 h-3.5" /> Bill <ExternalLink className="w-2.5 h-2.5" />
                         </a>
                       ) : (

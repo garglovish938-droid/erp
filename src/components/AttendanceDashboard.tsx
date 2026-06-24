@@ -11,6 +11,7 @@ import {
   Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell
 } from "recharts";
 import { apiRequest } from "@/services/apiClient";
+import { API_BASE_URL } from "@/lib/api";
 
 interface AttendanceDashboardProps {
   token: string;
@@ -97,13 +98,12 @@ export default function AttendanceDashboard({ token, role }: AttendanceDashboard
 
   const exportAttendance = async (format: string) => {
     const url = `/api/attendance/export?year=${reportYear}&month=${reportMonth}&format=${format}`;
-    const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
     
     try {
       const savedUser = localStorage.getItem("allure_erp_user");
       const userToken = savedUser ? JSON.parse(savedUser).token : token;
       
-      const res = await fetch(`${BASE}${url}`, {
+      const res = await fetch(`${API_BASE_URL}${url}`, {
         headers: {
           Authorization: `Bearer ${userToken}`
         }
@@ -327,7 +327,7 @@ export default function AttendanceDashboard({ token, role }: AttendanceDashboard
                         <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{rec.overtime_hours?.toFixed(1)}h</td>
                         <td className="px-4 py-3">
                           {rec.check_in_selfie && (
-                            <a href={`http://localhost:8000${rec.check_in_selfie}`} target="_blank" rel="noreferrer"
+                            <a href={`${API_BASE_URL}${rec.check_in_selfie}`} target="_blank" rel="noreferrer"
                               className="text-xs text-indigo-600 hover:underline">View</a>
                           )}
                         </td>

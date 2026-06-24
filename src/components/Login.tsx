@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { LogIn, Key, User, ShieldAlert, HelpCircle } from "lucide-react";
 
 import { API_BASE_URL } from "@/lib/api";
@@ -15,6 +15,22 @@ export default function Login({ onLogin }: LoginProps) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showForgotModal, setShowForgotModal] = useState(false);
+  const [serverStatus, setServerStatus] = useState<"unknown" | "waking" | "ready">("unknown");
+
+  // Ping backend on mount to wake up Render free tier before user clicks login
+  useEffect(() => {
+    const wakeBackend = async () => {
+      setServerStatus("waking");
+      try {
+        const r = await fetch(`${API_BASE_URL}/`, { method: "GET" });
+        if (r.ok) setServerStatus("ready");
+        else setServerStatus("unknown");
+      } catch {
+        setServerStatus("unknown");
+      }
+    };
+    wakeBackend();
+  }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,7 +49,6 @@ export default function Login({ onLogin }: LoginProps) {
 
       if (!response.ok) {
         const data = await response.json();
-        // Pydantic validation errors return detail as an array of objects
         let detail = data.detail;
         if (Array.isArray(detail)) {
           detail = detail.map((e: any) => e.msg || JSON.stringify(e)).join("; ");
@@ -44,6 +59,7 @@ export default function Login({ onLogin }: LoginProps) {
       }
 
       const data = await response.json();
+      setServerStatus("ready");
       onLogin({
         token: data.access_token,
         refresh_token: data.refresh_token,
@@ -51,11 +67,17 @@ export default function Login({ onLogin }: LoginProps) {
         name: data.full_name
       });
     } catch (err: any) {
-      setError(err.message || "Could not connect to FastAPI server. Please ensure the backend is running.");
+      const isNetworkError = err.message === "Failed to fetch" || err.name === "TypeError";
+      setError(
+        isNetworkError
+          ? "Cannot reach server. The backend may be waking up on Render (free tier takes ~50s on first load). Please wait and try again."
+          : err.message || "Authentication failed. Check your credentials."
+      );
     } finally {
       setLoading(false);
     }
   };
+
 
   return (
     <div className="min-h-screen w-full flex flex-col justify-center items-center bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 p-4 font-sans selection:bg-indigo-500 selection:text-white">
@@ -72,6 +94,13 @@ export default function Login({ onLogin }: LoginProps) {
           <p className="text-slate-400 mt-2 text-sm max-w-xs">
             Furniture Manufacturing & Project Management Enterprise System
           </p>
+          {/* Server status indicator */}
+          <div className="mt-3 flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full ${serverStatus === "ready" ? "bg-green-400" : serverStatus === "waking" ? "bg-yellow-400 animate-pulse" : "bg-slate-500"}`}></span>
+            <span className="text-xs text-slate-500">
+              {serverStatus === "ready" ? "Server Ready" : serverStatus === "waking" ? "Connecting to server..." : "Server status unknown"}
+            </span>
+          </div>
         </div>
 
         <div className="bg-slate-900/60 border border-slate-800/80 backdrop-blur-xl rounded-3xl p-8 shadow-2xl shadow-black/40 animate-in fade-in zoom-in-95 duration-500">
