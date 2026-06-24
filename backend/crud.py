@@ -3,7 +3,6 @@ from datetime import datetime, date
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional
-from schemas import UserCreate, User  # (ya jo bhi tune likha ho)
 
 from models import (
     User, Category, InventoryItem, Supplier, Client, Project, ProjectBOM,
