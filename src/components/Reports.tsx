@@ -38,6 +38,46 @@ export default function Reports({ token, role }: { token: string; role: string }
       formats: [
         { name: "CSV", path: "/api/reports/purchasing/csv", filename: "allure_purchasing_report.csv" }
       ]
+    },
+    {
+      id: "attendance",
+      title: "Real-Time Attendance Audit",
+      desc: "Employee shift logs including daily check-in/out timestamps, total hours worked, overtime, late arrivals, and early departures.",
+      formats: [
+        { name: "CSV", path: "/api/reports/attendance/csv", filename: "allure_attendance_report.csv" },
+        { name: "Excel", path: "/api/reports/attendance/excel", filename: "allure_attendance_report.xlsx" },
+        { name: "PDF", path: "/api/reports/attendance/pdf", filename: "allure_attendance_report.pdf" }
+      ]
+    },
+    {
+      id: "productivity",
+      title: "Worker Productivity & Work Logs",
+      desc: "Worker daily work reports containing task descriptions, hours logged, completion progress, and supervisor notes.",
+      formats: [
+        { name: "CSV", path: "/api/reports/productivity/csv", filename: "allure_productivity_report.csv" },
+        { name: "Excel", path: "/api/reports/productivity/excel", filename: "allure_productivity_report.xlsx" },
+        { name: "PDF", path: "/api/reports/productivity/pdf", filename: "allure_productivity_report.pdf" }
+      ]
+    },
+    {
+      id: "progress",
+      title: "Project Progress & Completion",
+      desc: "Real-time project tracking metrics with status updates, budget tracking, and BOM requirements completion.",
+      formats: [
+        { name: "CSV", path: "/api/reports/progress/csv", filename: "allure_project_progress_report.csv" },
+        { name: "Excel", path: "/api/reports/progress/excel", filename: "allure_project_progress_report.xlsx" },
+        { name: "PDF", path: "/api/reports/progress/pdf", filename: "allure_project_progress_report.pdf" }
+      ]
+    },
+    {
+      id: "material-requests",
+      title: "BOM Material Request Log",
+      desc: "Log of internal raw material requests issued to projects, including requested quantity, approval status, and timestamps.",
+      formats: [
+        { name: "CSV", path: "/api/reports/material-requests/csv", filename: "allure_material_requests_report.csv" },
+        { name: "Excel", path: "/api/reports/material-requests/excel", filename: "allure_material_requests_report.xlsx" },
+        { name: "PDF", path: "/api/reports/material-requests/pdf", filename: "allure_material_requests_report.pdf" }
+      ]
     }
   ];
 
@@ -203,15 +243,15 @@ export default function Reports({ token, role }: { token: string; role: string }
                 <p className="text-sm font-medium">No login records found</p>
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-50 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800">
-                    <tr>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">User</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Email</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Role</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Details</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Time</th>
+              <div className="overflow-x-auto max-h-[60vh] overflow-y-auto scrollbar-thin">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="sticky top-0 z-10 bg-slate-55 dark:bg-slate-900">
+                    <tr className="border-b border-slate-200 dark:border-slate-800">
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">User</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Email</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Role</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Details</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Time</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">

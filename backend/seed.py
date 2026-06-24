@@ -25,35 +25,80 @@ def seed_db():
                 password_hash=get_password_hash("admin123"),
                 role="admin",
                 full_name="Allure Super Admin",
-                phone="9876543210"
+                phone="9876543210",
+                employee_code="EMP-001",
+                department="Administration",
+                status="active"
             ),
             User(
                 email="pm@allure.com",
                 password_hash=get_password_hash("pm123"),
                 role="manager",
                 full_name="Alex River - Project Manager",
-                phone="9876543211"
+                phone="9876543211",
+                employee_code="EMP-002",
+                department="Projects",
+                status="active"
             ),
             User(
                 email="store@allure.com",
                 password_hash=get_password_hash("store123"),
                 role="store",
                 full_name="Marc Stone - Inventory Manager",
-                phone="9876543212"
+                phone="9876543212",
+                employee_code="EMP-003",
+                department="Warehouse",
+                status="active"
             ),
             User(
                 email="accountant@allure.com",
                 password_hash=get_password_hash("accountant123"),
                 role="accountant",
                 full_name="Sophia Cash - Accountant",
-                phone="9876543213"
+                phone="9876543213",
+                employee_code="EMP-004",
+                department="Finance",
+                status="active"
             ),
             User(
                 email="staff@allure.com",
                 password_hash=get_password_hash("staff123"),
                 role="worker",
                 full_name="Robert Plank - Senior Carpenter",
-                phone="9876543214"
+                phone="9876543214",
+                employee_code="EMP-005",
+                department="Production",
+                status="active"
+            ),
+            User(
+                email="john.doe@allure.com",
+                password_hash=get_password_hash("john123"),
+                role="carpenter",
+                full_name="John Doe",
+                phone="8887776660",
+                employee_code="EMP-006",
+                department="Production",
+                status="active"
+            ),
+            User(
+                email="sarah.c@allure.com",
+                password_hash=get_password_hash("sarah123"),
+                role="operator",
+                full_name="Sarah Connor",
+                phone="8887776661",
+                employee_code="EMP-007",
+                department="Design",
+                status="active"
+            ),
+            User(
+                email="david.s@allure.com",
+                password_hash=get_password_hash("david123"),
+                role="operator",
+                full_name="David Smith",
+                phone="8887776662",
+                employee_code="EMP-008",
+                department="Production",
+                status="active"
             )
         ]
         db.add_all(users)
@@ -281,10 +326,16 @@ def seed_db():
         db.commit()
         
         # 11. Staff Registry
+        staff_user = db.query(User).filter(User.email == "staff@allure.com").first()
+        john_user = db.query(User).filter(User.email == "john.doe@allure.com").first()
+        sarah_user = db.query(User).filter(User.email == "sarah.c@allure.com").first()
+        david_user = db.query(User).filter(User.email == "david.s@allure.com").first()
+
         staff = {
-            "John": Staff(name="John Doe", role="Senior Carpenter", phone="8887776660", email="john.doe@allure.com", salary=4000.0, status="active"),
-            "Sarah": Staff(name="Sarah Connor", role="Lead CAD Designer", phone="8887776661", email="sarah.c@allure.com", salary=5500.0, status="active"),
-            "David": Staff(name="David Smith", role="Assembler Helper", phone="8887776662", email="david.s@allure.com", salary=2500.0, status="active")
+            "Robert": Staff(name="Robert Plank", role="Senior Carpenter", phone="9876543214", email="staff@allure.com", salary=3500.0, status="active", user_id=staff_user.id if staff_user else None),
+            "John": Staff(name="John Doe", role="Senior Carpenter", phone="8887776660", email="john.doe@allure.com", salary=4000.0, status="active", user_id=john_user.id if john_user else None),
+            "Sarah": Staff(name="Sarah Connor", role="Lead CAD Designer", phone="8887776661", email="sarah.c@allure.com", salary=5500.0, status="active", user_id=sarah_user.id if sarah_user else None),
+            "David": Staff(name="David Smith", role="Assembler Helper", phone="8887776662", email="david.s@allure.com", salary=2500.0, status="active", user_id=david_user.id if david_user else None)
         }
         db.add_all(staff.values())
         db.commit()

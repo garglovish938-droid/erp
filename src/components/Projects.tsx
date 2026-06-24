@@ -4,7 +4,8 @@ import { useState, useEffect, useRef } from "react";
 import { 
   Plus, Folder, Calendar, DollarSign, MapPin, Layers, ChevronDown, ChevronUp, 
   Loader2, ArrowRight, X, Trash2, Edit, CheckSquare, Square, RotateCcw, 
-  AlertTriangle, ChevronLeft, ChevronRight, FileText, Upload, Download, Eye, Search 
+  AlertTriangle, ChevronLeft, ChevronRight, FileText, Upload, Download, Eye, Search,
+  Users 
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "./Toast";
@@ -23,6 +24,10 @@ export default function Projects({ token, role }: { token: string; role: string 
   // Documents management per project
   const [projectDocs, setProjectDocs] = useState<Record<string, any[]>>({});
   
+  // Assignments management
+  const [assignments, setAssignments] = useState<Record<string, any[]>>({});
+  const [staffList, setStaffList] = useState<any[]>([]);
+
   const [loading, setLoading] = useState(true);
   const [expandedProj, setExpandedProj] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -83,17 +88,20 @@ export default function Projects({ token, role }: { token: string; role: string 
   const fetchData = async () => {
     try {
       const includeDeleted = statusFilter === "archived";
-      const [projData, clientData, invData, fieldsData] = await Promise.all([
+      const headers = { Authorization: `Bearer ${token}` };
+      const [projData, clientData, invData, fieldsData, staffData] = await Promise.all([
         projectService.getProjects(includeDeleted),
         clientService.getClients(),
         inventoryService.getInventory(),
-        inventoryService.getCustomFields("Project")
+        inventoryService.getCustomFields("Project"),
+        fetch(`${API_BASE_URL}/api/staff`, { headers }).then(r => r.json())
       ]);
 
       setProjects(projData);
       setClients(clientData);
       setInventory(invData);
       setCustomFields(fieldsData);
+      setStaffList(Array.isArray(staffData) ? staffData : []);
     } catch (e) {
       console.error(e);
       showToast("Failed to fetch projects database", "error");
@@ -106,10 +114,11 @@ export default function Projects({ token, role }: { token: string; role: string 
     fetchData();
   }, [token, statusFilter]);
 
-  // Fetch project specific documents when expanded
+  // Fetch project specific documents and assignments when expanded
   useEffect(() => {
     if (expandedProj) {
       fetchProjectDocs(expandedProj);
+      fetchAssignments(expandedProj);
     }
   }, [expandedProj]);
 
@@ -119,6 +128,52 @@ export default function Projects({ token, role }: { token: string; role: string 
       setProjectDocs(prev => ({ ...prev, [projId]: docs }));
     } catch (e) {
       console.error("Error fetching docs for project", projId);
+    }
+  };
+
+  const fetchAssignments = async (projId: string) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await fetch(`${API_BASE_URL}/api/projects/${projId}/assignments`, { headers });
+      const data = await res.json();
+      setAssignments(prev => ({ ...prev, [projId]: data }));
+    } catch (e) {
+      console.error("Error fetching assignments", e);
+    }
+  };
+
+  const handleAssignWorker = async (projId: string, userId: string) => {
+    if (!userId) return;
+    try {
+      const headers = { 
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json"
+      };
+      const res = await fetch(`${API_BASE_URL}/api/projects/${projId}/assignments`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ project_id: projId, user_id: userId })
+      });
+      if (!res.ok) throw new Error("Failed to assign worker");
+      showToast("Worker assigned to project successfully", "success");
+      fetchAssignments(projId);
+    } catch (e: any) {
+      showToast(e.message || "Failed to assign worker", "error");
+    }
+  };
+
+  const handleUnassignWorker = async (projId: string, userId: string) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await fetch(`${API_BASE_URL}/api/projects/${projId}/assignments/${userId}`, {
+        method: "DELETE",
+        headers
+      });
+      if (!res.ok) throw new Error("Failed to unassign worker");
+      showToast("Worker unassigned from project", "info");
+      fetchAssignments(projId);
+    } catch (e: any) {
+      showToast(e.message || "Failed to unassign worker", "error");
     }
   };
 
@@ -540,15 +595,15 @@ export default function Projects({ token, role }: { token: string; role: string 
                           )}
                         </div>
 
-                        <div className="overflow-x-auto">
+                        <div className="overflow-x-auto max-h-[40vh] overflow-y-auto scrollbar-thin">
                           <table className="w-full text-left text-xs font-medium border-collapse">
-                            <thead>
-                              <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 pb-2">
-                                <th className="pb-2">Material / Brand</th>
-                                <th className="pb-2">Required</th>
-                                <th className="pb-2">Issued</th>
-                                <th className="pb-2">Status</th>
-                                {isManagerOrHigher && statusFilter === "active" && <th className="pb-2 text-right">Action</th>}
+                            <thead className="sticky top-0 z-10 bg-slate-55 dark:bg-slate-900">
+                              <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-450 pb-2">
+                                <th className="pb-2 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Material / Brand</th>
+                                <th className="pb-2 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Required</th>
+                                <th className="pb-2 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Issued</th>
+                                <th className="pb-2 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Status</th>
+                                {isManagerOrHigher && statusFilter === "active" && <th className="pb-2 text-right sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Action</th>}
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50 text-[11px]">
@@ -591,9 +646,7 @@ export default function Projects({ token, role }: { token: string; role: string 
                             </tbody>
                           </table>
                         </div>
-                      </div>
-
-                      {/* Documents panel */}
+                      </div>                      {/* Documents panel */}
                       <div className="glass rounded-2xl p-5 border border-slate-200/50 flex flex-col justify-between">
                         <div>
                           <div className="flex items-center justify-between mb-4">
@@ -601,7 +654,7 @@ export default function Projects({ token, role }: { token: string; role: string 
                               <FileText className="w-4 h-4 text-indigo-500" />
                               Attached Blueprints & Photos
                             </h4>
-                            {statusFilter === "active" && (
+                            {statusFilter === "active" && isManagerOrHigher && (
                               <button
                                 onClick={(e) => { e.stopPropagation(); setSelectedProject(proj); setSubmitError(""); setShowDocModal(true); }}
                                 className="text-[10px] font-bold text-indigo-600 hover:underline flex items-center gap-1"
@@ -630,13 +683,15 @@ export default function Projects({ token, role }: { token: string; role: string 
                                     >
                                       <Download className="w-3.5 h-3.5" />
                                     </a>
-                                    <button
-                                      onClick={() => handleDeleteDoc(doc.id, proj.id)}
-                                      className="p-1 hover:bg-rose-50 rounded text-slate-400 hover:text-rose-600"
-                                      title="Remove attachment"
-                                    >
-                                      <Trash2 className="w-3.5 h-3.5" />
-                                    </button>
+                                    {isManagerOrHigher && (
+                                      <button
+                                        onClick={() => handleDeleteDoc(doc.id, proj.id)}
+                                        className="p-1 hover:bg-rose-50 rounded text-slate-400 hover:text-rose-600"
+                                        title="Remove attachment"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
                                   </div>
                                 </div>
                               ))
@@ -647,33 +702,87 @@ export default function Projects({ token, role }: { token: string; role: string 
                         </div>
 
                         {/* Project Operations Actions */}
-                        <div className="pt-4 border-t border-slate-100 dark:border-slate-800/80 flex justify-between items-center bg-slate-50/50 dark:bg-slate-900/40 p-2.5 rounded-xl">
-                          <span className="text-[10px] text-slate-400 uppercase font-black">Admin Actions</span>
-                          <div className="flex gap-2">
-                            {statusFilter === "active" ? (
-                              <>
-                                <button onClick={() => handleOpenEdit(proj)} className="flex items-center gap-1 px-3 py-1.5 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg hover:border-indigo-500 text-xs font-bold shadow-sm">
-                                  <Edit className="w-3.5 h-3.5 text-indigo-500" />
-                                  Edit Info
-                                </button>
-                                {isAdmin && (
-                                  <button onClick={() => handleConfirmDelete(proj.id, proj.name)} className="flex items-center gap-1 px-3 py-1.5 bg-rose-50/40 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-800 text-rose-600 hover:bg-rose-100 rounded-lg text-xs font-bold shadow-sm">
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                    Archive
+                        {isManagerOrHigher && (
+                          <div className="pt-4 border-t border-slate-100 dark:border-slate-800/80 flex justify-between items-center bg-slate-50/50 dark:bg-slate-900/40 p-2.5 rounded-xl">
+                            <span className="text-[10px] text-slate-400 uppercase font-black">Admin Actions</span>
+                            <div className="flex gap-2">
+                              {statusFilter === "active" ? (
+                                <>
+                                  <button onClick={() => handleOpenEdit(proj)} className="flex items-center gap-1 px-3 py-1.5 bg-white dark:bg-slate-955 border border-slate-200 dark:border-slate-800 rounded-lg hover:border-indigo-500 text-xs font-bold shadow-sm">
+                                    <Edit className="w-3.5 h-3.5 text-indigo-500" />
+                                    Edit Info
                                   </button>
-                                )}
-                              </>
-                            ) : (
-                              isAdmin && (
-                                <button onClick={() => handleConfirmRestore(proj.id, proj.name)} className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 shadow">
-                                  <RotateCcw className="w-3.5 h-3.5" />
-                                  Restore Project
-                                </button>
-                              )
-                            )}
+                                  {isAdmin && (
+                                    <button onClick={() => handleConfirmDelete(proj.id, proj.name)} className="flex items-center gap-1 px-3 py-1.5 bg-rose-50/40 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-800 text-rose-600 hover:bg-rose-100 rounded-lg text-xs font-bold shadow-sm">
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                      Archive
+                                    </button>
+                                  )}
+                                </>
+                              ) : (
+                                isAdmin && (
+                                  <button onClick={() => handleConfirmRestore(proj.id, proj.name)} className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 shadow">
+                                    <RotateCcw className="w-3.5 h-3.5" />
+                                    Restore Project
+                                  </button>
+                                )
+                              )}
+                            </div>
                           </div>
+                        )}
+                      </div>
+
+                      {/* Worker Assignments panel */}
+                      <div className="lg:col-span-3 glass rounded-2xl p-5 border border-slate-200/50">
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="text-xs font-black uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                            <Users className="w-4 h-4 text-indigo-500" />
+                            Assigned Factory Workers & Staff
+                          </h4>
+                          {isManagerOrHigher && statusFilter === "active" && (
+                            <div className="flex items-center gap-2">
+                              <select
+                                onChange={(e) => {
+                                  handleAssignWorker(proj.id, e.target.value);
+                                  e.target.value = "";
+                                }}
+                                className="p-1.5 bg-white dark:bg-slate-905 border border-slate-200 dark:border-slate-800 rounded-xl text-[10px] font-bold outline-none cursor-pointer"
+                              >
+                                <option value="">+ Assign Staff</option>
+                                {staffList
+                                  .filter(s => s.user_id && !((assignments[proj.id] || []).some((a: any) => a.user_id === s.user_id)))
+                                  .map(s => (
+                                    <option key={s.user_id} value={s.user_id}>{s.name} ({s.role})</option>
+                                  ))
+                                }
+                              </select>
+                            </div>
+                          )}
                         </div>
 
+                        <div className="flex flex-wrap gap-2">
+                          {(assignments[proj.id] || []).length > 0 ? (
+                            (assignments[proj.id] || []).map((assign: any) => (
+                              <div key={assign.id} className="flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200/60 rounded-full text-xs font-semibold shadow-sm">
+                                <span className="text-slate-800 dark:text-slate-200">{assign.user?.full_name || "Employee"}</span>
+                                <span className="text-[9px] uppercase font-bold px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-full">
+                                  {assign.user?.role || "worker"}
+                                </span>
+                                {isManagerOrHigher && statusFilter === "active" && (
+                                  <button
+                                    onClick={() => handleUnassignWorker(proj.id, assign.user_id)}
+                                    className="text-rose-500 hover:text-rose-700 transition-colors ml-1 p-0.5"
+                                    title="Unassign employee"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+                            ))
+                          ) : (
+                            <div className="text-slate-400 text-xs py-2">No workers or staff assigned to this project yet.</div>
+                          )}
+                        </div>
                       </div>
 
                     </div>

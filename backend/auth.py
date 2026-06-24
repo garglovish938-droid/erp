@@ -33,6 +33,13 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
+def create_refresh_token(data: dict) -> str:
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(days=7)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return encoded_jwt
+
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -52,6 +59,11 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     user = db.query(User).filter(User.email == token_data.email, User.is_deleted == False).first()
     if user is None:
         raise credentials_exception
+    if user.status == "disabled":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is disabled. Please contact Super Admin."
+        )
     return user
 
 class RoleChecker:
@@ -67,8 +79,17 @@ class RoleChecker:
         return current_user
 
 # Predefined role helpers
+ALL_ROLES = [
+    "admin", "factory_manager", "project_manager", "inventory_manager",
+    "purchase_manager", "hr_manager", "accounts_manager", "quality_inspector",
+    "store_assistant", "machine_operator", "carpenter", "worker", "manager", "store", "accountant", "operator"
+]
+
 require_admin = RoleChecker(["admin"])
-require_manager_or_higher = RoleChecker(["admin", "manager"])
-require_store_or_higher = RoleChecker(["admin", "manager", "store"])
-require_accountant_or_higher = RoleChecker(["admin", "accountant"])
-require_any_authenticated = RoleChecker(["admin", "manager", "store", "accountant", "worker"])
+require_admin_or_factory_manager = RoleChecker(["admin", "factory_manager"])
+require_project_edit_access = RoleChecker(["admin", "factory_manager", "project_manager", "manager"])
+require_manager_or_higher = RoleChecker(["admin", "factory_manager", "project_manager", "manager"])
+require_store_or_higher = RoleChecker(["admin", "factory_manager", "inventory_manager", "store_assistant", "manager", "store"])
+require_accountant_or_higher = RoleChecker(["admin", "factory_manager", "accounts_manager", "accountant"])
+require_report_access = RoleChecker(["admin", "factory_manager", "project_manager", "inventory_manager", "purchase_manager", "hr_manager", "accounts_manager", "manager", "store", "accountant"])
+require_any_authenticated = RoleChecker(ALL_ROLES)

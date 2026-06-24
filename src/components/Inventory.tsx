@@ -437,12 +437,12 @@ export default function Inventory({ token, role }: { token: string; role: string
 
       {/* Materials Table */}
       <div className="glass rounded-3xl overflow-hidden border border-slate-202 dark:border-slate-800 shadow-xl">
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto max-h-[60vh] overflow-y-auto scrollbar-thin">
           <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-50/50 dark:bg-slate-900/40 border-b border-slate-200 dark:border-slate-800/80">
+            <thead className="sticky top-0 z-10 bg-slate-55 dark:bg-slate-900">
+              <tr className="border-b border-slate-200 dark:border-slate-800/80">
                 {isStoreOrHigher && (
-                  <th className="p-5 w-12">
+                  <th className="p-5 w-12 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">
                     <button onClick={() => handleToggleSelectAll(paginatedItems)} className="text-slate-400">
                       {selectedIds.length === paginatedItems.length && paginatedItems.length > 0 ? (
                         <CheckSquare className="w-4 h-4 text-indigo-600" />
@@ -452,12 +452,12 @@ export default function Inventory({ token, role }: { token: string; role: string
                     </button>
                   </th>
                 )}
-                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 cursor-pointer" onClick={() => handleSort("name")}>Material SKU & Details</th>
-                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400">Category</th>
-                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400">Barcode</th>
-                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 cursor-pointer" onClick={() => handleSort("quantity")}>Stock Qty</th>
-                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 cursor-pointer" onClick={() => handleSort("unit_cost")}>Unit Cost</th>
-                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 text-right">Actions</th>
+                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 cursor-pointer sticky top-0 bg-slate-55 dark:bg-slate-900 z-10" onClick={() => handleSort("name")}>Material SKU & Details</th>
+                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Category</th>
+                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Barcode</th>
+                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 cursor-pointer sticky top-0 bg-slate-55 dark:bg-slate-900 z-10" onClick={() => handleSort("quantity")}>Stock Qty</th>
+                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 cursor-pointer sticky top-0 bg-slate-55 dark:bg-slate-900 z-10" onClick={() => handleSort("unit_cost")}>Unit Cost</th>
+                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 text-right sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50 text-sm font-medium">

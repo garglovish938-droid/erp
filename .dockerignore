@@ -1,0 +1,9 @@
+.git
+node_modules
+.next
+out
+.env*.local
+backend/erp.db
+backend/test_erp.db
+backend/venv
+backend/__pycache__

@@ -34,6 +34,21 @@ export const staffService = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+    
+  checkIn: (data?: any) =>
+    apiRequest("/api/attendance/check-in", {
+      method: "POST",
+      body: data ? JSON.stringify(data) : undefined,
+    }),
+    
+  checkOut: (data?: any) =>
+    apiRequest("/api/attendance/check-out", {
+      method: "POST",
+      body: data ? JSON.stringify(data) : undefined,
+    }),
+    
+  getAttendanceStatus: () =>
+    apiRequest("/api/attendance/status"),
 
   // Tasks
   getTasks: (includeDeleted = false) =>

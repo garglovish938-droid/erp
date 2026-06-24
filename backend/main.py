@@ -2,13 +2,15 @@ import os
 import shutil
 import csv
 import io
+import jwt
 import json
 import uuid
 from datetime import datetime, date, timedelta
 from typing import List, Optional
-from fastapi import FastAPI, Depends, HTTPException, status, Query, File, UploadFile
+from fastapi import FastAPI, Depends, HTTPException, status, Query, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -26,7 +28,9 @@ from database import get_db, engine, Base
 from models import (
     User, Category, InventoryItem, Supplier, Client, Project, ProjectBOM,
     StockTransaction, MaterialRequest, PurchaseOrder, Staff, Attendance,
-    Notification, ActivityLog, CustomFieldDefinition, CustomFieldValue
+    Notification, ActivityLog, CustomFieldDefinition, CustomFieldValue,
+    Shift, AttendanceRule, Task, DailyWorkLog, ProjectAssignment, ProjectDailyLog,
+    DailyExpense
 )
 import crud, schemas, auth
 
@@ -38,13 +42,23 @@ app = FastAPI(
 )
 
 # CORS configuration
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
+if allowed_origins_env:
+    allowed_origins = allowed_origins_env.split(",")
+    allow_origin_regex = None
+else:
+    allowed_origins = ["*"]
+    allow_origin_regex = "https?://.*"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
+    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # Ensure database tables exist
 Base.metadata.create_all(bind=engine)
@@ -54,6 +68,11 @@ BACKUP_DIR = settings.BACKUP_DIR
 os.makedirs(BACKUP_DIR, exist_ok=True)
 UPLOAD_DIR = settings.UPLOAD_DIR
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(os.path.join(UPLOAD_DIR, "selfies"), exist_ok=True)
+
+# Serve uploaded documents statically
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
 
 @app.get("/")
 def read_root():
@@ -65,22 +84,84 @@ def register_user(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
     db_user = crud.get_user_by_email(db, email=user_in.email)
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
-    password_hash = auth.get_password_hash(user_in.password)
-    return crud.create_user(db=db, user_in=user_in, password_hash=password_hash)
+    if user_in.employee_code:
+        db_emp = db.query(User).filter(User.employee_code == user_in.employee_code, User.is_deleted == False).first()
+        if db_emp:
+            raise HTTPException(status_code=400, detail="Employee Code already exists")
+    try:
+        password_hash = auth.get_password_hash(user_in.password)
+        return crud.create_user(db=db, user_in=user_in, password_hash=password_hash)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/auth/login", response_model=schemas.Token)
-def login_user(user_in: schemas.UserLogin, db: Session = Depends(get_db)):
-    user = crud.get_user_by_email(db, email=user_in.email)
+def login_user(user_in: schemas.UserLogin, request: Request, db: Session = Depends(get_db)):
+    login_id = user_in.username or user_in.email
+    if not login_id:
+        raise HTTPException(status_code=400, detail="Username or email is required")
+        
+    user = crud.get_user_by_username_or_phone_or_email(db, login_id)
     if not user or not auth.verify_password(user_in.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
+            detail="Incorrect username/email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+        
+    if user.status == "disabled":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is disabled. Please contact Super Admin.",
+        )
+        
     access_token = auth.create_access_token(data={"sub": user.email, "role": user.role})
-    crud.log_activity(db, user.id, "login", f"Successful login for {user.email}")
+    refresh_token = auth.create_refresh_token(data={"sub": user.email})
+    
+    # Save refresh token in database
+    user.refresh_token = refresh_token
+    db.commit()
+    
+    ip_addr = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    
+    crud.log_activity(db, user.id, "login", f"Successful login for {user.email}", ip_address=ip_addr, device=user_agent)
     return {
         "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "role": user.role,
+        "full_name": user.full_name
+    }
+
+@app.post("/api/auth/refresh", response_model=schemas.Token)
+def refresh_token(req: schemas.TokenRefreshRequest, db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired refresh token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(req.refresh_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        email: str = payload.get("sub")
+        tok_type: str = payload.get("type")
+        if email is None or tok_type != "refresh":
+            raise credentials_exception
+    except jwt.PyJWTError:
+        raise credentials_exception
+        
+    user = db.query(User).filter(User.email == email, User.is_deleted == False).first()
+    if user is None or user.status == "disabled" or user.refresh_token != req.refresh_token:
+        raise credentials_exception
+        
+    access_token = auth.create_access_token(data={"sub": user.email, "role": user.role})
+    new_refresh_token = auth.create_refresh_token(data={"sub": user.email})
+    
+    user.refresh_token = new_refresh_token
+    db.commit()
+    
+    return {
+        "access_token": access_token,
+        "refresh_token": new_refresh_token,
         "token_type": "bearer",
         "role": user.role,
         "full_name": user.full_name
@@ -91,21 +172,171 @@ def get_user_me(current_user: User = Depends(auth.get_current_user)):
     return current_user
 
 @app.post("/api/auth/logout")
-def logout_user(current_user: User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+def logout_user(request: Request, current_user: User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    current_user.refresh_token = None
+    db.commit()
+    
+    ip_addr = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    
     crud.log_detailed_activity(
         db, 
         user_id=current_user.id, 
         module="Auth", 
         action="logout", 
         record_id=current_user.id, 
-        message=f"Successful logout for {current_user.email}"
+        message=f"Successful logout for {current_user.email}",
+        ip_address=ip_addr,
+        device=user_agent
     )
     return {"status": "success", "message": "Logged out successfully"}
 
-
+@app.get("/api/users", response_model=List[schemas.UserResponse])
 @app.get("/api/auth/users", response_model=List[schemas.UserResponse])
-def read_users(db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+def read_users(db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin_or_factory_manager)):
     return crud.get_users(db)
+
+@app.post("/api/users", response_model=schemas.UserResponse)
+def create_managed_user(user_in: schemas.UserCreate, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin_or_factory_manager)):
+    if user_in.role == "admin" and current_user.role == "factory_manager":
+        raise HTTPException(status_code=403, detail="Factory Managers cannot create Super Admin accounts")
+        
+    db_user = crud.get_user_by_email(db, email=user_in.email)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    if user_in.employee_code:
+        db_emp = db.query(User).filter(User.employee_code == user_in.employee_code).first()
+        if db_emp:
+            raise HTTPException(status_code=400, detail="Employee Code already exists")
+            
+    password_hash = auth.get_password_hash(user_in.password)
+    created = crud.create_user(db=db, user_in=user_in, password_hash=password_hash)
+    
+    ip_addr = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    
+    crud.log_detailed_activity(
+        db, current_user.id, "UserManagement", "create_user", created.id,
+        f"Admin/Manager created user: {created.email} (Role: {created.role})",
+        ip_address=ip_addr, device=user_agent
+    )
+    return created
+
+@app.put("/api/users/{user_id}", response_model=schemas.UserResponse)
+def update_managed_user(user_id: str, user_in: schemas.UserUpdate, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin_or_factory_manager)):
+    target_user = db.query(User).filter(User.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    if target_user.role == "admin" and current_user.role == "factory_manager":
+        raise HTTPException(status_code=403, detail="Factory Managers cannot modify Super Admin accounts")
+        
+    if user_in.role == "admin" and current_user.role == "factory_manager":
+        raise HTTPException(status_code=403, detail="Factory Managers cannot elevate users to Super Admin")
+
+    password_hash = None
+    if user_in.password:
+        password_hash = auth.get_password_hash(user_in.password)
+        
+    updated = crud.update_user(db=db, user_id=user_id, user_in=user_in, password_hash=password_hash)
+    
+    ip_addr = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    
+    crud.log_detailed_activity(
+        db, current_user.id, "UserManagement", "update_user", updated.id,
+        f"Admin/Manager updated user: {updated.email}",
+        ip_address=ip_addr, device=user_agent
+    )
+    return updated
+
+@app.delete("/api/users/{user_id}")
+def delete_managed_user(user_id: str, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin_or_factory_manager)):
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot delete own administrative account")
+        
+    target_user = db.query(User).filter(User.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    if target_user.role == "admin" and current_user.role == "factory_manager":
+        raise HTTPException(status_code=403, detail="Factory Managers cannot modify Super Admin accounts")
+        
+    success = crud.delete_user(db=db, user_id=user_id, actor_id=current_user.id)
+    if not success:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    ip_addr = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    
+    crud.log_detailed_activity(
+        db, current_user.id, "UserManagement", "delete_user", user_id,
+        f"Admin/Manager deleted user ID: {user_id}",
+        ip_address=ip_addr, device=user_agent
+    )
+    return {"status": "success", "message": "User successfully archived"}
+
+@app.post("/api/users/{user_id}/status")
+def toggle_managed_user_status(user_id: str, payload: dict, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin_or_factory_manager)):
+    status_val = payload.get("status")
+    if status_val not in ["active", "disabled"]:
+        raise HTTPException(status_code=400, detail="Invalid status value. Must be 'active' or 'disabled'.")
+        
+    db_user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    if db_user.id == current_user.id and status_val == "disabled":
+        raise HTTPException(status_code=400, detail="Cannot disable own administrative account")
+        
+    if db_user.role == "admin" and current_user.role == "factory_manager":
+        raise HTTPException(status_code=403, detail="Factory Managers cannot modify Super Admin accounts")
+        
+    db_user.status = status_val
+    
+    # Update linked staff status
+    staff_member = db.query(Staff).filter(Staff.user_id == db_user.id).first()
+    if staff_member:
+        staff_member.status = "active" if status_val == "active" else "inactive"
+        
+    db.commit()
+    
+    ip_addr = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    
+    crud.log_detailed_activity(
+        db, current_user.id, "UserManagement", "toggle_status", user_id,
+        f"Admin/Manager changed user {db_user.email} status to {status_val}",
+        ip_address=ip_addr, device=user_agent
+    )
+    return {"status": "success", "message": f"User status set to {status_val}"}
+
+@app.post("/api/users/{user_id}/reset-password")
+def reset_managed_user_password(user_id: str, payload: dict, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin_or_factory_manager)):
+    password_val = payload.get("password")
+    if not password_val or len(password_val) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
+        
+    db_user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    if db_user.role == "admin" and current_user.role == "factory_manager":
+        raise HTTPException(status_code=403, detail="Factory Managers cannot modify Super Admin accounts")
+        
+    db_user.password_hash = auth.get_password_hash(password_val)
+    db.commit()
+    
+    ip_addr = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    
+    crud.log_detailed_activity(
+        db, current_user.id, "UserManagement", "reset_password", user_id,
+        f"Admin/Manager reset password for user {db_user.email}",
+        ip_address=ip_addr, device=user_agent
+    )
+    return {"status": "success", "message": "User password reset successfully"}
 
 
 # --- INVENTORY MODULE ---
@@ -197,7 +428,7 @@ async def import_inventory_csv(
         "category": ["category", "material category", "group"],
         "brand": ["brand", "make", "manufacturer"],
         "unit": ["unit", "unit of measure", "uom"],
-        "quantity": ["quantity", "qty", "stock quantity", "stock", "in stock"],
+        "quantity": ["quantity", "qty", "stock quantity", "stock", "in stock", "current stock", "current_stock"],
         "minimum_stock_level": ["minimum_stock_level", "min stock", "minimum level", "min stock level", "alert level"],
         "unit_cost": ["unit_cost", "cost", "unit cost", "unit cost ($)", "price"],
         "barcode": ["barcode", "barcode value"]
@@ -215,109 +446,231 @@ async def import_inventory_csv(
                 break
     if "sku" not in col_indices or "name" not in col_indices:
         raise HTTPException(status_code=400, detail=f"Required columns 'SKU' or 'Name' not found for Inventory import. Columns: {headers}")
+    
+    # Pre-fetch all existing active/inactive SKUs and Barcodes from database to do fast in-memory validation
+    existing_skus = {} # SKU -> Item ID
+    existing_barcodes = {} # Barcode -> Item ID
+    
+    for item_id, sku, barcode in db.query(InventoryItem.id, InventoryItem.sku, InventoryItem.barcode).all():
+        existing_skus[sku.lower()] = item_id
+        existing_barcodes[barcode.lower()] = item_id
+        
+    allocated_barcodes = set() # Set of lowercased barcodes allocated during this import batch
+    category_cache = {}
+    
+    import_logs = []
     success_count = 0
     updated_count = 0
-    category_cache = {}
+    skipped_count = 0
+    
+    def get_next_barcode(allocated: set) -> str:
+        max_num = 100000
+        # Check in database barcodes
+        for bc in existing_barcodes:
+            if bc.startswith("bc") and bc[2:].isdigit():
+                try:
+                    num = int(bc[2:])
+                    if num > max_num:
+                        max_num = num
+                except ValueError:
+                    pass
+        # Check in allocated barcodes
+        for bc in allocated:
+            if bc.startswith("bc") and bc[2:].isdigit():
+                try:
+                    num = int(bc[2:])
+                    if num > max_num:
+                        max_num = num
+                except ValueError:
+                    pass
+                    
+        next_num = max_num + 1
+        while f"bc{next_num}" in existing_barcodes or f"bc{next_num}" in allocated:
+            next_num += 1
+            
+        generated = f"BC{next_num}"
+        allocated.add(generated.lower())
+        return generated
+
+    row_num = 1
     for row in reader:
+        row_num += 1
         if not row or all(cell.strip() == "" for cell in row):
             continue
+            
+        row_warnings = []
+        sku = ""
         try:
             def get_val(field, default=""):
                 idx = col_indices.get(field)
                 if idx is not None and idx < len(row):
                     return row[idx].strip()
                 return default
+                
             sku = get_val("sku")
             name = get_val("name")
-            if not sku or not name:
+            
+            # Validation: SKU existence
+            if not sku:
+                import_logs.append(f"Row {row_num}: Missing SKU. Row skipped.")
+                skipped_count += 1
                 continue
+                
+            # Validation: Name existence
+            if not name:
+                import_logs.append(f"Row {row_num} (SKU: {sku}): Missing material name. Row skipped.")
+                skipped_count += 1
+                continue
+                
+            # Validation: Quantity values
+            quantity_str = get_val("quantity", "0")
+            try:
+                quantity = float(quantity_str)
+                if quantity < 0:
+                    import_logs.append(f"Row {row_num} (SKU: {sku}): Quantity '{quantity_str}' cannot be negative. Row skipped.")
+                    skipped_count += 1
+                    continue
+            except ValueError:
+                import_logs.append(f"Row {row_num} (SKU: {sku}): Invalid quantity value '{quantity_str}'. Row skipped.")
+                skipped_count += 1
+                continue
+                
+            # Validation: Min stock values
+            min_stock_str = get_val("minimum_stock_level", "5")
+            try:
+                min_stock = float(min_stock_str)
+                if min_stock < 0:
+                    min_stock = 5.0
+                    row_warnings.append(f"Min stock '{min_stock_str}' was negative. Defaulted to 5.0.")
+            except ValueError:
+                min_stock = 5.0
+                row_warnings.append(f"Invalid min stock '{min_stock_str}'. Defaulted to 5.0.")
+                
+            # Validation: Unit cost values
+            unit_cost_str = get_val("unit_cost", "0")
+            try:
+                unit_cost = float(unit_cost_str)
+                if unit_cost < 0:
+                    unit_cost = 0.0
+                    row_warnings.append(f"Unit cost '{unit_cost_str}' was negative. Defaulted to 0.0.")
+            except ValueError:
+                unit_cost = 0.0
+                row_warnings.append(f"Invalid unit cost '{unit_cost_str}'. Defaulted to 0.0.")
+                
+            # Other fields
             cat_name = get_val("category", "Uncategorized")
             brand = get_val("brand")
             unit = get_val("unit", "Sheets")
-            try:
-                quantity = float(get_val("quantity", "0"))
-            except ValueError:
-                quantity = 0.0
-            try:
-                min_stock = float(get_val("minimum_stock_level", "5"))
-            except ValueError:
-                min_stock = 5.0
-            try:
-                unit_cost = float(get_val("unit_cost", "0"))
-            except ValueError:
-                unit_cost = 0.0
-            barcode = get_val("barcode")
-
-            cat_key = cat_name.lower()
-            if cat_key in category_cache:
-                db_cat = category_cache[cat_key]
-            else:
-                db_cat = db.query(Category).filter(Category.name.ilike(cat_name)).first()
-                if not db_cat:
-                    db_cat = Category(name=cat_name, description=f"Auto created from CSV import")
-                    db.add(db_cat)
-                    db.commit()
-                    db.refresh(db_cat)
-                elif db_cat.is_deleted:
-                    db_cat.is_deleted = False
-                    db_cat.deleted_at = None
-                    db_cat.deleted_by = None
-                    db.commit()
-                    db.refresh(db_cat)
-                category_cache[cat_key] = db_cat
-
-            # Query regardless of deletion status to prevent IntegrityError on re-insert
-            db_item = db.query(InventoryItem).filter(InventoryItem.sku == sku).first()
-            if db_item:
-                db_item.name = name
-                db_item.category_id = db_cat.id
-                if brand:
-                    db_item.brand = brand
-                db_item.unit = unit
-                db_item.quantity = quantity
-                db_item.minimum_stock_level = min_stock
-                db_item.unit_cost = unit_cost
-                db_item.updated_at = datetime.utcnow()
-
-                # Restore if it was soft-deleted
-                if db_item.is_deleted:
-                    db_item.is_deleted = False
-                    db_item.deleted_at = None
-                    db_item.deleted_by = None
-
-                if barcode and db_item.barcode != barcode:
-                    other = db.query(InventoryItem).filter(InventoryItem.barcode == barcode, InventoryItem.id != db_item.id).first()
-                    if not other:
-                        db_item.barcode = barcode
-                    else:
-                        db_item.barcode = f"GEN{100000 + db.query(InventoryItem).count() + 1}"
-                updated_count += 1
-            else:
-                if not barcode:
-                    barcode = f"GEN{100000 + db.query(InventoryItem).count() + 1}"
+            
+            # Database Savepoint for Row
+            with db.begin_nested():
+                cat_key = cat_name.lower()
+                if cat_key in category_cache:
+                    db_cat = category_cache[cat_key]
                 else:
-                    other = db.query(InventoryItem).filter(InventoryItem.barcode == barcode).first()
-                    if other:
-                        barcode = f"GEN{100000 + db.query(InventoryItem).count() + 1}"
-                new_item = InventoryItem(
-                    sku=sku,
-                    name=name,
-                    category_id=db_cat.id,
-                    brand=brand,
-                    unit=unit,
-                    quantity=quantity,
-                    minimum_stock_level=min_stock,
-                    unit_cost=unit_cost,
-                    barcode=barcode
-                )
-                db.add(new_item)
-                success_count += 1
-        except Exception as e:
-            db.rollback()
-            raise HTTPException(status_code=400, detail=f"Row import error: {str(e)}")
+                    db_cat = db.query(Category).filter(Category.name.ilike(cat_name)).first()
+                    if not db_cat:
+                        db_cat = Category(name=cat_name, description="Auto created from CSV import")
+                        db.add(db_cat)
+                        db.flush()
+                    elif db_cat.is_deleted:
+                        db_cat.is_deleted = False
+                        db_cat.deleted_at = None
+                        db_cat.deleted_by = None
+                        db.flush()
+                    category_cache[cat_key] = db_cat
+                    
+                # Check if SKU already exists
+                db_item = None
+                sku_lower = sku.lower()
+                if sku_lower in existing_skus:
+                    item_id = existing_skus[sku_lower]
+                    db_item = db.query(InventoryItem).filter(InventoryItem.id == item_id).first()
+                    
+                # Resolve barcode
+                barcode = get_val("barcode")
+                if not barcode:
+                    barcode = get_next_barcode(allocated_barcodes)
+                else:
+                    barcode_lower = barcode.lower()
+                    is_taken = False
+                    if barcode_lower in allocated_barcodes:
+                        is_taken = True
+                    elif barcode_lower in existing_barcodes:
+                        item_id_with_barcode = existing_barcodes[barcode_lower]
+                        if db_item and db_item.id == item_id_with_barcode:
+                            pass
+                        else:
+                            is_taken = True
+                            
+                    if is_taken:
+                        old_barcode = barcode
+                        barcode = get_next_barcode(allocated_barcodes)
+                        row_warnings.append(f"Barcode '{old_barcode}' is already in use. Re-assigned to unique barcode '{barcode}'.")
+                    else:
+                        allocated_barcodes.add(barcode_lower)
+                        
+                if db_item:
+                    db_item.name = name
+                    db_item.category_id = db_cat.id
+                    if brand:
+                        db_item.brand = brand
+                    db_item.unit = unit
+                    db_item.quantity = quantity
+                    db_item.minimum_stock_level = min_stock
+                    db_item.unit_cost = unit_cost
+                    db_item.updated_at = datetime.utcnow()
+                    
+                    if db_item.is_deleted:
+                        db_item.is_deleted = False
+                        db_item.deleted_at = None
+                        db_item.deleted_by = None
+                        
+                    if db_item.barcode:
+                        old_bc_lower = db_item.barcode.lower()
+                        if old_bc_lower in existing_barcodes:
+                            existing_barcodes.pop(old_bc_lower, None)
+                            
+                    db_item.barcode = barcode
+                    existing_barcodes[barcode.lower()] = db_item.id
+                    db.flush()
+                    updated_count += 1
+                    if row_warnings:
+                        import_logs.append(f"Row {row_num} (SKU: {sku}): Updated with warning(s): {'; '.join(row_warnings)}")
+                else:
+                    new_item = InventoryItem(
+                        sku=sku,
+                        name=name,
+                        category_id=db_cat.id,
+                        brand=brand,
+                        unit=unit,
+                        quantity=quantity,
+                        minimum_stock_level=min_stock,
+                        unit_cost=unit_cost,
+                        barcode=barcode
+                    )
+                    db.add(new_item)
+                    db.flush()
+                    
+                    existing_skus[sku_lower] = new_item.id
+                    existing_barcodes[barcode.lower()] = new_item.id
+                    success_count += 1
+                    if row_warnings:
+                        import_logs.append(f"Row {row_num} (SKU: {sku}): Created with warning(s): {'; '.join(row_warnings)}")
+                        
+        except Exception as row_error:
+            # begin_nested() automatically rolls back to savepoint on exit if exception is raised
+            import_logs.append(f"Row {row_num} (SKU: {sku or 'N/A'}): Database error: {str(row_error)}. Row skipped.")
+            skipped_count += 1
+            continue
+
     db.commit()
-    crud.log_activity(db, current_user.id, "bulk_import", f"Created {success_count}, updated {updated_count} items")
-    return {"status": "success", "message": f"Created {success_count}, updated {updated_count} records."}
+    crud.log_activity(db, current_user.id, "bulk_import", f"Created {success_count}, updated {updated_count}, skipped {skipped_count} items")
+    return {
+        "status": "success",
+        "message": f"Created {success_count}, updated {updated_count}, skipped {skipped_count} records.",
+        "logs": import_logs
+    }
 
 
 @app.post("/api/suppliers/import")
@@ -702,7 +1055,11 @@ def restore_client(client_id: str, db: Session = Depends(get_db), current_user: 
 # --- PROJECTS MODULE ---
 @app.get("/api/projects", response_model=List[schemas.ProjectResponse])
 def read_projects(include_deleted: bool = False, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
-    return crud.get_projects(db, include_deleted)
+    projects = crud.get_projects(db, include_deleted)
+    if current_user.role != "admin":
+        assigned_ids = crud.get_user_project_ids(db, current_user.id)
+        projects = [p for p in projects if p.id in assigned_ids]
+    return projects
 
 @app.post("/api/projects", response_model=schemas.ProjectResponse)
 def create_project(project_in: schemas.ProjectCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
@@ -834,16 +1191,20 @@ def read_project(project_id: str, db: Session = Depends(get_db), current_user: U
     return db_project
 
 @app.put("/api/projects/{project_id}", response_model=schemas.ProjectResponse)
-def update_project(project_id: str, project_in: schemas.ProjectUpdate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
-    db_project = crud.update_project(db=db, project_id=project_id, project_in=project_in, user_id=current_user.id)
+def update_project(project_id: str, project_in: schemas.ProjectUpdate, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_project_edit_access)):
+    ip_addr = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    db_project = crud.update_project(db=db, project_id=project_id, project_in=project_in, user_id=current_user.id, ip_address=ip_addr, device=user_agent)
     if not db_project:
         raise HTTPException(status_code=404, detail="Project not found")
     return db_project
 
 @app.delete("/api/projects/{project_id}")
-def delete_project(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+def delete_project(project_id: str, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_project_edit_access)):
     try:
-        success = crud.delete_project(db=db, project_id=project_id, user_id=current_user.id)
+        ip_addr = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
+        success = crud.delete_project(db=db, project_id=project_id, user_id=current_user.id, ip_address=ip_addr, device=user_agent)
         if not success:
             raise HTTPException(status_code=404, detail="Project not found")
         return {"status": "success", "message": "Project archived"}
@@ -851,9 +1212,11 @@ def delete_project(project_id: str, db: Session = Depends(get_db), current_user:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/projects/{project_id}/restore")
-def restore_project(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+def restore_project(project_id: str, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_project_edit_access)):
     try:
-        success = crud.restore_project(db=db, project_id=project_id, user_id=current_user.id)
+        ip_addr = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
+        success = crud.restore_project(db=db, project_id=project_id, user_id=current_user.id, ip_address=ip_addr, device=user_agent)
         if not success:
             raise HTTPException(status_code=404, detail="Project not found or active")
         return {"status": "success", "message": "Project restored"}
@@ -871,17 +1234,68 @@ def add_bom_to_project(project_id: str, bom_in: schemas.ProjectBOMCreate, db: Se
     return crud.add_bom_item(db=db, project_id=project_id, bom_in=bom_in)
 
 
+@app.get("/api/projects/{project_id}/assignments", response_model=List[schemas.ProjectAssignmentResponse])
+def get_project_assignments(project_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    project = crud.get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return crud.get_project_assignments(db, project_id)
+
+
+@app.post("/api/projects/{project_id}/assignments", response_model=schemas.ProjectAssignmentResponse)
+def assign_user_to_project(
+    project_id: str,
+    req: schemas.ProjectAssignmentCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    project = crud.get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    target_user = db.query(User).filter(User.id == req.user_id, User.is_deleted == False).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    assignment = crud.create_project_assignment(db, project_id=project_id, user_id=req.user_id)
+    crud.log_detailed_activity(
+        db, current_user.id, "ProjectAssignment", "create", assignment.id,
+        f"Assigned user '{target_user.full_name}' to project '{project.name}'"
+    )
+    return assignment
+
+
+@app.delete("/api/projects/{project_id}/assignments/{user_id}")
+def unassign_user_from_project(
+    project_id: str,
+    user_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    project = crud.get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    success = crud.delete_project_assignment(db, project_id=project_id, user_id=user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    crud.log_detailed_activity(
+        db, current_user.id, "ProjectAssignment", "delete", None,
+        f"Removed user ID {user_id} assignment from project '{project.name}'"
+    )
+    return {"status": "success", "message": "User unassigned from project"}
+
+
 # --- MATERIAL REQUESTS ---
 @app.get("/api/requests", response_model=List[schemas.MaterialRequestResponse])
 def read_requests(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
     return crud.get_material_requests(db)
 
 @app.post("/api/requests", response_model=schemas.MaterialRequestResponse)
-def create_request(req_in: schemas.MaterialRequestCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
+def create_request(req_in: schemas.MaterialRequestCreate, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
     item = crud.get_inventory_item(db, req_in.inventory_id)
     if not item:
         raise HTTPException(status_code=404, detail="Inventory item not found")
-    return crud.create_material_request(db=db, req=req_in, user_id=current_user.id)
+    ip_addr = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    return crud.create_material_request(db=db, req=req_in, user_id=current_user.id, ip_address=ip_addr, device=user_agent)
 
 @app.put("/api/requests/{request_id}/status", response_model=schemas.MaterialRequestResponse)
 def update_request_status(
@@ -979,7 +1393,16 @@ def restore_staff(staff_id: str, db: Session = Depends(get_db), current_user: Us
 
 @app.get("/api/attendance", response_model=List[schemas.AttendanceResponse])
 def read_attendance(target_date: Optional[date] = Query(None), db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
-    return crud.get_attendance(db, target_date)
+    if current_user.role in ["worker", "operator", "carpenter"]:
+        staff_member = db.query(Staff).filter(Staff.user_id == current_user.id, Staff.is_deleted == False).first()
+        if not staff_member:
+            return []
+        query = db.query(Attendance).filter(Attendance.staff_id == staff_member.id)
+        if target_date:
+            query = query.filter(Attendance.date == target_date)
+        return query.all()
+    else:
+        return crud.get_attendance(db, target_date)
 
 @app.post("/api/attendance", response_model=schemas.AttendanceResponse)
 def log_staff_attendance(att_in: schemas.AttendanceCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
@@ -987,6 +1410,507 @@ def log_staff_attendance(att_in: schemas.AttendanceCreate, db: Session = Depends
     if not staff:
         raise HTTPException(status_code=404, detail="Staff member not found")
     return crud.log_attendance(db=db, att=att_in)
+ 
+@app.put("/api/attendance/{attendance_id}", response_model=schemas.AttendanceResponse)
+def correct_attendance(
+    attendance_id: str,
+    correction: schemas.AttendanceCorrection,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    attendance = db.query(Attendance).filter(Attendance.id == attendance_id).first()
+    if not attendance:
+        raise HTTPException(status_code=404, detail="Attendance record not found")
+        
+    old_values = {
+        "status": attendance.status,
+        "check_in": attendance.check_in,
+        "check_out": attendance.check_out,
+        "total_hours": attendance.total_hours,
+        "overtime_hours": attendance.overtime_hours
+    }
+    
+    changes = []
+    if correction.status is not None:
+        if correction.status != attendance.status:
+            changes.append(f"status: {attendance.status} -> {correction.status}")
+            attendance.status = correction.status
+            
+    if correction.check_in is not None:
+        if correction.check_in != attendance.check_in:
+            changes.append(f"check_in: {attendance.check_in} -> {correction.check_in}")
+            attendance.check_in = correction.check_in
+            
+    if correction.check_out is not None:
+        if correction.check_out != attendance.check_out:
+            changes.append(f"check_out: {attendance.check_out} -> {correction.check_out}")
+            attendance.check_out = correction.check_out
+            
+    if correction.total_hours is not None:
+        if correction.total_hours != attendance.total_hours:
+            changes.append(f"total_hours: {attendance.total_hours} -> {correction.total_hours}")
+            attendance.total_hours = correction.total_hours
+            
+    if correction.overtime_hours is not None:
+        if correction.overtime_hours != attendance.overtime_hours:
+            changes.append(f"overtime_hours: {attendance.overtime_hours} -> {correction.overtime_hours}")
+            attendance.overtime_hours = correction.overtime_hours
+            
+    if not changes:
+        return attendance
+        
+    # Re-calculate timing rules if times changed and total_hours/overtime were not explicitly set
+    if (correction.check_in is not None or correction.check_out is not None) and (correction.total_hours is None and correction.overtime_hours is None):
+        try:
+            if attendance.check_in:
+                attendance.late_arrival = attendance.check_in > "09:30"
+            if attendance.check_in and attendance.check_out:
+                in_h, in_m = map(int, attendance.check_in.split(":"))
+                out_h, out_m = map(int, attendance.check_out.split(":"))
+                in_total = in_h * 60 + in_m
+                out_total = out_h * 60 + out_m
+                diff = out_total - in_total
+                attendance.total_hours = max(0.0, round(diff / 60.0, 2))
+                attendance.early_departure = attendance.check_out < "18:00"
+                if attendance.check_out > "18:00":
+                    limit_total = 18 * 60
+                    ot_diff = out_total - limit_total
+                    attendance.overtime_hours = max(0.0, round(ot_diff / 60.0, 2))
+                else:
+                    attendance.overtime_hours = 0.0
+                
+                if correction.status is None:
+                    if attendance.total_hours < 4.0:
+                        attendance.status = "half_day"
+                    else:
+                        attendance.status = "present"
+        except Exception:
+            pass
+            
+    db.commit()
+    db.refresh(attendance)
+    
+    employee_name = attendance.staff_member.name if attendance.staff_member else "Unknown"
+    log_msg = f"Admin corrected attendance for {employee_name} on {attendance.date}: {', '.join(changes)}"
+    crud.log_detailed_activity(
+        db, current_user.id, "Attendance", "correct", attendance.id, log_msg
+    )
+    
+    return attendance
+
+@app.post("/api/attendance/check-in", response_model=schemas.AttendanceResponse)
+def check_in(
+    request: Request,
+    req: Optional[schemas.CheckInRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    if current_user.role not in ["admin", "factory_manager", "project_manager", "manager"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Non-managerial staff must use the Webcam Selfie Check-In endpoint."
+        )
+
+    staff_member = db.query(Staff).filter(Staff.user_id == current_user.id, Staff.is_deleted == False).first()
+    if not staff_member:
+        raise HTTPException(status_code=400, detail="Your user account is not linked to a staff record. Please contact Super Admin to link your account.")
+    
+    device = req.device if req else None
+    ip_address = req.ip_address if req else None
+    device_fingerprint = req.device_fingerprint if req else None
+    browser_details = req.browser_details if req else None
+    
+    now = datetime.now()
+    date_val = (req.custom_date if req and req.custom_date else now.date())
+    time_str = (req.custom_time if req and req.custom_time else now.strftime("%H:%M"))
+    
+    try:
+        attendance = crud.attendance_check_in(
+            db=db,
+            staff_id=staff_member.id,
+            date_val=date_val,
+            time_str=time_str,
+            device=device,
+            ip_address=ip_address,
+            device_fingerprint=device_fingerprint,
+            browser_details=browser_details
+        )
+        
+        ip_addr = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
+        
+        crud.log_detailed_activity(
+            db, current_user.id, "Attendance", "check_in", attendance.id,
+            f"Checked in today at {time_str} using {device or 'unknown'}",
+            ip_address=ip_addr, device=user_agent
+        )
+        return attendance
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+ 
+ 
+@app.post("/api/attendance/check-out", response_model=schemas.AttendanceResponse)
+def check_out(
+    request: Request,
+    req: Optional[schemas.CheckOutRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    if current_user.role not in ["admin", "factory_manager", "project_manager", "manager"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Non-managerial staff must use the Webcam Selfie Check-Out endpoint."
+        )
+
+    staff_member = db.query(Staff).filter(Staff.user_id == current_user.id, Staff.is_deleted == False).first()
+    if not staff_member:
+        raise HTTPException(status_code=400, detail="Your user account is not linked to a staff record. Please contact Super Admin to link your account.")
+        
+    device = req.device if req else None
+    ip_address = req.ip_address if req else None
+    device_fingerprint = req.device_fingerprint if req else None
+    browser_details = req.browser_details if req else None
+    
+    now = datetime.now()
+    date_val = (req.custom_date if req and req.custom_date else now.date())
+    time_str = (req.custom_time if req and req.custom_time else now.strftime("%H:%M"))
+    
+    try:
+        attendance = crud.attendance_check_out(
+            db=db,
+            staff_id=staff_member.id,
+            date_val=date_val,
+            time_str=time_str,
+            device=device,
+            ip_address=ip_address,
+            device_fingerprint=device_fingerprint,
+            browser_details=browser_details,
+            project_id=req.project_id if req else None,
+            task=req.task if req else None,
+            work_photo=req.work_photo if req else None,
+            remarks=req.remarks if req else None,
+            progress_percentage=req.progress_percentage if req else None
+        )
+        
+        ip_addr = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
+        
+        crud.log_detailed_activity(
+            db, current_user.id, "Attendance", "check_out", attendance.id,
+            f"Checked out today at {time_str}. Total hours: {attendance.total_hours}, Overtime: {attendance.overtime_hours}",
+            ip_address=ip_addr, device=user_agent
+        )
+        return attendance
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/attendance/status")
+def get_attendance_status(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    staff_member = db.query(Staff).filter(Staff.user_id == current_user.id, Staff.is_deleted == False).first()
+    if not staff_member:
+        return {"checked_in": False, "checked_out": False, "attendance": None}
+        
+    today = date.today()
+    attendance = db.query(Attendance).filter(
+        Attendance.staff_id == staff_member.id,
+        Attendance.date == today
+    ).first()
+    
+    if not attendance:
+        return {"checked_in": False, "checked_out": False, "attendance": None}
+        
+    return {
+        "checked_in": attendance.check_in is not None,
+        "checked_out": attendance.check_out is not None,
+        "attendance": {
+            "id": attendance.id,
+            "date": attendance.date.isoformat(),
+            "status": attendance.status,
+            "check_in": attendance.check_in,
+            "check_out": attendance.check_out,
+            "total_hours": attendance.total_hours,
+            "overtime_hours": attendance.overtime_hours,
+            "late_arrival": attendance.late_arrival,
+            "early_departure": attendance.early_departure,
+            "check_in_selfie": attendance.check_in_selfie,
+            "check_out_selfie": attendance.check_out_selfie
+        }
+    }
+@app.post("/api/attendance/selfie-check-in", response_model=schemas.AttendanceResponse)
+async def selfie_check_in(
+    request: Request,
+    file: UploadFile = File(...),
+    device: Optional[str] = Form(None),
+    ip_address: Optional[str] = Form(None),
+    device_fingerprint: Optional[str] = Form(None),
+    browser_details: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    staff_member = db.query(Staff).filter(Staff.user_id == current_user.id, Staff.is_deleted == False).first()
+    if not staff_member:
+        raise HTTPException(status_code=400, detail="Your user account is not linked to a staff record. Please contact Super Admin to link your account.")
+        
+    now = datetime.now()
+    today = now.date()
+    
+    existing = db.query(Attendance).filter(
+        Attendance.staff_id == staff_member.id,
+        Attendance.date == today
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Already checked in today")
+        
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Selfie upload must be an image file.")
+        
+    file_ext = os.path.splitext(file.filename)[1]
+    if not file_ext or len(file_ext) > 5:
+        file_ext = ".jpg"
+    safe_filename = f"check_in_{uuid.uuid4()}{file_ext}"
+    dest_path = os.path.join(UPLOAD_DIR, "selfies", safe_filename)
+    
+    try:
+        with open(dest_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save check-in selfie: {str(e)}")
+        
+    time_str = now.strftime("%H:%M")
+    
+    if not ip_address:
+        ip_address = request.client.host if request.client else None
+    if not browser_details:
+        browser_details = request.headers.get("user-agent")
+
+    try:
+        attendance = crud.attendance_check_in(
+            db=db,
+            staff_id=staff_member.id,
+            date_val=today,
+            time_str=time_str,
+            device=device,
+            ip_address=ip_address,
+            device_fingerprint=device_fingerprint,
+            browser_details=browser_details
+        )
+        attendance.check_in_selfie = f"/uploads/selfies/{safe_filename}"
+        db.commit()
+        db.refresh(attendance)
+        
+        crud.log_detailed_activity(
+            db, current_user.id, "Attendance", "selfie_check_in", attendance.id,
+            f"Selfie checked in today at {time_str} using {device or 'unknown'}",
+            ip_address=ip_address, device=browser_details
+        )
+        return attendance
+    except ValueError as e:
+        if os.path.exists(dest_path):
+            os.remove(dest_path)
+        raise HTTPException(status_code=400, detail=str(e))
+ 
+ 
+@app.post("/api/attendance/selfie-check-out", response_model=schemas.AttendanceResponse)
+async def selfie_check_out(
+    request: Request,
+    file: UploadFile = File(...),
+    work_photo: Optional[UploadFile] = File(None),
+    project_id: Optional[str] = Form(None),
+    task: Optional[str] = Form(None),
+    remarks: Optional[str] = Form(None),
+    progress_percentage: Optional[int] = Form(None),
+    device: Optional[str] = Form(None),
+    ip_address: Optional[str] = Form(None),
+    device_fingerprint: Optional[str] = Form(None),
+    browser_details: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    staff_member = db.query(Staff).filter(Staff.user_id == current_user.id, Staff.is_deleted == False).first()
+    if not staff_member:
+        raise HTTPException(status_code=400, detail="Your user account is not linked to a staff record. Please contact Super Admin to link your account.")
+        
+    now = datetime.now()
+    today = now.date()
+    
+    attendance = db.query(Attendance).filter(
+        Attendance.staff_id == staff_member.id,
+        Attendance.date == today
+    ).first()
+    if not attendance or not attendance.check_in:
+        raise HTTPException(status_code=400, detail="Must check in first before checking out.")
+        
+    if attendance.check_out:
+        raise HTTPException(status_code=400, detail="Already checked out today.")
+        
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Selfie upload must be an image file.")
+        
+    file_ext = os.path.splitext(file.filename)[1]
+    if not file_ext or len(file_ext) > 5:
+        file_ext = ".jpg"
+    safe_filename = f"check_out_{uuid.uuid4()}{file_ext}"
+    dest_path = os.path.join(UPLOAD_DIR, "selfies", safe_filename)
+    
+    try:
+        with open(dest_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save check-out selfie: {str(e)}")
+        
+    work_photo_url = None
+    if work_photo and work_photo.filename:
+        w_ext = os.path.splitext(work_photo.filename)[1]
+        if not w_ext or len(w_ext) > 5:
+            w_ext = ".jpg"
+        w_filename = f"work_{uuid.uuid4()}{w_ext}"
+        w_dest_path = os.path.join(UPLOAD_DIR, "selfies", w_filename)
+        try:
+            with open(w_dest_path, "wb") as f:
+                shutil.copyfileobj(work_photo.file, f)
+            work_photo_url = f"/uploads/selfies/{w_filename}"
+        except Exception as e:
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
+            raise HTTPException(status_code=500, detail=f"Failed to save work photo: {str(e)}")
+            
+    time_str = now.strftime("%H:%M")
+    
+    if not ip_address:
+        ip_address = request.client.host if request.client else None
+    if not browser_details:
+        browser_details = request.headers.get("user-agent")
+
+    try:
+        attendance = crud.attendance_check_out(
+            db=db,
+            staff_id=staff_member.id,
+            date_val=today,
+            time_str=time_str,
+            device=device,
+            ip_address=ip_address,
+            device_fingerprint=device_fingerprint,
+            browser_details=browser_details,
+            project_id=project_id,
+            task=task,
+            work_photo=work_photo_url,
+            remarks=remarks,
+            progress_percentage=progress_percentage
+        )
+        attendance.check_out_selfie = f"/uploads/selfies/{safe_filename}"
+        db.commit()
+        db.refresh(attendance)
+        
+        crud.log_detailed_activity(
+            db, current_user.id, "Attendance", "selfie_check_out", attendance.id,
+            f"Selfie checked out today at {time_str}",
+            ip_address=ip_address, device=browser_details
+        )
+        return attendance
+    except ValueError as e:
+        if os.path.exists(dest_path):
+            os.remove(dest_path)
+        if work_photo_url:
+            w_path = os.path.join(UPLOAD_DIR, "selfies", os.path.basename(work_photo_url))
+            if os.path.exists(w_path):
+                os.remove(w_path)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/work-logs/form", response_model=schemas.DailyWorkLogResponse)
+async def create_work_log_form(
+    request: Request,
+    project_id: str = Form(...),
+    task: str = Form(...),
+    hours_worked: float = Form(...),
+    progress_percentage: int = Form(...),
+    remarks: Optional[str] = Form(None),
+    work_photo: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    project = crud.get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    if current_user.role not in ["admin", "factory_manager"]:
+        assigned_ids = crud.get_user_project_ids(db, current_user.id)
+        if project_id not in assigned_ids:
+            raise HTTPException(status_code=403, detail="You are not assigned to this project")
+            
+    # Validate fields (as in DailyWorkLogCreate)
+    if hours_worked <= 0 or hours_worked > 24:
+        raise HTTPException(status_code=400, detail="hours_worked must be between 0.1 and 24.0")
+    if progress_percentage < 0 or progress_percentage > 100:
+        raise HTTPException(status_code=400, detail="progress_percentage must be between 0 and 100")
+        
+    work_photo_url = None
+    if work_photo and work_photo.filename:
+        file_ext = os.path.splitext(work_photo.filename)[1]
+        if not file_ext or len(file_ext) > 5:
+            file_ext = ".jpg"
+        w_filename = f"work_{uuid.uuid4()}{file_ext}"
+        w_dest_path = os.path.join(UPLOAD_DIR, "selfies", w_filename)
+        try:
+            with open(w_dest_path, "wb") as f:
+                shutil.copyfileobj(work_photo.file, f)
+            work_photo_url = f"/uploads/selfies/{w_filename}"
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save work photo: {str(e)}")
+            
+    log = crud.create_daily_work_log(
+        db=db,
+        user_id=current_user.id,
+        project_id=project_id,
+        task=task,
+        hours_worked=hours_worked,
+        progress_percentage=progress_percentage,
+        remarks=remarks,
+        work_photo=work_photo_url
+    )
+    
+    ip_addr = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    
+    crud.log_detailed_activity(
+        db, current_user.id, "WorkLog", "create", log.id,
+        f"Submitted work log for project: {project.name}, task: {task}",
+        ip_address=ip_addr, device=user_agent
+    )
+    return log
+def create_work_log(log_in: schemas.DailyWorkLogCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    project = crud.get_project(db, log_in.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    if current_user.role in ["worker", "operator", "carpenter", "manager"]:
+        if current_user.role != "admin":
+            assigned_ids = crud.get_user_project_ids(db, current_user.id)
+            if log_in.project_id not in assigned_ids:
+                raise HTTPException(status_code=403, detail="You are not assigned to this project")
+                 
+    log = crud.create_daily_work_log(
+        db=db,
+        user_id=current_user.id,
+        project_id=log_in.project_id,
+        task=log_in.task,
+        hours_worked=log_in.hours_worked,
+        progress_percentage=log_in.progress_percentage,
+        remarks=log_in.remarks
+    )
+    crud.log_detailed_activity(
+        db, current_user.id, "DailyWorkLog", "create", log.id,
+        f"Submitted work log for project '{project.name}': {log_in.task} ({log_in.hours_worked} hrs, {log_in.progress_percentage}%)"
+    )
+    return log
+
+
+@app.get("/api/work-logs", response_model=List[schemas.DailyWorkLogResponse])
+def get_work_logs(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    if current_user.role in ["worker", "operator", "carpenter"]:
+        return crud.get_daily_work_logs(db, user_id=current_user.id)
+    else:
+        return crud.get_daily_work_logs(db)
 
 
 # --- NOTIFICATION MODULE ---
@@ -1177,6 +2101,11 @@ def get_dashboard_overview(db: Session = Depends(get_db), current_user: User = D
     present_employees = sum(1 for a in attendance_today if a.status == "present")
     absent_employees = sum(1 for a in attendance_today if a.status == "absent")
 
+    # Expenses Today
+    expenses_today = db.query(func.sum(DailyExpense.amount)).filter(
+        DailyExpense.expense_date == today,
+        DailyExpense.is_deleted == False
+    ).scalar() or 0.0
     
     return {
         "inventory_total_value": total_val,
@@ -1192,7 +2121,8 @@ def get_dashboard_overview(db: Session = Depends(get_db), current_user: User = D
         "open_pos_count": open_pos,
         "pending_deliveries_count": pending_deliveries,
         "present_employees_count": present_employees,
-        "absent_employees_count": absent_employees
+        "absent_employees_count": absent_employees,
+        "today_expense_total": expenses_today
     }
 
 @app.get("/api/dashboard/charts")
@@ -1201,10 +2131,27 @@ def get_dashboard_charts(db: Session = Depends(get_db), current_user: User = Dep
     weekly_movement = []
     for i in range(6, -1, -1):
         day = datetime.utcnow().date() - timedelta(days=i)
+        start_datetime = datetime(day.year, day.month, day.day, 0, 0, 0)
+        end_datetime = datetime(day.year, day.month, day.day, 23, 59, 59)
+        
+        # Received: Stock inward transactions (in, return, adjustment > 0)
+        received = db.query(func.sum(StockTransaction.quantity)).filter(
+            StockTransaction.created_at >= start_datetime,
+            StockTransaction.created_at <= end_datetime,
+            StockTransaction.transaction_type.in_(["in", "return", "adjustment"])
+        ).scalar() or 0.0
+        
+        # Issued: Stock outward transactions (out, damaged, transfer)
+        issued = db.query(func.sum(StockTransaction.quantity)).filter(
+            StockTransaction.created_at >= start_datetime,
+            StockTransaction.created_at <= end_datetime,
+            StockTransaction.transaction_type.in_(["out", "damaged", "transfer"])
+        ).scalar() or 0.0
+        
         weekly_movement.append({
             "name": day.strftime("%a"),
-            "received": 0.0,
-            "issued": 0.0
+            "received": float(received),
+            "issued": float(issued)
         })
         
     # Categories allocation
@@ -1224,10 +2171,29 @@ def get_dashboard_charts(db: Session = Depends(get_db), current_user: User = Dep
     # Monthly Purchases Cost trends
     monthly_purchase = []
     for i in range(5, -1, -1):
-        target_month = datetime.utcnow() - timedelta(days=i*30)
+        today = datetime.utcnow().date()
+        target_year = today.year
+        target_month_num = today.month - i
+        while target_month_num <= 0:
+            target_month_num += 12
+            target_year -= 1
+            
+        start_datetime = datetime(target_year, target_month_num, 1, 0, 0, 0)
+        if target_month_num == 12:
+            end_datetime = datetime(target_year + 1, 1, 1, 0, 0, 0)
+        else:
+            end_datetime = datetime(target_year, target_month_num + 1, 1, 0, 0, 0)
+            
+        total_cost = db.query(func.sum(PurchaseOrder.total_cost)).filter(
+            PurchaseOrder.created_at >= start_datetime,
+            PurchaseOrder.created_at < end_datetime,
+            PurchaseOrder.is_deleted == False
+        ).scalar() or 0.0
+        
+        month_name = start_datetime.strftime("%b")
         monthly_purchase.append({
-            "name": target_month.strftime("%b"),
-            "cost": 0.0
+            "name": month_name,
+            "cost": float(total_cost)
         })
         
     # Suppliers evaluations scorecards
@@ -1298,7 +2264,7 @@ def get_barcode_pdf(item_id: str, db: Session = Depends(get_db), current_user: U
 
 # --- REPORTING ENGINE (PDF / EXCEL / CSV) ---
 @app.get("/api/reports/inventory/csv")
-def download_inventory_report_csv(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+def download_inventory_report_csv(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
     items = db.query(InventoryItem).filter(InventoryItem.is_deleted == False).all()
     output = io.StringIO()
     writer = csv.writer(output)
@@ -1319,7 +2285,7 @@ def download_inventory_report_csv(db: Session = Depends(get_db), current_user: U
     )
 
 @app.get("/api/reports/inventory/excel")
-def download_inventory_report_excel(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+def download_inventory_report_excel(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
     items = db.query(InventoryItem).filter(InventoryItem.is_deleted == False).all()
     wb = Workbook()
     ws = wb.active
@@ -1370,7 +2336,7 @@ def download_inventory_report_excel(db: Session = Depends(get_db), current_user:
     )
 
 @app.get("/api/reports/inventory/pdf")
-def download_inventory_report_pdf(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+def download_inventory_report_pdf(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
     items = db.query(InventoryItem).filter(InventoryItem.is_deleted == False).all()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
@@ -1421,7 +2387,7 @@ def download_inventory_report_pdf(db: Session = Depends(get_db), current_user: U
     )
 
 @app.get("/api/reports/projects/csv")
-def download_projects_report_csv(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+def download_projects_report_csv(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
     projects = db.query(Project).filter(Project.is_deleted == False).all()
     output = io.StringIO()
     writer = csv.writer(output)
@@ -1442,7 +2408,7 @@ def download_projects_report_csv(db: Session = Depends(get_db), current_user: Us
     )
 
 @app.get("/api/reports/purchasing/csv")
-def download_purchasing_report_csv(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+def download_purchasing_report_csv(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
     pos = db.query(PurchaseOrder).filter(PurchaseOrder.is_deleted == False).all()
     output = io.StringIO()
     writer = csv.writer(output)
@@ -1460,6 +2426,188 @@ def download_purchasing_report_csv(db: Session = Depends(get_db), current_user: 
         io.BytesIO(output.getvalue().encode("utf-8")),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=purchasing_report.csv"}
+    )
+
+@app.get("/api/reports/purchasing/excel")
+def download_purchasing_report_excel(
+    range_type: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_report_access)
+):
+    now = datetime.now()
+    if range_type == "daily":
+        s_date = start_date or now.date()
+        e_date = end_date or now.date()
+    elif range_type == "weekly":
+        s_date = start_date or (now - timedelta(days=7)).date()
+        e_date = end_date or now.date()
+    elif range_type == "monthly":
+        s_date = start_date or (now - timedelta(days=30)).date()
+        e_date = end_date or now.date()
+    else:
+        s_date = start_date
+        e_date = end_date
+
+    query = db.query(PurchaseOrder).filter(PurchaseOrder.is_deleted == False)
+    if category:
+        query = query.filter(PurchaseOrder.category == category)
+    if s_date:
+        query = query.filter(PurchaseOrder.created_at >= datetime.combine(s_date, datetime.min.time()))
+    if e_date:
+        query = query.filter(PurchaseOrder.created_at <= datetime.combine(e_date, datetime.max.time()))
+    pos = query.order_by(PurchaseOrder.created_at.desc()).all()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Purchasing Expense Log"
+    ws.views.sheetView[0].showGridLines = True
+    
+    headers = ["PO Number", "Supplier", "Material Ordered", "Category", "Quantity", "Unit Cost ($)", "Total Cost ($)", "Status", "Created At"]
+    ws.append(headers)
+    
+    header_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
+    header_font = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
+    for col in range(1, 10):
+        cell = ws.cell(row=1, column=col)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        
+    row_num = 2
+    grand_total = 0.0
+    for po in pos:
+        supplier_name = po.supplier.name if po.supplier else "N/A"
+        item_name = po.inventory.name if po.inventory else "N/A"
+        ws.append([
+            po.po_number,
+            supplier_name,
+            item_name,
+            po.category,
+            po.quantity,
+            po.unit_cost,
+            po.total_cost,
+            po.status,
+            po.created_at.strftime("%Y-%m-%d %H:%M")
+        ])
+        grand_total += po.total_cost
+        for col in range(1, 10):
+            cell = ws.cell(row=row_num, column=col)
+            cell.font = Font(name="Segoe UI", size=10)
+            if col in [5, 6, 7]:
+                cell.number_format = '0.00'
+                cell.alignment = Alignment(horizontal="right")
+            elif col in [1, 8, 9]:
+                cell.alignment = Alignment(horizontal="center")
+        row_num += 1
+
+    # Append total row
+    ws.append([])
+    ws.append(["Grand Total", "", "", "", "", "", grand_total])
+    total_row = row_num + 1
+    ws.cell(row=total_row, column=1).font = Font(name="Segoe UI", size=11, bold=True)
+    ws.cell(row=total_row, column=7).font = Font(name="Segoe UI", size=11, bold=True)
+    ws.cell(row=total_row, column=7).number_format = '0.00'
+    ws.cell(row=total_row, column=7).alignment = Alignment(horizontal="right")
+        
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = max(max_len + 3, 12)
+        
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=purchasing_report.xlsx"}
+    )
+
+@app.get("/api/reports/purchasing/pdf")
+def download_purchasing_report_pdf(
+    range_type: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_report_access)
+):
+    now = datetime.now()
+    if range_type == "daily":
+        s_date = start_date or now.date()
+        e_date = end_date or now.date()
+    elif range_type == "weekly":
+        s_date = start_date or (now - timedelta(days=7)).date()
+        e_date = end_date or now.date()
+    elif range_type == "monthly":
+        s_date = start_date or (now - timedelta(days=30)).date()
+        e_date = end_date or now.date()
+    else:
+        s_date = start_date
+        e_date = end_date
+
+    query = db.query(PurchaseOrder).filter(PurchaseOrder.is_deleted == False)
+    if category:
+        query = query.filter(PurchaseOrder.category == category)
+    if s_date:
+        query = query.filter(PurchaseOrder.created_at >= datetime.combine(s_date, datetime.min.time()))
+    if e_date:
+        query = query.filter(PurchaseOrder.created_at <= datetime.combine(e_date, datetime.max.time()))
+    pos = query.order_by(PurchaseOrder.created_at.desc()).all()
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    story = []
+    
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'DocTitle', parent=styles['Heading1'], fontSize=16, leading=20, alignment=1, textColor=colors.HexColor('#4f46e5')
+    )
+    story.append(Paragraph("Allure Living ERP - Purchasing Expense Report", title_style))
+    story.append(Spacer(1, 12))
+    
+    data = [["PO Number", "Supplier", "Material", "Category", "Qty", "Cost", "Total", "Status"]]
+    grand_total = 0.0
+    for po in pos:
+        supplier_name = po.supplier.name if po.supplier else "N/A"
+        item_name = po.inventory.name if po.inventory else "N/A"
+        grand_total += po.total_cost
+        data.append([
+            po.po_number,
+            supplier_name[:15],
+            item_name[:15],
+            po.category,
+            f"{po.quantity:.1f}",
+            f"${po.unit_cost:.2f}",
+            f"${po.total_cost:.2f}",
+            po.status.title()
+        ])
+    data.append(["Grand Total", "", "", "", "", "", f"${grand_total:.2f}", ""])
+        
+    table = Table(data, colWidths=[90, 85, 85, 75, 40, 50, 60, 55])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#4f46e5')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,0), 9),
+        ('BOTTOMPADDING', (0,0), (-1,0), 7),
+        ('BACKGROUND', (0,1), (-1,-2), colors.HexColor('#f8fafc')),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
+        ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
+        ('FONTSIZE', (0,1), (-1,-1), 8),
+        ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
+        ('ALIGN', (1,1), (2,-2), 'LEFT'),
+    ]))
+    story.append(table)
+    doc.build(story)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=purchasing_report.pdf"}
     )
 
 
@@ -1544,7 +2692,7 @@ def get_login_history(limit: int = 50, db: Session = Depends(get_db), current_us
 
 # --- PROJECT REPORTS (PDF + EXCEL) ---
 @app.get("/api/reports/projects/excel")
-def download_projects_report_excel(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+def download_projects_report_excel(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
     projects = db.query(Project).filter(Project.is_deleted == False).all()
     wb = Workbook()
     ws = wb.active
@@ -1594,7 +2742,7 @@ def download_projects_report_excel(db: Session = Depends(get_db), current_user: 
 
 
 @app.get("/api/reports/projects/pdf")
-def download_projects_report_pdf(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+def download_projects_report_pdf(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
     projects = db.query(Project).filter(Project.is_deleted == False).all()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
@@ -1645,3 +2793,2092 @@ def download_projects_report_pdf(db: Session = Depends(get_db), current_user: Us
         media_type="application/pdf",
         headers={"Content-Disposition": "attachment; filename=allure_projects_report.pdf"}
     )
+
+
+# --- ADDITIONAL REPORTING ENDPOINTS ---
+@app.get("/api/reports/attendance/csv")
+def download_attendance_report_csv(
+    report_type: Optional[str] = Query(None),
+    target_date: Optional[date] = Query(None),
+    month: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    staff_id: Optional[str] = Query(None),
+    year: Optional[int] = Query(None),
+    week: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_report_access)
+):
+    query = db.query(Attendance).join(Staff).outerjoin(User, Staff.user_id == User.id).filter(Staff.is_deleted == False).order_by(Attendance.date.desc())
+    if department:
+        query = query.filter(User.department == department)
+    if project_id:
+        query = query.filter(Attendance.project_id == project_id)
+    if staff_id:
+        query = query.filter(Attendance.staff_id == staff_id)
+    if year:
+        query = query.filter(func.strftime("%Y", Attendance.date) == str(year))
+    if week:
+        week_str = f"{int(week):02d}"
+        query = query.filter(func.strftime("%W", Attendance.date) == week_str)
+        
+    records = query.all()
+    
+    filtered_records = []
+    for r in records:
+        if target_date and r.date != target_date:
+            continue
+        if month and r.date.strftime("%Y-%m") != month:
+            continue
+            
+        if report_type == "daily":
+            t_date = target_date or date.today()
+            if r.date != t_date:
+                continue
+        elif report_type == "monthly":
+            cur_month = month or date.today().strftime("%Y-%m")
+            if r.date.strftime("%Y-%m") != cur_month:
+                continue
+        elif report_type == "late_arrival":
+            if not r.late_arrival:
+                continue
+        elif report_type == "leave":
+            if r.status != "leave":
+                continue
+        elif report_type == "overtime":
+            if not r.overtime_hours or r.overtime_hours <= 0:
+                continue
+                
+        filtered_records.append(r)
+        
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Date", "Employee Name", "Role", "Status", "Check In", "Check Out", "Total Hours", "Overtime Hours", "Late Arrival", "Early Departure", "Device", "IP Address", "Check In Selfie", "Check Out Selfie"])
+    for r in filtered_records:
+        writer.writerow([
+            r.date.strftime("%Y-%m-%d"),
+            r.staff_member.name,
+            r.staff_member.role,
+            r.status,
+            r.check_in or "-",
+            r.check_out or "-",
+            r.total_hours,
+            r.overtime_hours,
+            "Yes" if r.late_arrival else "No",
+            "Yes" if r.early_departure else "No",
+            r.device or "-",
+            r.ip_address or "-",
+            r.check_in_selfie or "-",
+            r.check_out_selfie or "-"
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode("utf-8")),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=attendance_report.csv"}
+    )
+
+
+@app.get("/api/reports/attendance/excel")
+def download_attendance_report_excel(
+    report_type: Optional[str] = Query(None),
+    target_date: Optional[date] = Query(None),
+    month: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    staff_id: Optional[str] = Query(None),
+    year: Optional[int] = Query(None),
+    week: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_report_access)
+):
+    query = db.query(Attendance).join(Staff).outerjoin(User, Staff.user_id == User.id).filter(Staff.is_deleted == False).order_by(Attendance.date.desc())
+    if department:
+        query = query.filter(User.department == department)
+    if project_id:
+        query = query.filter(Attendance.project_id == project_id)
+    if staff_id:
+        query = query.filter(Attendance.staff_id == staff_id)
+    if year:
+        query = query.filter(func.strftime("%Y", Attendance.date) == str(year))
+    if week:
+        week_str = f"{int(week):02d}"
+        query = query.filter(func.strftime("%W", Attendance.date) == week_str)
+        
+    records = query.all()
+    
+    filtered_records = []
+    for r in records:
+        if target_date and r.date != target_date:
+            continue
+        if month and r.date.strftime("%Y-%m") != month:
+            continue
+            
+        if report_type == "daily":
+            t_date = target_date or date.today()
+            if r.date != t_date:
+                continue
+        elif report_type == "monthly":
+            cur_month = month or date.today().strftime("%Y-%m")
+            if r.date.strftime("%Y-%m") != cur_month:
+                continue
+        elif report_type == "late_arrival":
+            if not r.late_arrival:
+                continue
+        elif report_type == "leave":
+            if r.status != "leave":
+                continue
+        elif report_type == "overtime":
+            if not r.overtime_hours or r.overtime_hours <= 0:
+                continue
+                
+        filtered_records.append(r)
+        
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Attendance Log"
+    ws.views.sheetView[0].showGridLines = True
+    
+    headers = ["Date", "Employee Name", "Role", "Status", "Check In", "Check Out", "Total Hours", "Overtime Hours", "Late Arrival", "Early Departure", "Device", "IP Address", "Check In Selfie", "Check Out Selfie"]
+    ws.append(headers)
+    
+    header_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
+    header_font = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
+    for col in range(1, 15):
+        cell = ws.cell(row=1, column=col)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        
+    row_num = 2
+    for r in filtered_records:
+        ws.append([
+            r.date.strftime("%Y-%m-%d"),
+            r.staff_member.name,
+            r.staff_member.role,
+            r.status,
+            r.check_in or "-",
+            r.check_out or "-",
+            r.total_hours,
+            r.overtime_hours,
+            "Yes" if r.late_arrival else "No",
+            "Yes" if r.early_departure else "No",
+            r.device or "-",
+            r.ip_address or "-",
+            r.check_in_selfie or "-",
+            r.check_out_selfie or "-"
+        ])
+        for col in range(1, 15):
+            cell = ws.cell(row=row_num, column=col)
+            cell.font = Font(name="Segoe UI", size=10)
+            if col in [7, 8]:
+                cell.number_format = '0.00'
+                cell.alignment = Alignment(horizontal="right")
+            elif col in [1, 4, 5, 6, 9, 10]:
+                cell.alignment = Alignment(horizontal="center")
+        row_num += 1
+        
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = max(max_len + 3, 12)
+        
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=attendance_report.xlsx"}
+    )
+
+
+@app.get("/api/reports/attendance/pdf")
+def download_attendance_report_pdf(
+    report_type: Optional[str] = Query(None),
+    target_date: Optional[date] = Query(None),
+    month: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    staff_id: Optional[str] = Query(None),
+    year: Optional[int] = Query(None),
+    week: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_report_access)
+):
+    query = db.query(Attendance).join(Staff).outerjoin(User, Staff.user_id == User.id).filter(Staff.is_deleted == False).order_by(Attendance.date.desc())
+    if department:
+        query = query.filter(User.department == department)
+    if project_id:
+        query = query.filter(Attendance.project_id == project_id)
+    if staff_id:
+        query = query.filter(Attendance.staff_id == staff_id)
+    if year:
+        query = query.filter(func.strftime("%Y", Attendance.date) == str(year))
+    if week:
+        week_str = f"{int(week):02d}"
+        query = query.filter(func.strftime("%W", Attendance.date) == week_str)
+        
+    records = query.all()
+    
+    filtered_records = []
+    for r in records:
+        if target_date and r.date != target_date:
+            continue
+        if month and r.date.strftime("%Y-%m") != month:
+            continue
+            
+        if report_type == "daily":
+            t_date = target_date or date.today()
+            if r.date != t_date:
+                continue
+        elif report_type == "monthly":
+            cur_month = month or date.today().strftime("%Y-%m")
+            if r.date.strftime("%Y-%m") != cur_month:
+                continue
+        elif report_type == "late_arrival":
+            if not r.late_arrival:
+                continue
+        elif report_type == "leave":
+            if r.status != "leave":
+                continue
+        elif report_type == "overtime":
+            if not r.overtime_hours or r.overtime_hours <= 0:
+                continue
+                
+        filtered_records.append(r)
+        
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    story = []
+    
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'DocTitle', parent=styles['Heading1'], fontSize=16, leading=20, alignment=1, textColor=colors.HexColor('#4f46e5')
+    )
+    story.append(Paragraph("Allure Living ERP - Attendance Report", title_style))
+    story.append(Spacer(1, 12))
+    
+    data = [["Date", "Employee", "Role", "Status", "In", "Out", "Hours", "OT", "Selfies"]]
+    for r in filtered_records:
+        selfies_status = (
+            "Both" if r.check_in_selfie and r.check_out_selfie else 
+            "In" if r.check_in_selfie else 
+            "Out" if r.check_out_selfie else 
+            "-"
+        )
+        data.append([
+            r.date.strftime("%Y-%m-%d"),
+            r.staff_member.name[:18],
+            r.staff_member.role[:15],
+            r.status.replace("_", " ").title(),
+            r.check_in or "-",
+            r.check_out or "-",
+            f"{r.total_hours:.1f}",
+            f"{r.overtime_hours:.1f}",
+            selfies_status
+        ])
+        
+    table = Table(data, colWidths=[60, 95, 80, 60, 45, 45, 40, 30, 75])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#4f46e5')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,0), 9),
+        ('BOTTOMPADDING', (0,0), (-1,0), 7),
+        ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#f8fafc')),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
+        ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
+        ('FONTSIZE', (0,1), (-1,-1), 8),
+        ('ALIGN', (1,1), (2,-1), 'LEFT'),
+    ]))
+    story.append(table)
+    doc.build(story)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=attendance_report.pdf"}
+    )
+
+
+@app.get("/api/reports/productivity/csv")
+def download_productivity_report_csv(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
+    logs = db.query(DailyWorkLog).join(User).order_by(DailyWorkLog.created_at.desc()).all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Date", "Employee Name", "Project", "Task Reported", "Hours Worked", "Progress %", "Remarks"])
+    for l in logs:
+        proj_name = l.project.name if l.project else "N/A"
+        writer.writerow([
+            l.created_at.strftime("%Y-%m-%d"),
+            l.user.full_name,
+            proj_name,
+            l.task,
+            l.hours_worked,
+            l.progress_percentage,
+            l.remarks or "-"
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode("utf-8")),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=productivity_report.csv"}
+    )
+
+
+@app.get("/api/reports/productivity/excel")
+def download_productivity_report_excel(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
+    logs = db.query(DailyWorkLog).join(User).order_by(DailyWorkLog.created_at.desc()).all()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Productivity Log"
+    ws.views.sheetView[0].showGridLines = True
+    
+    ws.append(["Date", "Employee Name", "Project", "Task Reported", "Hours Worked", "Progress %", "Remarks"])
+    
+    header_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
+    header_font = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
+    for col in range(1, 8):
+        cell = ws.cell(row=1, column=col)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        
+    row_num = 2
+    for l in logs:
+        proj_name = l.project.name if l.project else "N/A"
+        ws.append([
+            l.created_at.strftime("%Y-%m-%d"),
+            l.user.full_name,
+            proj_name,
+            l.task,
+            l.hours_worked,
+            l.progress_percentage,
+            l.remarks or "-"
+        ])
+        for col in range(1, 8):
+            cell = ws.cell(row=row_num, column=col)
+            cell.font = Font(name="Segoe UI", size=10)
+            if col == 5:
+                cell.number_format = '0.00'
+                cell.alignment = Alignment(horizontal="right")
+            elif col == 6:
+                cell.number_format = '0"%"'
+                cell.alignment = Alignment(horizontal="right")
+            elif col == 1:
+                cell.alignment = Alignment(horizontal="center")
+        row_num += 1
+        
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = max(max_len + 3, 12)
+        
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=productivity_report.xlsx"}
+    )
+
+
+@app.get("/api/reports/productivity/pdf")
+def download_productivity_report_pdf(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
+    logs = db.query(DailyWorkLog).join(User).order_by(DailyWorkLog.created_at.desc()).all()
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    story = []
+    
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'DocTitle', parent=styles['Heading1'], fontSize=16, leading=20, alignment=1, textColor=colors.HexColor('#4f46e5')
+    )
+    story.append(Paragraph("Allure Living ERP - Worker Productivity Report", title_style))
+    story.append(Spacer(1, 12))
+    
+    data = [["Date", "Employee", "Project", "Task", "Hours", "Prog %"]]
+    for l in logs:
+        proj_name = l.project.name if l.project else "N/A"
+        data.append([
+            l.created_at.strftime("%Y-%m-%d"),
+            l.user.full_name[:15],
+            proj_name[:15],
+            l.task[:30],
+            f"{l.hours_worked:.1f}",
+            f"{l.progress_percentage}%"
+        ])
+        
+    table = Table(data, colWidths=[65, 95, 95, 175, 50, 50])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#4f46e5')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,0), 9),
+        ('BOTTOMPADDING', (0,0), (-1,0), 7),
+        ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#f8fafc')),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
+        ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
+        ('FONTSIZE', (0,1), (-1,-1), 8),
+        ('ALIGN', (1,1), (3,-1), 'LEFT'),
+    ]))
+    story.append(table)
+    doc.build(story)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=productivity_report.pdf"}
+    )
+
+
+@app.get("/api/reports/progress/csv")
+def download_progress_report_csv(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
+    return download_projects_report_csv(db, current_user)
+
+
+@app.get("/api/reports/progress/excel")
+def download_progress_report_excel(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
+    return download_projects_report_excel(db, current_user)
+
+
+@app.get("/api/reports/progress/pdf")
+def download_progress_report_pdf(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
+    return download_projects_report_pdf(db, current_user)
+
+
+@app.get("/api/reports/material-requests/csv")
+def download_material_requests_report_csv(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
+    requests = db.query(MaterialRequest).filter(MaterialRequest.is_deleted == False).order_by(MaterialRequest.created_at.desc()).all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Date", "Project", "Material Name", "SKU", "Requested By", "Quantity", "Status", "Notes"])
+    for r in requests:
+        proj_name = r.project.name if r.project else "N/A"
+        mat_name = r.inventory.name if r.inventory else "N/A"
+        sku = r.inventory.sku if r.inventory else "N/A"
+        req_by = r.requester.full_name if r.requester else "N/A"
+        writer.writerow([
+            r.created_at.strftime("%Y-%m-%d %H:%M"),
+            proj_name,
+            mat_name,
+            sku,
+            req_by,
+            r.quantity,
+            r.status,
+            r.notes or "-"
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode("utf-8")),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=material_requests_report.csv"}
+    )
+
+
+@app.get("/api/reports/material-requests/excel")
+def download_material_requests_report_excel(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
+    requests = db.query(MaterialRequest).filter(MaterialRequest.is_deleted == False).order_by(MaterialRequest.created_at.desc()).all()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Material Requests"
+    ws.views.sheetView[0].showGridLines = True
+    
+    ws.append(["Date", "Project", "Material Name", "SKU", "Requested By", "Quantity", "Status", "Notes"])
+    
+    header_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
+    header_font = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
+    for col in range(1, 9):
+        cell = ws.cell(row=1, column=col)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        
+    row_num = 2
+    for r in requests:
+        proj_name = r.project.name if r.project else "N/A"
+        mat_name = r.inventory.name if r.inventory else "N/A"
+        sku = r.inventory.sku if r.inventory else "N/A"
+        req_by = r.requester.full_name if r.requester else "N/A"
+        ws.append([
+            r.created_at.strftime("%Y-%m-%d %H:%M"),
+            proj_name,
+            mat_name,
+            sku,
+            req_by,
+            r.quantity,
+            r.status,
+            r.notes or "-"
+        ])
+        for col in range(1, 9):
+            cell = ws.cell(row=row_num, column=col)
+            cell.font = Font(name="Segoe UI", size=10)
+            if col == 6:
+                cell.number_format = '#,##0.00'
+                cell.alignment = Alignment(horizontal="right")
+            elif col in [1, 4, 7]:
+                cell.alignment = Alignment(horizontal="center")
+        row_num += 1
+        
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = max(max_len + 3, 12)
+        
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=material_requests_report.xlsx"}
+    )
+
+
+@app.get("/api/reports/material-requests/pdf")
+def download_material_requests_report_pdf(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
+    requests = db.query(MaterialRequest).filter(MaterialRequest.is_deleted == False).order_by(MaterialRequest.created_at.desc()).all()
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    story = []
+    
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'DocTitle', parent=styles['Heading1'], fontSize=16, leading=20, alignment=1, textColor=colors.HexColor('#4f46e5')
+    )
+    story.append(Paragraph("Allure Living ERP - Material Requests Report", title_style))
+    story.append(Spacer(1, 12))
+    
+    data = [["Date", "Project", "Material", "SKU", "Requester", "Qty", "Status"]]
+    for r in requests:
+        proj_name = r.project.name if r.project else "N/A"
+        mat_name = r.inventory.name if r.inventory else "N/A"
+        sku = r.inventory.sku if r.inventory else "N/A"
+        req_by = r.requester.full_name if r.requester else "N/A"
+        data.append([
+            r.created_at.strftime("%Y-%m-%d"),
+            proj_name[:15],
+            mat_name[:15],
+            sku[:10],
+            req_by[:15],
+            f"{r.quantity:.1f}",
+            r.status.replace("_", " ").title()
+        ])
+        
+    table = Table(data, colWidths=[65, 95, 95, 75, 95, 50, 55])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#4f46e5')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,0), 9),
+        ('BOTTOMPADDING', (0,0), (-1,0), 7),
+        ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#f8fafc')),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
+        ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
+        ('FONTSIZE', (0,1), (-1,-1), 8),
+        ('ALIGN', (1,1), (2,-1), 'LEFT'),
+    ]))
+    story.append(table)
+    doc.build(story)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=material_requests_report.pdf"}
+    )
+
+
+# --- SHIFTS MANAGEMENT ---
+@app.get("/api/shifts", response_model=List[schemas.ShiftResponse])
+def get_shifts(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    return crud.get_shifts(db)
+
+@app.get("/api/shifts/{shift_id}", response_model=schemas.ShiftResponse)
+def get_shift(shift_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    shift = crud.get_shift(db, shift_id)
+    if not shift:
+        raise HTTPException(status_code=404, detail="Shift not found")
+    return shift
+
+@app.post("/api/shifts", response_model=schemas.ShiftResponse)
+def create_shift(shift_in: schemas.ShiftCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
+    return crud.create_shift(db, shift_in)
+
+@app.put("/api/shifts/{shift_id}", response_model=schemas.ShiftResponse)
+def update_shift(shift_id: str, shift_in: schemas.ShiftCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
+    shift = crud.update_shift(db, shift_id, shift_in)
+    if not shift:
+        raise HTTPException(status_code=404, detail="Shift not found")
+    return shift
+
+@app.delete("/api/shifts/{shift_id}")
+def delete_shift(shift_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
+    if not crud.delete_shift(db, shift_id):
+        raise HTTPException(status_code=404, detail="Shift not found")
+    return {"message": "Shift deleted successfully"}
+
+
+# --- ATTENDANCE CONFIGURATION RULES ---
+@app.get("/api/settings/attendance-rules", response_model=schemas.AttendanceRuleResponse)
+def get_attendance_rules(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    return crud.get_attendance_rules(db)
+
+@app.put("/api/settings/attendance-rules", response_model=schemas.AttendanceRuleResponse)
+def update_attendance_rule(rule_in: schemas.AttendanceRuleUpdate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
+    return crud.update_attendance_rule(db, rule_in)
+
+
+# --- PURCHASE ANALYTICS ---
+@app.get("/api/reports/purchases/analytics")
+def get_purchase_analytics(range: str = "monthly", db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    query = db.query(PurchaseOrder).filter(PurchaseOrder.is_deleted == False)
+    now = datetime.utcnow()
+    if range == "daily":
+        start_date = now - timedelta(days=1)
+        query = query.filter(PurchaseOrder.created_at >= start_date)
+    elif range == "weekly":
+        start_date = now - timedelta(days=7)
+        query = query.filter(PurchaseOrder.created_at >= start_date)
+    elif range == "monthly":
+        start_date = now - timedelta(days=30)
+        query = query.filter(PurchaseOrder.created_at >= start_date)
+        
+    pos = query.all()
+    
+    cat_totals = {}
+    for po in pos:
+        cat = po.category or "Other"
+        cat_totals[cat] = cat_totals.get(cat, 0.0) + po.total_cost
+        
+    analytics = [{"category": cat, "total": round(total, 2)} for cat, total in cat_totals.items()]
+    return {"range": range, "data": analytics}
+
+
+# --- STAFF DYNAMIC PERFORMANCE SCORING ---
+@app.get("/api/staff/{staff_id}/performance")
+def get_staff_performance(staff_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    staff = db.query(Staff).filter(Staff.id == staff_id, Staff.is_deleted == False).first()
+    if not staff:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+        
+    attendance_records = db.query(Attendance).filter(Attendance.staff_id == staff_id).all()
+    total_att = len(attendance_records)
+    if total_att > 0:
+        present_att = sum(1 for a in attendance_records if a.status in ["present", "half_day"])
+        attendance_score = round((present_att / total_att) * 100, 1)
+    else:
+        attendance_score = 100.0
+        
+    tasks = db.query(Task).filter(Task.assigned_to == staff_id, Task.is_deleted == False).all()
+    total_tasks = len(tasks)
+    if total_tasks > 0:
+        completed_tasks = sum(1 for t in tasks if t.status == "completed")
+        task_score = round((completed_tasks / total_tasks) * 100, 1)
+    else:
+        task_score = 100.0
+        
+    work_logs = db.query(DailyWorkLog).filter(DailyWorkLog.user_id == staff.user_id).all()
+    checkout_progress = [a.progress_percentage for a in attendance_records if a.project_id is not None]
+    all_progress = [log.progress_percentage for log in work_logs] + checkout_progress
+    if all_progress:
+        project_score = round(sum(all_progress) / len(all_progress), 1)
+    else:
+        project_score = 80.0
+        
+    discipline_score = 100.0
+    if total_att > 0:
+        deductions = 0
+        for a in attendance_records:
+            if a.late_arrival:
+                deductions += 10
+            if a.early_departure:
+                deductions += 10
+            if a.is_suspicious:
+                deductions += 20
+        discipline_score = max(0.0, discipline_score - deductions)
+        
+    overall_score = round((attendance_score + task_score + project_score + discipline_score) / 4.0, 1)
+    
+    return {
+        "staff_id": staff_id,
+        "name": staff.name,
+        "attendance_score": attendance_score,
+        "task_score": task_score,
+        "project_score": project_score,
+        "discipline_score": discipline_score,
+        "overall_score": overall_score
+    }
+
+
+# --- VISUALIZATION DASHBOARD ANALYTICS ---
+@app.get("/api/dashboard/visualization")
+def get_visualization_stats(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    # 1. Attendance Trend (last 7 days)
+    attendance_trend = []
+    active_staff_count = db.query(Staff).filter(Staff.is_deleted == False, Staff.status == "active").count()
+    if active_staff_count == 0:
+        active_staff_count = 1
+        
+    for i in range(6, -1, -1):
+        d = date.today() - timedelta(days=i)
+        present_count = db.query(Attendance).filter(Attendance.date == d, Attendance.status.in_(["present", "half_day"])).count()
+        pct = round((present_count / active_staff_count) * 100, 1)
+        attendance_trend.append({"date": d.strftime("%Y-%m-%d"), "percentage": pct})
+        
+    # 2. Project Progress
+    projects = db.query(Project).filter(Project.is_deleted == False, Project.status != "completed").all()
+    project_progress = []
+    for p in projects:
+        bom_items = p.bom_items
+        total_bom = len(bom_items)
+        if total_bom > 0:
+            fulfilled = sum(1 for b in bom_items if b.status == "fulfilled")
+            progress = round((fulfilled / total_bom) * 100, 1)
+        else:
+            progress = 50.0 if p.status == "active" else 10.0
+        project_progress.append({"project_name": p.name, "progress": progress})
+        
+    # 3. Material Usage (stock out transactions in last 7 days)
+    material_usage = []
+    start_date = datetime.utcnow() - timedelta(days=7)
+    transactions = db.query(StockTransaction).filter(
+        StockTransaction.transaction_type == "out",
+        StockTransaction.created_at >= start_date
+    ).all()
+    
+    usage_by_day = {}
+    for t in transactions:
+        day_str = t.created_at.strftime("%Y-%m-%d")
+        usage_by_day[day_str] = usage_by_day.get(day_str, 0.0) + t.quantity
+        
+    for i in range(6, -1, -1):
+        d = date.today() - timedelta(days=i)
+        day_str = d.strftime("%Y-%m-%d")
+        material_usage.append({"date": day_str, "quantity": round(usage_by_day.get(day_str, 0.0), 1)})
+        
+    # 4. Expense Trend (monthly costs for last 6 months)
+    expense_trend = []
+    for i in range(5, -1, -1):
+        today = date.today()
+        year = today.year
+        month = today.month - i
+        if month <= 0:
+            month += 12
+            year -= 1
+        month_start = datetime(year, month, 1)
+        if month == 12:
+            month_end = datetime(year + 1, 1, 1)
+        else:
+            month_end = datetime(year, month + 1, 1)
+            
+        month_po_total = db.query(func.sum(PurchaseOrder.total_cost)).filter(
+            PurchaseOrder.is_deleted == False,
+            PurchaseOrder.status == "received",
+            PurchaseOrder.created_at >= month_start,
+            PurchaseOrder.created_at < month_end
+        ).scalar() or 0.0
+        
+        expense_trend.append({
+            "month": month_start.strftime("%b %Y"),
+            "expense": round(month_po_total, 2)
+        })
+        
+    # 5. Overtime & Late Analysis
+    late_count = db.query(Attendance).filter(Attendance.date == date.today(), Attendance.late_arrival == True).count()
+    ot_hours_total = db.query(func.sum(Attendance.overtime_hours)).filter(Attendance.date == date.today()).scalar() or 0.0
+    
+    # 6. Worker Performance (Top 5)
+    staff_list = db.query(Staff).filter(Staff.is_deleted == False).all()
+    worker_performance = []
+    for s in staff_list[:5]:
+        attendance_records = db.query(Attendance).filter(Attendance.staff_id == s.id).all()
+        total_att = len(attendance_records)
+        present_att = sum(1 for a in attendance_records if a.status in ["present", "half_day"])
+        attendance_score = (present_att / total_att * 100) if total_att > 0 else 100.0
+        
+        tasks = db.query(Task).filter(Task.assigned_to == s.id, Task.is_deleted == False).all()
+        completed_tasks = sum(1 for t in tasks if t.status == "completed")
+        task_score = (completed_tasks / len(tasks) * 100) if len(tasks) > 0 else 100.0
+        
+        score = round((attendance_score + task_score) / 2.0, 1)
+        worker_performance.append({"name": s.name, "score": score})
+        
+    # 7. Department Productivity (Grouped by department)
+    from collections import defaultdict
+    dept_scores = defaultdict(list)
+    active_staff = db.query(Staff).filter(Staff.is_deleted == False).all()
+    for s in active_staff:
+        if s.user_id:
+            user = db.query(User).filter(User.id == s.user_id, User.is_deleted == False).first()
+            if user and user.department:
+                # Calculate performance score
+                attendance_records = db.query(Attendance).filter(Attendance.staff_id == s.id).all()
+                total_att = len(attendance_records)
+                present_att = sum(1 for a in attendance_records if a.status in ["present", "half_day"])
+                attendance_score = (present_att / total_att * 100) if total_att > 0 else 100.0
+                
+                tasks = db.query(Task).filter(Task.assigned_to == s.id, Task.is_deleted == False).all()
+                completed_tasks = sum(1 for t in tasks if t.status == "completed")
+                task_score = (completed_tasks / len(tasks) * 100) if len(tasks) > 0 else 100.0
+                
+                s_score = (attendance_score + task_score) / 2.0
+                dept_scores[user.department].append(s_score)
+                
+    department_productivity = []
+    for dept, scores in dept_scores.items():
+        avg_score = round(sum(scores) / len(scores), 1)
+        department_productivity.append({"department": dept, "score": avg_score})
+        
+    if not department_productivity:
+        department_productivity = [
+            {"department": "Production", "score": 90.0},
+            {"department": "Quality Assurance", "score": 85.0},
+            {"department": "Logistics", "score": 88.0},
+            {"department": "Inventory Management", "score": 92.0}
+        ]
+        
+    return {
+        "attendance_trend": attendance_trend,
+        "project_progress": project_progress,
+        "material_usage": material_usage,
+        "expense_trend": expense_trend,
+        "late_arrivals_today": late_count,
+        "overtime_hours_today": round(ot_hours_total, 1),
+        "worker_performance": worker_performance,
+        "department_productivity": department_productivity
+    }
+
+
+# ============================================================
+# ATTENDANCE ANALYTICS ENDPOINTS (NEW)
+# ============================================================
+
+@app.get("/api/attendance/dashboard")
+def get_attendance_dashboard(target_date: Optional[date] = Query(None), db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    """Attendance dashboard KPIs for today (or a given date)."""
+    check_date = target_date or date.today()
+    
+    # All active staff
+    all_staff = db.query(Staff).filter(Staff.is_deleted == False).all()
+    total_employees = len(all_staff)
+    staff_ids = [s.id for s in all_staff]
+    
+    # Today's attendance records
+    today_records = db.query(Attendance).filter(
+        Attendance.staff_id.in_(staff_ids),
+        Attendance.date == check_date
+    ).all()
+    
+    present = sum(1 for r in today_records if r.status in ("present", "half_day"))
+    on_leave = sum(1 for r in today_records if r.status == "leave")
+    half_day = sum(1 for r in today_records if r.status == "half_day")
+    late_arrivals = sum(1 for r in today_records if r.late_arrival)
+    checked_out = sum(1 for r in today_records if r.check_out)
+    pending_checkout = sum(1 for r in today_records if r.check_in and not r.check_out and r.status == "present")
+    absent = total_employees - len(today_records)
+    if absent < 0:
+        absent = 0
+    attendance_pct = round((present / total_employees * 100), 1) if total_employees > 0 else 0
+
+    # Build per-record detail
+    staff_map = {s.id: s.name for s in all_staff}
+    records_detail = []
+    for r in today_records:
+        records_detail.append({
+            "staff_id": r.staff_id,
+            "staff_name": staff_map.get(r.staff_id, "Unknown"),
+            "status": r.status,
+            "check_in": r.check_in,
+            "check_out": r.check_out,
+            "late_arrival": r.late_arrival,
+            "late_minutes": r.late_minutes if hasattr(r, 'late_minutes') else 0,
+            "total_hours": r.total_hours,
+            "overtime_hours": r.overtime_hours,
+        })
+
+    return {
+        "date": str(check_date),
+        "total_employees": total_employees,
+        "present": present,
+        "absent": absent,
+        "on_leave": on_leave,
+        "half_day": half_day,
+        "late_arrivals": late_arrivals,
+        "checked_out": checked_out,
+        "pending_checkout": pending_checkout,
+        "attendance_percentage": attendance_pct,
+        "records": records_detail
+    }
+
+
+@app.get("/api/attendance/history")
+def get_attendance_history(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    staff_id: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Paginated attendance history with filters."""
+    from datetime import timedelta
+    
+    # Workers/operators/carpenters can only see their own attendance
+    if current_user.role in ["worker", "operator", "carpenter"]:
+        staff_member = db.query(Staff).filter(Staff.user_id == current_user.id, Staff.is_deleted == False).first()
+        if not staff_member:
+            return {"total": 0, "page": page, "per_page": per_page, "records": []}
+        staff_id = staff_member.id
+
+    query = db.query(Attendance, Staff).join(Staff, Attendance.staff_id == Staff.id).filter(Staff.is_deleted == False)
+
+    if staff_id:
+        query = query.filter(Attendance.staff_id == staff_id)
+    if start_date:
+        query = query.filter(Attendance.date >= start_date)
+    if end_date:
+        query = query.filter(Attendance.date <= end_date)
+    if status_filter:
+        query = query.filter(Attendance.status == status_filter)
+
+    total = query.count()
+    records_raw = query.order_by(Attendance.date.desc()).offset((page - 1) * per_page).limit(per_page).all()
+
+    records = []
+    for att, staff in records_raw:
+        records.append({
+            "id": att.id,
+            "staff_id": att.staff_id,
+            "staff_name": staff.name,
+            "date": str(att.date),
+            "status": att.status,
+            "check_in": att.check_in,
+            "check_out": att.check_out,
+            "total_hours": att.total_hours,
+            "overtime_hours": att.overtime_hours,
+            "late_arrival": att.late_arrival,
+            "late_minutes": getattr(att, 'late_minutes', 0),
+            "early_departure": att.early_departure,
+            "check_in_selfie": att.check_in_selfie,
+            "check_out_selfie": att.check_out_selfie,
+        })
+
+    return {"total": total, "page": page, "per_page": per_page, "records": records}
+
+
+@app.get("/api/attendance/monthly-report")
+def get_attendance_monthly_report(
+    year: int = Query(...),
+    month: int = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Per-employee monthly attendance report."""
+    from calendar import monthrange
+    from datetime import timedelta
+    
+    _, days_in_month = monthrange(year, month)
+    month_start = date(year, month, 1)
+    month_end = date(year, month, days_in_month)
+
+    # Determine which staff to report on
+    if current_user.role in ["worker", "operator", "carpenter"]:
+        staff_list = db.query(Staff).filter(
+            Staff.user_id == current_user.id,
+            Staff.is_deleted == False
+        ).all()
+    else:
+        staff_list = db.query(Staff).filter(Staff.is_deleted == False).all()
+
+    report = []
+    for staff in staff_list:
+        records = db.query(Attendance).filter(
+            Attendance.staff_id == staff.id,
+            Attendance.date >= month_start,
+            Attendance.date <= month_end
+        ).all()
+
+        present_days = sum(1 for r in records if r.status == "present")
+        half_days = sum(1 for r in records if r.status == "half_day")
+        leave_days = sum(1 for r in records if r.status == "leave")
+        absent_days = days_in_month - len(records)
+        if absent_days < 0:
+            absent_days = 0
+        late_days = sum(1 for r in records if r.late_arrival)
+        total_working_hours = sum(r.total_hours or 0 for r in records)
+        total_overtime_hours = sum(r.overtime_hours or 0 for r in records)
+        attendance_pct = round(((present_days + half_days * 0.5) / days_in_month * 100), 1) if days_in_month > 0 else 0
+
+        report.append({
+            "staff_id": staff.id,
+            "staff_name": staff.name,
+            "department": staff.department,
+            "role": staff.role,
+            "present_days": present_days,
+            "half_days": half_days,
+            "leave_days": leave_days,
+            "absent_days": absent_days,
+            "late_days": late_days,
+            "total_working_hours": round(total_working_hours, 2),
+            "total_overtime_hours": round(total_overtime_hours, 2),
+            "attendance_percentage": attendance_pct,
+            "days_in_month": days_in_month,
+        })
+
+    return {
+        "year": year,
+        "month": month,
+        "days_in_month": days_in_month,
+        "report": sorted(report, key=lambda x: x["attendance_percentage"], reverse=True)
+    }
+
+
+@app.get("/api/attendance/trends")
+def get_attendance_trends(
+    days: int = Query(30, ge=7, le=365),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Daily attendance trend data for charts (last N days)."""
+    from datetime import timedelta
+    
+    today = date.today()
+    total_staff = db.query(Staff).filter(Staff.is_deleted == False).count()
+    
+    trend = []
+    for i in range(days - 1, -1, -1):
+        d = today - timedelta(days=i)
+        records = db.query(Attendance).filter(Attendance.date == d).all()
+        present = sum(1 for r in records if r.status in ("present", "half_day"))
+        late = sum(1 for r in records if r.late_arrival)
+        overtime = round(sum(r.overtime_hours or 0 for r in records), 1)
+        trend.append({
+            "date": str(d),
+            "present": present,
+            "absent": max(0, total_staff - len(records)),
+            "late": late,
+            "overtime_hours": overtime,
+            "attendance_pct": round(present / total_staff * 100, 1) if total_staff > 0 else 0
+        })
+
+    return {"days": days, "total_staff": total_staff, "trend": trend}
+
+
+@app.get("/api/attendance/export")
+def export_attendance(
+    year: int = Query(...),
+    month: int = Query(...),
+    format: str = Query("excel"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Export monthly attendance report as Excel or CSV."""
+    from calendar import monthrange
+    import io
+
+    _, days_in_month = monthrange(year, month)
+    month_start = date(year, month, 1)
+    month_end = date(year, month, days_in_month)
+
+    staff_list = db.query(Staff).filter(Staff.is_deleted == False).all()
+
+    rows = []
+    for staff in staff_list:
+        records = db.query(Attendance).filter(
+            Attendance.staff_id == staff.id,
+            Attendance.date >= month_start,
+            Attendance.date <= month_end
+        ).all()
+        present_days = sum(1 for r in records if r.status == "present")
+        half_days = sum(1 for r in records if r.status == "half_day")
+        leave_days = sum(1 for r in records if r.status == "leave")
+        absent_days = max(0, days_in_month - len(records))
+        late_days = sum(1 for r in records if r.late_arrival)
+        total_hrs = round(sum(r.total_hours or 0 for r in records), 2)
+        ot_hrs = round(sum(r.overtime_hours or 0 for r in records), 2)
+        att_pct = round(((present_days + half_days * 0.5) / days_in_month * 100), 1) if days_in_month > 0 else 0
+        rows.append([staff.name, staff.role or "", staff.department or "",
+                     present_days, half_days, leave_days, absent_days,
+                     late_days, total_hrs, ot_hrs, att_pct])
+
+    headers = ["Employee Name", "Role", "Department", "Present Days", "Half Days",
+               "Leave Days", "Absent Days", "Late Days", "Working Hours", "Overtime Hours", "Attendance %"]
+
+    if format == "csv":
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(headers)
+        writer.writerows(rows)
+        buffer.seek(0)
+        filename = f"attendance_{year}_{month:02d}.csv"
+        return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv",
+                                 headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+    # Excel
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"Attendance {year}-{month:02d}"
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+    for row_idx, row in enumerate(rows, 2):
+        for col_idx, val in enumerate(row, 1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    filename = f"attendance_{year}_{month:02d}.xlsx"
+    return StreamingResponse(buffer, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+
+# ============================================================
+# PURCHASE EXPENSE ANALYTICS ENDPOINTS (NEW)
+# ============================================================
+
+EXPENSE_CATEGORIES = [
+    "Raw Material", "Food Expense", "Labour Expense", "Transportation Expense",
+    "Shipping Expense", "Fuel Expense", "Machinery Expense", "Maintenance Expense",
+    "Tool Expense", "Accommodation Expense", "Miscellaneous Expense"
+]
+
+@app.get("/api/purchases/expense-summary")
+def get_expense_summary(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    """Daily/Weekly/Monthly/Yearly expense summary totals."""
+    from datetime import timedelta
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+    month_start = date(today.year, today.month, 1)
+    year_start = date(today.year, 1, 1)
+
+    def total_for_range(start, end=None):
+        q = db.query(func.sum(PurchaseOrder.total_cost)).filter(
+            PurchaseOrder.is_deleted == False,
+            PurchaseOrder.status.in_(["received", "approved", "ordered", "delivered"])
+        )
+        q = q.filter(func.date(PurchaseOrder.created_at) >= start)
+        if end:
+            q = q.filter(func.date(PurchaseOrder.created_at) <= end)
+        return round(float(q.scalar() or 0), 2)
+
+    def count_for_range(start, end=None):
+        q = db.query(func.count(PurchaseOrder.id)).filter(
+            PurchaseOrder.is_deleted == False,
+        )
+        q = q.filter(func.date(PurchaseOrder.created_at) >= start)
+        if end:
+            q = q.filter(func.date(PurchaseOrder.created_at) <= end)
+        return int(q.scalar() or 0)
+
+    return {
+        "today": {"total": total_for_range(today), "count": count_for_range(today)},
+        "this_week": {"total": total_for_range(week_start), "count": count_for_range(week_start)},
+        "this_month": {"total": total_for_range(month_start), "count": count_for_range(month_start)},
+        "this_year": {"total": total_for_range(year_start), "count": count_for_range(year_start)},
+    }
+
+
+@app.get("/api/purchases/category-report")
+def get_category_report(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Category-wise purchase expense breakdown."""
+    q = db.query(
+        PurchaseOrder.category,
+        func.count(PurchaseOrder.id).label("count"),
+        func.sum(PurchaseOrder.total_cost).label("total_amount")
+    ).filter(PurchaseOrder.is_deleted == False)
+
+    if start_date:
+        q = q.filter(func.date(PurchaseOrder.created_at) >= start_date)
+    if end_date:
+        q = q.filter(func.date(PurchaseOrder.created_at) <= end_date)
+
+    q = q.group_by(PurchaseOrder.category)
+    rows = q.all()
+
+    grand_total = sum(float(r.total_amount or 0) for r in rows)
+    categories = []
+    for r in rows:
+        amount = round(float(r.total_amount or 0), 2)
+        categories.append({
+            "category": r.category or "Raw Material",
+            "count": int(r.count),
+            "amount": amount,
+            "percentage": round(amount / grand_total * 100, 1) if grand_total > 0 else 0
+        })
+    categories.sort(key=lambda x: x["amount"], reverse=True)
+
+    return {"grand_total": round(grand_total, 2), "categories": categories}
+
+
+@app.get("/api/purchases/vendor-report")
+def get_vendor_report(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Vendor-wise purchase spending."""
+    from sqlalchemy import case
+    q = db.query(
+        Supplier.name.label("vendor_name"),
+        func.count(PurchaseOrder.id).label("count"),
+        func.sum(PurchaseOrder.total_cost).label("total_amount"),
+        func.sum(PurchaseOrder.quantity).label("total_quantity")
+    ).join(Supplier, PurchaseOrder.supplier_id == Supplier.id).filter(
+        PurchaseOrder.is_deleted == False,
+        Supplier.is_deleted == False
+    )
+    if start_date:
+        q = q.filter(func.date(PurchaseOrder.created_at) >= start_date)
+    if end_date:
+        q = q.filter(func.date(PurchaseOrder.created_at) <= end_date)
+    q = q.group_by(Supplier.id, Supplier.name)
+    rows = q.all()
+
+    grand_total = sum(float(r.total_amount or 0) for r in rows)
+    vendors = []
+    for r in rows:
+        amount = round(float(r.total_amount or 0), 2)
+        vendors.append({
+            "vendor": r.vendor_name,
+            "count": int(r.count),
+            "total_amount": amount,
+            "total_quantity": round(float(r.total_quantity or 0), 2),
+            "percentage": round(amount / grand_total * 100, 1) if grand_total > 0 else 0
+        })
+    vendors.sort(key=lambda x: x["total_amount"], reverse=True)
+    return {"grand_total": round(grand_total, 2), "vendors": vendors}
+
+
+@app.get("/api/purchases/project-cost")
+def get_project_cost_report(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Project-wise cost breakdown from material requests and purchase orders."""
+    projects = db.query(Project).filter(Project.is_deleted == False).all()
+    result = []
+    for project in projects:
+        # Material cost via issued material requests
+        material_reqs = db.query(MaterialRequest).filter(
+            MaterialRequest.project_id == project.id,
+            MaterialRequest.status == "issued",
+            MaterialRequest.is_deleted == False
+        ).all()
+        material_cost = 0.0
+        for mr in material_reqs:
+            inv = db.query(InventoryItem).filter(InventoryItem.id == mr.inventory_id).first()
+            if inv:
+                material_cost += mr.quantity * (inv.unit_cost or 0)
+
+        # Assigned workers
+        assignments = db.query(ProjectAssignment).filter(ProjectAssignment.project_id == project.id).count()
+
+        # Work hours from daily logs
+        daily_logs = db.query(ProjectDailyLog).filter(ProjectDailyLog.project_id == project.id).all()
+        total_hours = sum(log.hours_worked for log in daily_logs)
+
+        result.append({
+            "project_id": project.id,
+            "project_name": project.name,
+            "status": project.status,
+            "completion_percentage": project.completion_percentage if hasattr(project, 'completion_percentage') else 0,
+            "budget": project.budget,
+            "material_cost": round(material_cost, 2),
+            "assigned_workers": assignments,
+            "total_work_hours": round(total_hours, 2),
+        })
+    return {"projects": result}
+
+
+@app.get("/api/purchases/trends")
+def get_purchase_trends(
+    months: int = Query(6, ge=1, le=24),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Monthly purchase expense trend for charts."""
+    from datetime import timedelta
+    today = date.today()
+    trend = []
+    for i in range(months - 1, -1, -1):
+        # Calculate month offset
+        m = today.month - i
+        y = today.year
+        while m <= 0:
+            m += 12
+            y -= 1
+        from calendar import monthrange as mr
+        _, days = mr(y, m)
+        month_start = date(y, m, 1)
+        month_end = date(y, m, days)
+
+        total = db.query(func.sum(PurchaseOrder.total_cost)).filter(
+            PurchaseOrder.is_deleted == False,
+            func.date(PurchaseOrder.created_at) >= month_start,
+            func.date(PurchaseOrder.created_at) <= month_end
+        ).scalar() or 0
+        count = db.query(func.count(PurchaseOrder.id)).filter(
+            PurchaseOrder.is_deleted == False,
+            func.date(PurchaseOrder.created_at) >= month_start,
+            func.date(PurchaseOrder.created_at) <= month_end
+        ).scalar() or 0
+        trend.append({"month": f"{y}-{m:02d}", "total": round(float(total), 2), "count": int(count)})
+
+    return {"months": months, "trend": trend}
+
+
+@app.get("/api/purchases/export")
+def export_purchases(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    category: Optional[str] = Query(None),
+    format: str = Query("excel"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Export purchase orders as Excel, CSV, or PDF."""
+    import io
+    q = db.query(PurchaseOrder).filter(PurchaseOrder.is_deleted == False)
+
+    if start_date:
+        q = q.filter(PurchaseOrder.po_date >= start_date)
+    if end_date:
+        q = q.filter(PurchaseOrder.po_date <= end_date)
+    if category:
+        q = q.filter(PurchaseOrder.category == category)
+
+    pos = q.order_by(PurchaseOrder.created_at.desc()).all()
+
+    headers = [
+        "PO Number", "PO Date", "Vendor Name", "Contact", "GST", "Address", 
+        "Category", "Material Name", "SKU", "Qty Ordered", "Unit", "Rate", 
+        "Total Cost", "Expected Delivery", "Qty Received", "Qty Pending", 
+        "Invoice Number", "Invoice Date", "Payment Status", "Status", "Remarks"
+    ]
+    rows = []
+    for po in pos:
+        v_name = po.vendor_name or (po.supplier.name if po.supplier else "N/A")
+        v_contact = po.vendor_contact or (po.supplier.phone if po.supplier else "N/A")
+        v_gst = po.vendor_gst or (po.supplier.gst_number if po.supplier else "N/A")
+        v_addr = po.vendor_address or (po.supplier.address if po.supplier else "N/A")
+        
+        m_name = po.material_name or (po.inventory.name if po.inventory else "N/A")
+        m_sku = po.sku or (po.inventory.sku if po.inventory else "N/A")
+        m_unit = po.unit or (po.inventory.unit if po.inventory else "N/A")
+
+        rows.append([
+            po.po_number,
+            str(po.po_date or po.created_at.date()),
+            v_name,
+            v_contact,
+            v_gst,
+            v_addr,
+            po.category or "Raw Material",
+            m_name,
+            m_sku,
+            po.quantity,
+            m_unit,
+            po.unit_cost,
+            po.total_cost,
+            str(po.expected_delivery_date) if po.expected_delivery_date else "N/A",
+            po.received_quantity or 0.0,
+            po.pending_quantity or 0.0,
+            po.invoice_number or "N/A",
+            str(po.invoice_date) if po.invoice_date else "N/A",
+            po.payment_status or "Pending",
+            po.status,
+            po.remarks or ""
+        ])
+
+    if format == "csv":
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(headers)
+        writer.writerows(rows)
+        buffer.seek(0)
+        return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv",
+                                 headers={"Content-Disposition": "attachment; filename=purchase_orders.csv"})
+
+    if format == "pdf":
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        styles = getSampleStyleSheet()
+        elements = [
+            Paragraph("Allure Living ERP – Purchase Orders Report", styles['Title']),
+            Spacer(1, 12)
+        ]
+        table_data = [headers[:10]] + [r[:10] for r in rows]
+        t = Table(table_data)
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4F46E5')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 6),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F8F7FF')]),
+        ]))
+        elements.append(t)
+        doc.build(elements)
+        buffer.seek(0)
+        return StreamingResponse(buffer, media_type="application/pdf",
+                                 headers={"Content-Disposition": "attachment; filename=purchase_orders.pdf"})
+
+    # Excel default
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Purchase Orders"
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+    for row_idx, row in enumerate(rows, 2):
+        for col_idx, val in enumerate(row, 1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return StreamingResponse(buffer, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": "attachment; filename=purchase_orders.xlsx"})
+
+
+@app.get("/api/purchases/dashboard")
+def get_purchase_dashboard(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    """Purchase Management Dashboard Statistics."""
+    today_dt = date.today()
+    start_of_month = date(today_dt.year, today_dt.month, 1)
+    
+    pos = db.query(PurchaseOrder).filter(PurchaseOrder.is_deleted == False).all()
+    
+    purchase_today = sum(p.total_cost for p in pos if p.po_date == today_dt or (p.po_date is None and p.created_at.date() == today_dt))
+    purchase_month = sum(p.total_cost for p in pos if (p.po_date and p.po_date >= start_of_month) or (p.po_date is None and p.created_at.date() >= start_of_month))
+    
+    pending_pos = sum(1 for p in pos if p.status in ["pending", "approved", "ordered", "partially_received"])
+    partially_received = sum(1 for p in pos if p.status == "partially_received")
+    overdue = sum(1 for p in pos if p.expected_delivery_date and p.expected_delivery_date < today_dt and p.status in ["pending", "approved", "ordered", "partially_received"])
+    
+    # Vendor wise
+    vendor_map = {}
+    for p in pos:
+        vname = p.vendor_name or (p.supplier.name if p.supplier else "Unknown")
+        vendor_map[vname] = vendor_map.get(vname, 0.0) + p.total_cost
+        
+    # Category wise
+    cat_map = {}
+    for p in pos:
+        cat_map[p.category] = cat_map.get(p.category, 0.0) + p.total_cost
+        
+    # Monthly trends (last 6 months)
+    monthly_map = {}
+    for p in pos:
+        po_date_val = p.po_date or p.created_at.date()
+        key = po_date_val.strftime("%Y-%m")
+        monthly_map[key] = monthly_map.get(key, 0.0) + p.total_cost
+        
+    # Top purchased materials
+    mat_map = {}
+    for p in pos:
+        mname = p.material_name or (p.inventory.name if p.inventory else "Unknown")
+        mat_map[mname] = mat_map.get(mname, 0.0) + p.total_cost
+        
+    sorted_trend = [{"month": k, "total": v} for k, v in sorted(monthly_map.items())][-6:]
+    
+    return {
+        "purchase_today": purchase_today,
+        "purchase_month": purchase_month,
+        "pending_pos": pending_pos,
+        "partially_received": partially_received,
+        "overdue_pos": overdue,
+        "vendor_wise": [{"vendor": k, "amount": v} for k, v in vendor_map.items()],
+        "category_wise": [{"category": k, "amount": v} for k, v in cat_map.items()],
+        "monthly_trend": sorted_trend,
+        "top_materials": [{"material": k, "amount": v} for k, v in sorted(mat_map.items(), key=lambda x: x[1], reverse=True)[:5]]
+    }
+
+
+@app.get("/api/reports/purchases")
+def get_purchases_report(
+    report_type: str = Query(..., description="daily, monthly, vendor, category, pending_delivery, pending_payment"),
+    target_date: Optional[date] = None,
+    vendor: Optional[str] = None,
+    category: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Generate filtered purchase reports."""
+    pos = db.query(PurchaseOrder).filter(PurchaseOrder.is_deleted == False)
+    if report_type == "daily":
+        d_val = target_date or date.today()
+        pos = pos.filter((PurchaseOrder.po_date == d_val) | ((PurchaseOrder.po_date == None) & (func.date(PurchaseOrder.created_at) == d_val)))
+    elif report_type == "monthly":
+        d_val = target_date or date.today()
+        pos = pos.filter((func.strftime("%Y-%m", PurchaseOrder.po_date) == d_val.strftime("%Y-%m")) | ((PurchaseOrder.po_date == None) & (func.strftime("%Y-%m", PurchaseOrder.created_at) == d_val.strftime("%Y-%m"))))
+    elif report_type == "vendor":
+        if vendor:
+            pos = pos.filter((PurchaseOrder.vendor_name == vendor) | (PurchaseOrder.supplier.has(name=vendor)))
+    elif report_type == "category":
+        if category:
+            pos = pos.filter(PurchaseOrder.category == category)
+    elif report_type == "pending_delivery":
+        pos = pos.filter(PurchaseOrder.status.in_(["pending", "approved", "ordered", "partially_received"]))
+    elif report_type == "pending_payment":
+        pos = pos.filter(PurchaseOrder.payment_status.in_(["Pending", "Partial"]))
+        
+    return pos.order_by(PurchaseOrder.created_at.desc()).all()
+
+
+# --- DAILY EXPENSES ENDPOINTS ---
+@app.get("/api/expenses", response_model=List[schemas.DailyExpenseResponse])
+def read_expenses(
+    project_id: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Retrieve daily expenses list."""
+    return crud.get_daily_expenses(db, project_id, category, start_date, end_date)
+
+
+@app.post("/api/expenses", response_model=schemas.DailyExpenseResponse)
+async def create_expense(
+    expense_category: str = Form(...),
+    amount: float = Form(...),
+    expense_date: Optional[date] = Form(None),
+    description: Optional[str] = Form(None),
+    vendor: Optional[str] = Form(None),
+    project_id: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Create a new daily expense with optional attachment."""
+    attachment_url = None
+    if file and file.filename:
+        ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
+        filename = f"expense_{uuid.uuid4().hex[:8]}.{ext}"
+        save_path = os.path.join(UPLOAD_DIR, "expense_bills", filename)
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        contents = await file.read()
+        with open(save_path, "wb") as f:
+            f.write(contents)
+        attachment_url = f"/uploads/expense_bills/{filename}"
+
+    exp_in = schemas.DailyExpenseCreate(
+        expense_date=expense_date,
+        expense_category=expense_category,
+        description=description,
+        amount=amount,
+        vendor=vendor,
+        project_id=project_id,
+        attachment_url=attachment_url
+    )
+    return crud.create_daily_expense(db, exp_in, current_user.id)
+
+
+@app.delete("/api/expenses/{expense_id}")
+def delete_expense(
+    expense_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Delete an expense record."""
+    deleted = crud.delete_daily_expense(db, expense_id, current_user.id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    return {"status": "success", "message": "Expense soft-deleted"}
+
+
+@app.get("/api/expenses/dashboard")
+def get_expenses_dashboard(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    """Expenses dashboard statistics."""
+    today_dt = date.today()
+    start_of_week = today_dt - timedelta(days=today_dt.weekday())
+    start_of_month = date(today_dt.year, today_dt.month, 1)
+
+    expenses = db.query(DailyExpense).filter(DailyExpense.is_deleted == False).all()
+    
+    today_tot = sum(e.amount for e in expenses if e.expense_date == today_dt)
+    week_tot = sum(e.amount for e in expenses if e.expense_date >= start_of_week)
+    month_tot = sum(e.amount for e in expenses if e.expense_date >= start_of_month)
+
+    cat_breakdown = {}
+    for e in expenses:
+        cat_breakdown[e.expense_category] = cat_breakdown.get(e.expense_category, 0.0) + e.amount
+
+    return {
+        "today_total": today_tot,
+        "weekly_total": week_tot,
+        "monthly_total": month_tot,
+        "category_breakdown": [{"category": k, "amount": v} for k, v in cat_breakdown.items()]
+    }
+
+
+@app.get("/api/expenses/export")
+def export_expenses(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    category: Optional[str] = Query(None),
+    format: str = Query("excel"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Export daily expenses as Excel, CSV, or PDF."""
+    import io
+    q = db.query(DailyExpense).filter(DailyExpense.is_deleted == False)
+    if start_date:
+        q = q.filter(DailyExpense.expense_date >= start_date)
+    if end_date:
+        q = q.filter(DailyExpense.expense_date <= end_date)
+    if category:
+        q = q.filter(DailyExpense.expense_category == category)
+        
+    rows_raw = q.order_by(DailyExpense.expense_date.desc()).all()
+    
+    headers = ["Expense ID", "Date", "Category", "Description", "Amount", "Vendor", "Project", "Created By"]
+    rows = []
+    for exp in rows_raw:
+        proj_name = exp.project.name if exp.project else "N/A"
+        creator_name = exp.creator.full_name if exp.creator else "N/A"
+        rows.append([
+            exp.expense_id,
+            str(exp.expense_date),
+            exp.expense_category,
+            exp.description or "",
+            exp.amount,
+            exp.vendor or "",
+            proj_name,
+            creator_name
+        ])
+        
+    if format == "csv":
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(headers)
+        writer.writerows(rows)
+        buffer.seek(0)
+        return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv",
+                                 headers={"Content-Disposition": "attachment; filename=expenses.csv"})
+                                 
+    if format == "pdf":
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        styles = getSampleStyleSheet()
+        elements = [
+            Paragraph("Allure Living ERP – Daily Expenses Report", styles['Title']),
+            Spacer(1, 12)
+        ]
+        table_data = [headers] + rows
+        t = Table(table_data)
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#6366F1')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F9FAFB')]),
+        ]))
+        elements.append(t)
+        doc.build(elements)
+        buffer.seek(0)
+        return StreamingResponse(buffer, media_type="application/pdf",
+                                 headers={"Content-Disposition": "attachment; filename=expenses.pdf"})
+
+    # Excel default
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Expenses"
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="6366F1", end_color="6366F1", fill_type="solid")
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+    for row_idx, row in enumerate(rows, 2):
+        for col_idx, val in enumerate(row, 1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return StreamingResponse(buffer, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": "attachment; filename=expenses.xlsx"})
+
+
+@app.put("/api/purchasing/{po_id}", response_model=schemas.PurchaseOrderResponse)
+def update_purchase_order_fields(
+    po_id: str,
+    po_in: schemas.PurchaseOrderCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Update detailed fields of a purchase order."""
+    try:
+        updated = crud.update_purchase_order(
+            db=db,
+            po_id=po_id,
+            user_id=current_user.id,
+            status=None,
+            received_quantity=po_in.received_quantity,
+            invoice_number=po_in.invoice_number,
+            invoice_date=po_in.invoice_date,
+            payment_status=po_in.payment_status,
+            remarks=po_in.remarks,
+            expected_delivery_date=po_in.expected_delivery_date,
+            po_date=po_in.po_date,
+            vendor_name=po_in.vendor_name,
+            vendor_contact=po_in.vendor_contact,
+            vendor_gst=po_in.vendor_gst,
+            vendor_address=po_in.vendor_address,
+            quantity=po_in.quantity,
+            unit_cost=po_in.unit_cost
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Purchase order not found")
+        return updated
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ============================================================
+# PROJECT DAILY LOG ENDPOINTS (NEW)
+# ============================================================
+
+@app.post("/api/projects/{project_id}/daily-log")
+async def create_project_daily_log(
+    project_id: str,
+    task: str = Form(...),
+    hours_worked: float = Form(...),
+    progress_percentage: int = Form(...),
+    remarks: str = Form(None),
+    work_photos: List[UploadFile] = File(default=[]),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Employee submits a daily progress log for a project."""
+    import json as _json
+    project = db.query(Project).filter(Project.id == project_id, Project.is_deleted == False).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Save uploaded work photos
+    saved_photos = []
+    for photo in work_photos:
+        if photo and photo.filename:
+            ext = photo.filename.rsplit(".", 1)[-1].lower() if "." in photo.filename else "jpg"
+            filename = f"workphoto_{project_id}_{uuid.uuid4().hex[:8]}.{ext}"
+            save_path = os.path.join(UPLOAD_DIR, "work_photos", filename)
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            contents = await photo.read()
+            with open(save_path, "wb") as f:
+                f.write(contents)
+            saved_photos.append(f"/uploads/work_photos/{filename}")
+
+    # Get staff linked to current user
+    staff_member = db.query(Staff).filter(Staff.user_id == current_user.id, Staff.is_deleted == False).first()
+
+    log = ProjectDailyLog(
+        project_id=project_id,
+        staff_id=staff_member.id if staff_member else None,
+        user_id=current_user.id,
+        log_date=date.today(),
+        task=task,
+        hours_worked=hours_worked,
+        progress_percentage=max(0, min(100, progress_percentage)),
+        remarks=remarks,
+        work_photos=_json.dumps(saved_photos) if saved_photos else None
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+
+    crud.log_detailed_activity(db, current_user.id, "Project", "daily_log", project_id,
+                               f"Daily progress log submitted for project: {project.name}")
+
+    return {
+        "status": "success",
+        "message": "Daily log saved",
+        "log_id": log.id,
+        "work_photos": saved_photos
+    }
+
+
+@app.get("/api/projects/{project_id}/daily-logs")
+def get_project_daily_logs(
+    project_id: str,
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Get daily progress logs for a project."""
+    import json as _json
+    project = db.query(Project).filter(Project.id == project_id, Project.is_deleted == False).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    q = db.query(ProjectDailyLog).filter(ProjectDailyLog.project_id == project_id)
+    if start_date:
+        q = q.filter(ProjectDailyLog.log_date >= start_date)
+    if end_date:
+        q = q.filter(ProjectDailyLog.log_date <= end_date)
+    logs_raw = q.order_by(ProjectDailyLog.log_date.desc(), ProjectDailyLog.created_at.desc()).all()
+
+    # Get staff/user names
+    staff_ids = list({log.staff_id for log in logs_raw if log.staff_id})
+    user_ids = list({log.user_id for log in logs_raw if log.user_id})
+    staff_map = {s.id: s.name for s in db.query(Staff).filter(Staff.id.in_(staff_ids)).all()}
+    user_map = {u.id: u.full_name for u in db.query(User).filter(User.id.in_(user_ids)).all()}
+
+    logs = []
+    for log in logs_raw:
+        photos = []
+        if log.work_photos:
+            try:
+                photos = _json.loads(log.work_photos)
+            except Exception:
+                photos = []
+        logs.append({
+            "id": log.id,
+            "log_date": str(log.log_date),
+            "staff_name": staff_map.get(log.staff_id, user_map.get(log.user_id, "Unknown")),
+            "task": log.task,
+            "hours_worked": log.hours_worked,
+            "progress_percentage": log.progress_percentage,
+            "remarks": log.remarks,
+            "work_photos": photos,
+            "created_at": str(log.created_at),
+        })
+    return {"project_id": project_id, "project_name": project.name, "logs": logs}
+
+
+@app.put("/api/projects/{project_id}/completion")
+def update_project_completion(
+    project_id: str,
+    payload: dict,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    """Admin/Manager updates project completion percentage."""
+    project = db.query(Project).filter(Project.id == project_id, Project.is_deleted == False).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    pct = payload.get("completion_percentage")
+    if pct is None or not (0 <= int(pct) <= 100):
+        raise HTTPException(status_code=400, detail="completion_percentage must be 0-100")
+
+    project.completion_percentage = int(pct)
+    db.commit()
+
+    ip_addr = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    crud.log_detailed_activity(db, current_user.id, "Project", "update_completion", project_id,
+                               f"Project '{project.name}' completion set to {pct}%",
+                               ip_address=ip_addr, device=user_agent)
+    return {"status": "success", "project_id": project_id, "completion_percentage": int(pct)}
+
+
+@app.get("/api/projects/{project_id}/report")
+def get_project_report(
+    project_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Full project report: completion, workers, materials, daily progress timeline."""
+    import json as _json
+    project = db.query(Project).filter(Project.id == project_id, Project.is_deleted == False).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Assignments
+    assignments = db.query(ProjectAssignment, User).join(
+        User, ProjectAssignment.user_id == User.id
+    ).filter(ProjectAssignment.project_id == project_id).all()
+    workers = [{"user_id": a.user_id, "name": u.full_name, "role": u.role} for a, u in assignments]
+
+    # Today's attendance for project workers
+    today = date.today()
+    worker_user_ids = [a.user_id for a, u in assignments]
+    worker_staff = db.query(Staff).filter(Staff.user_id.in_(worker_user_ids), Staff.is_deleted == False).all()
+    worker_staff_ids = [s.id for s in worker_staff]
+    today_att = db.query(Attendance).filter(
+        Attendance.staff_id.in_(worker_staff_ids),
+        Attendance.date == today
+    ).all()
+    present_workers = sum(1 for a in today_att if a.status in ("present", "half_day"))
+
+    # BOM / Materials
+    bom_items = db.query(ProjectBOM, InventoryItem).join(
+        InventoryItem, ProjectBOM.inventory_id == InventoryItem.id
+    ).filter(ProjectBOM.project_id == project_id).all()
+    materials = [{
+        "item": inv.name,
+        "sku": inv.sku,
+        "required": bom.required_quantity,
+        "used": bom.used_quantity,
+        "unit": inv.unit,
+        "status": bom.status
+    } for bom, inv in bom_items]
+
+    # Daily logs
+    logs_raw = db.query(ProjectDailyLog).filter(
+        ProjectDailyLog.project_id == project_id
+    ).order_by(ProjectDailyLog.log_date.desc()).limit(30).all()
+    staff_ids_in_logs = list({l.staff_id for l in logs_raw if l.staff_id})
+    user_ids_in_logs = list({l.user_id for l in logs_raw if l.user_id})
+    staff_nm = {s.id: s.name for s in db.query(Staff).filter(Staff.id.in_(staff_ids_in_logs)).all()}
+    user_nm = {u.id: u.full_name for u in db.query(User).filter(User.id.in_(user_ids_in_logs)).all()}
+
+    logs = []
+    for log in logs_raw:
+        photos = []
+        if log.work_photos:
+            try:
+                photos = _json.loads(log.work_photos)
+            except Exception:
+                photos = []
+        logs.append({
+            "date": str(log.log_date),
+            "submitted_by": staff_nm.get(log.staff_id, user_nm.get(log.user_id, "Unknown")),
+            "task": log.task,
+            "hours_worked": log.hours_worked,
+            "progress_percentage": log.progress_percentage,
+            "remarks": log.remarks,
+            "work_photos": photos,
+        })
+
+    # Client info
+    client = db.query(Client).filter(Client.id == project.client_id).first() if project.client_id else None
+
+    return {
+        "project_id": project.id,
+        "project_name": project.name,
+        "status": project.status,
+        "completion_percentage": getattr(project, 'completion_percentage', 0),
+        "budget": project.budget,
+        "start_date": str(project.start_date) if project.start_date else None,
+        "end_date": str(project.end_date) if project.end_date else None,
+        "client": client.name if client else None,
+        "site_location": project.site_location,
+        "total_assigned_workers": len(workers),
+        "present_workers_today": present_workers,
+        "workers": workers,
+        "materials": materials,
+        "daily_logs": logs,
+        "total_log_entries": len(logs),
+    }
+
+
+@app.get("/api/expense/categories")
+def get_expense_categories(current_user: User = Depends(auth.require_any_authenticated)):
+    """Return the list of valid expense categories."""
+    return {"categories": EXPENSE_CATEGORIES}
+
+
+# --- BACKWARD COMPATIBILITY / FALLBACK ROUTES ---
+
+@app.post("/api/staff/{staff_id}/check-in", response_model=schemas.AttendanceResponse)
+def legacy_staff_check_in(
+    staff_id: str,
+    request: Request,
+    payload: Optional[dict] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin_or_factory_manager)
+):
+    """Legacy check-in endpoint used by audit tests."""
+    now = datetime.now()
+    date_val = now.date()
+    time_str = now.strftime("%H:%M")
+    
+    device = "Admin Terminal"
+    ip_address = request.client.host if request.client else None
+    
+    try:
+        attendance = crud.attendance_check_in(
+            db=db,
+            staff_id=staff_id,
+            date_val=date_val,
+            time_str=time_str,
+            device=device,
+            ip_address=ip_address
+        )
+        crud.log_detailed_activity(
+            db, current_user.id, "Attendance", "check_in", attendance.id,
+            f"Admin/Manager checked in staff {staff_id} today at {time_str}",
+            ip_address=ip_address
+        )
+        return attendance
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/staff/{staff_id}/check-out", response_model=schemas.AttendanceResponse)
+def legacy_staff_check_out(
+    staff_id: str,
+    request: Request,
+    payload: Optional[dict] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin_or_factory_manager)
+):
+    """Legacy check-out endpoint used by audit tests."""
+    now = datetime.now()
+    date_val = now.date()
+    time_str = now.strftime("%H:%M")
+    
+    device = "Admin Terminal"
+    ip_address = request.client.host if request.client else None
+    
+    try:
+        attendance = crud.attendance_check_out(
+            db=db,
+            staff_id=staff_id,
+            date_val=date_val,
+            time_str=time_str,
+            device=device,
+            ip_address=ip_address
+        )
+        crud.log_detailed_activity(
+            db, current_user.id, "Attendance", "check_out", attendance.id,
+            f"Admin/Manager checked out staff {staff_id} today at {time_str}",
+            ip_address=ip_address
+        )
+        return attendance
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/backup")
+def legacy_create_backup(db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    """Legacy database backup endpoint."""
+    return create_database_backup(db=db, current_user=current_user)
+
+
+@app.get("/api/backup")
+def legacy_list_backups(current_user: User = Depends(auth.require_admin)):
+    """Legacy list backups endpoint."""
+    return list_backups(current_user=current_user)
+
+
+@app.get("/api/logs", response_model=List[schemas.ActivityLogResponse])
+def legacy_read_logs(db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    """Legacy read activity logs endpoint."""
+    return read_activity_logs(db=db, current_user=current_user)

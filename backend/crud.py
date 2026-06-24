@@ -9,7 +9,7 @@ from models import (
     StockTransaction, MaterialRequest, PurchaseOrder, Staff, Attendance,
     Notification, ActivityLog, CustomFieldDefinition, CustomFieldValue,
     WorkflowDefinition, WorkflowStep, ApprovalRule, DashboardWidget, Task,
-    Document, VersionHistory
+    Document, VersionHistory, ProjectAssignment, DailyWorkLog, Shift, AttendanceRule
 )
 from schemas import (
     UserCreate, CategoryCreate, InventoryItemCreate, InventoryItemUpdate,
@@ -17,16 +17,16 @@ from schemas import (
     ProjectUpdate, ProjectBOMCreate, MaterialRequestCreate, PurchaseOrderCreate,
     StaffCreate, StaffUpdate, AttendanceCreate, CustomFieldDefinitionCreate,
     WorkflowDefinitionCreate, ApprovalRuleCreate, DashboardWidgetCreate, TaskCreate,
-    TaskUpdate, DocumentCreate
+    TaskUpdate, DocumentCreate, ShiftCreate, AttendanceRuleUpdate
 )
 
 # Activity Logger Helper
-def log_activity(db: Session, user_id: Optional[str], action: str, details: Optional[str] = None):
-    log = ActivityLog(user_id=user_id, action=action, details=details)
+def log_activity(db: Session, user_id: Optional[str], action: str, details: Optional[str] = None, ip_address: Optional[str] = None, device: Optional[str] = None):
+    log = ActivityLog(user_id=user_id, action=action, details=details, ip_address=ip_address, device=device)
     db.add(log)
     db.commit()
 
-def log_detailed_activity(db: Session, user_id: Optional[str], module: str, action: str, record_id: Optional[str], message: str):
+def log_detailed_activity(db: Session, user_id: Optional[str], module: str, action: str, record_id: Optional[str], message: str, ip_address: Optional[str] = None, device: Optional[str] = None):
     role = "system"
     user_name = "System"
     if user_id:
@@ -46,7 +46,7 @@ def log_detailed_activity(db: Session, user_id: Optional[str], module: str, acti
     }
     
     details_json = json.dumps(details_dict)
-    log = ActivityLog(user_id=user_id, action=action, details=details_json)
+    log = ActivityLog(user_id=user_id, action=action, details=details_json, ip_address=ip_address, device=device)
     db.add(log)
     db.commit()
 
@@ -84,25 +84,135 @@ def save_version_snapshot(db: Session, entity_type: str, entity_id: str, data_di
     db.commit()
 
 # --- AUTH & USERS ---
+def sync_user_to_staff(db: Session, db_user: User):
+    staff_member = db.query(Staff).filter(
+        (Staff.user_id == db_user.id) | 
+        (Staff.email == db_user.email) | 
+        (Staff.phone == db_user.phone)
+    ).first()
+    
+    role_str = db_user.role.replace("_", " ").title()
+    
+    if staff_member:
+        staff_member.user_id = db_user.id
+        staff_member.name = db_user.full_name
+        staff_member.role = role_str
+        staff_member.phone = db_user.phone
+        staff_member.email = db_user.email
+        staff_member.status = "active" if db_user.status == "active" else "inactive"
+    else:
+        staff_member = Staff(
+            user_id=db_user.id,
+            name=db_user.full_name,
+            role=role_str,
+            phone=db_user.phone,
+            email=db_user.email,
+            salary=0.0,
+            status="active" if db_user.status == "active" else "inactive"
+        )
+        db.add(staff_member)
+    db.commit()
+
 def get_user_by_email(db: Session, email: str) -> Optional[User]:
     return db.query(User).filter(func.lower(User.email) == func.lower(email), User.is_deleted == False).first()
+
+def get_user_by_username_or_phone_or_email(db: Session, login_id: str) -> Optional[User]:
+    return db.query(User).filter(
+        ((func.lower(User.email) == func.lower(login_id)) | 
+         (User.phone == login_id) | 
+         (User.employee_code == login_id)),
+        User.is_deleted == False
+    ).first()
 
 def get_users(db: Session) -> List[User]:
     return db.query(User).filter(User.is_deleted == False).all()
 
 def create_user(db: Session, user_in: UserCreate, password_hash: str) -> User:
+    # Auto-generate unique EMP-XXXX employee code if not provided
+    if not user_in.employee_code:
+        existing_codes = db.query(User.employee_code).filter(
+            User.employee_code.like("EMP-%"),
+            User.is_deleted == False
+        ).all()
+        max_num = 0
+        for (code,) in existing_codes:
+            if code:
+                try:
+                    num = int(code.split("-")[1])
+                    if num > max_num:
+                        max_num = num
+                except (IndexError, ValueError):
+                    pass
+        new_code = f"EMP-{max_num + 1:04d}"
+        # Ensure it is unique in case of parallel transactions
+        while db.query(User).filter(User.employee_code == new_code).first():
+            max_num += 1
+            new_code = f"EMP-{max_num + 1:04d}"
+        user_in.employee_code = new_code
+    else:
+        existing = db.query(User).filter(User.employee_code == user_in.employee_code, User.is_deleted == False).first()
+        if existing:
+            raise ValueError("Employee Code already exists")
+
     db_user = User(
         email=user_in.email,
         password_hash=password_hash,
         role=user_in.role,
         full_name=user_in.full_name,
-        phone=user_in.phone
+        phone=user_in.phone,
+        employee_code=user_in.employee_code,
+        department=user_in.department,
+        status=user_in.status or "active",
+        permissions=user_in.permissions
     )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+    
+    sync_user_to_staff(db, db_user)
+    
     log_activity(db, db_user.id, "register", f"User registered: {db_user.email}")
     return db_user
+
+def update_user(db: Session, user_id: str, user_in: UserUpdate, password_hash: Optional[str] = None) -> Optional[User]:
+    db_user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
+    if not db_user:
+        return None
+    
+    update_data = user_in.model_dump(exclude_unset=True)
+    if password_hash:
+        db_user.password_hash = password_hash
+        
+    for field, value in update_data.items():
+        if field != "password" and field != "employee_code":  # employee_code is non-editable / immutable
+            setattr(db_user, field, value)
+            
+    db.commit()
+    db.refresh(db_user)
+    
+    sync_user_to_staff(db, db_user)
+    
+    log_activity(db, db_user.id, "update_user", f"User details updated: {db_user.email}")
+    return db_user
+
+def delete_user(db: Session, user_id: str, actor_id: Optional[str] = None) -> bool:
+    db_user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
+    if not db_user:
+        return False
+    db_user.is_deleted = True
+    db_user.deleted_at = datetime.utcnow()
+    db_user.deleted_by = actor_id
+    
+    # Also soft delete linked staff member
+    staff_member = db.query(Staff).filter(Staff.user_id == db_user.id).first()
+    if staff_member:
+        staff_member.is_deleted = True
+        staff_member.deleted_at = datetime.utcnow()
+        staff_member.deleted_by = actor_id
+        
+    db.commit()
+    log_activity(db, db_user.id, "delete_user", f"User deleted: {db_user.email}")
+    return True
 
 # --- CATEGORIES ---
 def get_categories(db: Session) -> List[Category]:
@@ -474,7 +584,7 @@ def create_project(db: Session, project: ProjectCreate, user_id: Optional[str] =
     log_detailed_activity(db, user_id, "Project", "create", db_project.id, f"Created project: {db_project.name}")
     return db_project
  
-def update_project(db: Session, project_id: str, project_in: ProjectUpdate, user_id: Optional[str] = None) -> Optional[Project]:
+def update_project(db: Session, project_id: str, project_in: ProjectUpdate, user_id: Optional[str] = None, ip_address: Optional[str] = None, device: Optional[str] = None) -> Optional[Project]:
     db_project = get_project(db, project_id)
     if not db_project:
         return None
@@ -487,7 +597,7 @@ def update_project(db: Session, project_id: str, project_in: ProjectUpdate, user
     db.refresh(db_project)
      
     save_version_snapshot(db, "Project", db_project.id, project_in.model_dump(), user_id)
-    log_detailed_activity(db, user_id, "Project", "update", db_project.id, f"Updated project: {db_project.name}")
+    log_detailed_activity(db, user_id, "Project", "update", db_project.id, f"Updated project: {db_project.name}", ip_address=ip_address, device=device)
     if db_project.status == "delayed":
         create_system_notification(
             db,
@@ -498,7 +608,7 @@ def update_project(db: Session, project_id: str, project_in: ProjectUpdate, user
          
     return db_project
 
-def delete_project(db: Session, project_id: str, user_id: str) -> bool:
+def delete_project(db: Session, project_id: str, user_id: str, ip_address: Optional[str] = None, device: Optional[str] = None) -> bool:
     # Dependency Check: Check if active BOM elements have already been issued/used, or requests exist
     db_project = db.query(Project).filter(Project.id == project_id).first()
     if not db_project or db_project.is_deleted:
@@ -532,10 +642,10 @@ def delete_project(db: Session, project_id: str, user_id: str) -> bool:
     db_project.deleted_at = datetime.utcnow()
     db_project.deleted_by = user_id
     db.commit()
-    log_activity(db, user_id, "delete_project", f"Soft deleted project: ID {project_id}")
+    log_activity(db, user_id, "delete_project", f"Soft deleted project: ID {project_id}", ip_address=ip_address, device=device)
     return True
 
-def restore_project(db: Session, project_id: str, user_id: str) -> bool:
+def restore_project(db: Session, project_id: str, user_id: str, ip_address: Optional[str] = None, device: Optional[str] = None) -> bool:
     db_project = db.query(Project).filter(Project.id == project_id).first()
     if not db_project or not db_project.is_deleted:
         return False
@@ -555,7 +665,7 @@ def restore_project(db: Session, project_id: str, user_id: str) -> bool:
     db_project.deleted_at = None
     db_project.deleted_by = None
     db.commit()
-    log_activity(db, user_id, "restore_project", f"Restored project: ID {project_id}")
+    log_activity(db, user_id, "restore_project", f"Restored project: ID {project_id}", ip_address=ip_address, device=device)
     return True
 
 # BOM Management
@@ -576,7 +686,7 @@ def add_bom_item(db: Session, project_id: str, bom_in: ProjectBOMCreate) -> Proj
 def get_material_requests(db: Session) -> List[MaterialRequest]:
     return db.query(MaterialRequest).filter(MaterialRequest.is_deleted == False).all()
 
-def create_material_request(db: Session, req: MaterialRequestCreate, user_id: str) -> MaterialRequest:
+def create_material_request(db: Session, req: MaterialRequestCreate, user_id: str, ip_address: Optional[str] = None, device: Optional[str] = None) -> MaterialRequest:
     db_req = MaterialRequest(
         project_id=req.project_id,
         inventory_id=req.inventory_id,
@@ -601,7 +711,7 @@ def create_material_request(db: Session, req: MaterialRequestCreate, user_id: st
         description=f"{item_name} ({req.quantity}) requested for Project '{proj_name}'.",
         notif_type="request_pending"
     )
-    log_detailed_activity(db, user_id, "MaterialRequest", "create", db_req.id, f"Created material request for project: ID {db_req.project_id}")
+    log_detailed_activity(db, user_id, "MaterialRequest", "create", db_req.id, f"Created material request for project: ID {db_req.project_id}", ip_address=ip_address, device=device)
     return db_req
 
 def update_material_request_status(
@@ -638,27 +748,28 @@ def update_material_request_status(
         )
         
         # Increment Project BOM usage
-        bom_item = db.query(ProjectBOM).filter(
-            ProjectBOM.project_id == db_req.project_id,
-            ProjectBOM.inventory_id == db_req.inventory_id
-        ).first()
-        
-        if bom_item:
-            bom_item.used_quantity += db_req.quantity
-            if bom_item.used_quantity >= bom_item.required_quantity:
-                bom_item.status = "fulfilled"
+        if db_req.project_id:
+            bom_item = db.query(ProjectBOM).filter(
+                ProjectBOM.project_id == db_req.project_id,
+                ProjectBOM.inventory_id == db_req.inventory_id
+            ).first()
+            
+            if bom_item:
+                bom_item.used_quantity += db_req.quantity
+                if bom_item.used_quantity >= bom_item.required_quantity:
+                    bom_item.status = "fulfilled"
+                else:
+                    bom_item.status = "partial"
             else:
-                bom_item.status = "partial"
-        else:
-            # Create a BOM entry if not pre-planned
-            new_bom = ProjectBOM(
-                project_id=db_req.project_id,
-                inventory_id=db_req.inventory_id,
-                required_quantity=db_req.quantity,
-                used_quantity=db_req.quantity,
-                status="fulfilled"
-            )
-            db.add(new_bom)
+                # Create a BOM entry if not pre-planned
+                new_bom = ProjectBOM(
+                    project_id=db_req.project_id,
+                    inventory_id=db_req.inventory_id,
+                    required_quantity=db_req.quantity,
+                    used_quantity=db_req.quantity,
+                    status="fulfilled"
+                )
+                db.add(new_bom)
             
     db.commit()
     db.refresh(db_req)
@@ -677,6 +788,7 @@ def create_purchase_order(db: Session, po: PurchaseOrderCreate, user_id: str) ->
     po_number = f"PO-{date_str}-{po_count + 1:04d}"
     
     total_cost = po.quantity * po.unit_cost
+    pending_qty = po.quantity - (po.received_quantity or 0.0)
     
     db_po = PurchaseOrder(
         po_number=po_number,
@@ -686,12 +798,136 @@ def create_purchase_order(db: Session, po: PurchaseOrderCreate, user_id: str) ->
         unit_cost=po.unit_cost,
         total_cost=total_cost,
         status="pending",
-        requested_by=user_id
+        category=po.category,
+        requested_by=user_id,
+        # Additional fields
+        po_date=po.po_date or date.today(),
+        vendor_name=po.vendor_name,
+        vendor_contact=po.vendor_contact,
+        vendor_gst=po.vendor_gst,
+        vendor_address=po.vendor_address,
+        material_name=po.material_name,
+        sku=po.sku,
+        unit=po.unit,
+        expected_delivery_date=po.expected_delivery_date,
+        received_quantity=po.received_quantity or 0.0,
+        pending_quantity=pending_qty,
+        invoice_number=po.invoice_number,
+        invoice_date=po.invoice_date,
+        payment_status=po.payment_status or "Pending",
+        remarks=po.remarks
     )
     db.add(db_po)
     db.commit()
     db.refresh(db_po)
     log_detailed_activity(db, user_id, "PurchaseOrder", "create", db_po.id, f"Created PO {db_po.po_number}")
+    return db_po
+
+def update_purchase_order(
+    db: Session,
+    po_id: str,
+    user_id: str,
+    status: Optional[str] = None,
+    received_quantity: Optional[float] = None,
+    invoice_number: Optional[str] = None,
+    invoice_date: Optional[date] = None,
+    payment_status: Optional[str] = None,
+    remarks: Optional[str] = None,
+    expected_delivery_date: Optional[date] = None,
+    po_date: Optional[date] = None,
+    vendor_name: Optional[str] = None,
+    vendor_contact: Optional[str] = None,
+    vendor_gst: Optional[str] = None,
+    vendor_address: Optional[str] = None,
+    quantity: Optional[float] = None,
+    unit_cost: Optional[float] = None
+) -> Optional[PurchaseOrder]:
+    db_po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id, PurchaseOrder.is_deleted == False).first()
+    if not db_po:
+        return None
+        
+    stock_adj = 0.0
+    
+    if received_quantity is not None and received_quantity != db_po.received_quantity:
+        stock_adj = received_quantity - (db_po.received_quantity or 0.0)
+        db_po.received_quantity = received_quantity
+        qty = quantity if quantity is not None else db_po.quantity
+        db_po.pending_quantity = max(0.0, qty - received_quantity)
+        
+    if quantity is not None:
+        db_po.quantity = quantity
+        rec_qty = received_quantity if received_quantity is not None else (db_po.received_quantity or 0.0)
+        db_po.pending_quantity = max(0.0, quantity - rec_qty)
+        if unit_cost is not None:
+            db_po.unit_cost = unit_cost
+            db_po.total_cost = quantity * unit_cost
+        else:
+            db_po.total_cost = quantity * db_po.unit_cost
+    elif unit_cost is not None:
+        db_po.unit_cost = unit_cost
+        db_po.total_cost = db_po.quantity * unit_cost
+
+    if status is not None:
+        old_status = db_po.status
+        db_po.status = status
+        
+        # Adjust stock if status changes to received/fully_received
+        if status in ["received", "fully_received"] and old_status not in ["received", "fully_received", "partially_received"]:
+            if stock_adj == 0.0:
+                if not db_po.received_quantity:
+                    db_po.received_quantity = db_po.quantity
+                    db_po.pending_quantity = 0.0
+                    stock_adj = db_po.quantity
+                else:
+                    stock_adj = db_po.pending_quantity
+                    db_po.received_quantity = db_po.quantity
+                    db_po.pending_quantity = 0.0
+
+    if po_date is not None:
+        db_po.po_date = po_date
+    if vendor_name is not None:
+        db_po.vendor_name = vendor_name
+    if vendor_contact is not None:
+        db_po.vendor_contact = vendor_contact
+    if vendor_gst is not None:
+        db_po.vendor_gst = vendor_gst
+    if vendor_address is not None:
+        db_po.vendor_address = vendor_address
+    if expected_delivery_date is not None:
+        db_po.expected_delivery_date = expected_delivery_date
+    if invoice_number is not None:
+        db_po.invoice_number = invoice_number
+    if invoice_date is not None:
+        db_po.invoice_date = invoice_date
+    if payment_status is not None:
+        db_po.payment_status = payment_status
+    if remarks is not None:
+        db_po.remarks = remarks
+        
+    db_po.updated_at = datetime.utcnow()
+    
+    if stock_adj > 0.0:
+        adjust_stock(
+            db=db,
+            inventory_id=db_po.inventory_id,
+            quantity=stock_adj,
+            transaction_type="in",
+            user_id=user_id,
+            notes=f"Goods received from Purchase Order {db_po.po_number}"
+        )
+    elif stock_adj < 0.0:
+        adjust_stock(
+            db=db,
+            inventory_id=db_po.inventory_id,
+            quantity=abs(stock_adj),
+            transaction_type="out",
+            user_id=user_id,
+            notes=f"Goods returned/adjusted from Purchase Order {db_po.po_number}"
+        )
+        
+    db.commit()
+    db.refresh(db_po)
+    log_detailed_activity(db, user_id, "PurchaseOrder", "update", db_po.id, f"Updated PO {db_po.po_number}")
     return db_po
 
 def update_purchase_order_status(
@@ -700,34 +936,76 @@ def update_purchase_order_status(
     status: str, 
     user_id: str
 ) -> Optional[PurchaseOrder]:
-    db_po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id, PurchaseOrder.is_deleted == False).first()
-    if not db_po:
-        return None
-        
-    if db_po.status == status:
-        return db_po
-        
-    if db_po.status == "received":
-        raise ValueError("Cannot modify a purchase order that has already been received.")
-        
-    db_po.status = status
-    db_po.updated_at = datetime.utcnow()
-    
-    # If PO is received, auto increment inventory!
-    if status == "received":
-        adjust_stock(
-            db=db,
-            inventory_id=db_po.inventory_id,
-            quantity=db_po.quantity,
-            transaction_type="in",
-            user_id=user_id,
-            notes=f"Goods received from Purchase Order {db_po.po_number}"
-        )
-        
+    return update_purchase_order(db=db, po_id=po_id, status=status, user_id=user_id)
+
+# --- SHIFTS & RULES ---
+def get_shifts(db: Session) -> List[Shift]:
+    return db.query(Shift).filter(Shift.is_deleted == False).all()
+
+def get_shift(db: Session, shift_id: str) -> Optional[Shift]:
+    return db.query(Shift).filter(Shift.id == shift_id, Shift.is_deleted == False).first()
+
+def create_shift(db: Session, shift: ShiftCreate) -> Shift:
+    db_shift = Shift(
+        name=shift.name,
+        check_in_time=shift.check_in_time,
+        check_out_time=shift.check_out_time
+    )
+    db.add(db_shift)
     db.commit()
-    db.refresh(db_po)
-    log_activity(db, user_id, "purchase_order_update", f"PO {db_po.po_number} status updated to {status}")
-    return db_po
+    db.refresh(db_shift)
+    return db_shift
+
+def update_shift(db: Session, shift_id: str, shift_in: ShiftCreate) -> Optional[Shift]:
+    db_shift = get_shift(db, shift_id)
+    if not db_shift:
+        return None
+    db_shift.name = shift_in.name
+    db_shift.check_in_time = shift_in.check_in_time
+    db_shift.check_out_time = shift_in.check_out_time
+    db.commit()
+    db.refresh(db_shift)
+    return db_shift
+
+def delete_shift(db: Session, shift_id: str) -> bool:
+    db_shift = db.query(Shift).filter(Shift.id == shift_id).first()
+    if not db_shift or db_shift.is_deleted:
+        return False
+    db_shift.is_deleted = True
+    # Unassign staff members having this shift
+    db.query(Staff).filter(Staff.shift_id == shift_id).update({Staff.shift_id: None})
+    db.commit()
+    return True
+
+def get_attendance_rules(db: Session) -> AttendanceRule:
+    rule = db.query(AttendanceRule).first()
+    if not rule:
+        rule = AttendanceRule(
+            late_grace_minutes=0,
+            half_day_threshold_hours=4.0,
+            min_hours_present=8.0
+        )
+        db.add(rule)
+        db.commit()
+        db.refresh(rule)
+    return rule
+
+def update_attendance_rule(db: Session, rule_in: AttendanceRuleUpdate) -> AttendanceRule:
+    rule = db.query(AttendanceRule).first()
+    if not rule:
+        rule = AttendanceRule(
+            late_grace_minutes=rule_in.late_grace_minutes,
+            half_day_threshold_hours=rule_in.half_day_threshold_hours,
+            min_hours_present=rule_in.min_hours_present
+        )
+        db.add(rule)
+    else:
+        rule.late_grace_minutes = rule_in.late_grace_minutes
+        rule.half_day_threshold_hours = rule_in.half_day_threshold_hours
+        rule.min_hours_present = rule_in.min_hours_present
+    db.commit()
+    db.refresh(rule)
+    return rule
 
 # --- STAFF & ATTENDANCE ---
 def get_staff(db: Session, include_deleted: bool = False) -> List[Staff]:
@@ -746,7 +1024,8 @@ def create_staff(db: Session, staff: StaffCreate, user_id: Optional[str] = None)
         phone=staff.phone,
         email=staff.email,
         salary=staff.salary,
-        status=staff.status
+        status=staff.status,
+        shift_id=staff.shift_id
     )
     if staff.email:
         user = db.query(User).filter(func.lower(User.email) == func.lower(staff.email), User.is_deleted == False).first()
@@ -809,6 +1088,17 @@ def restore_staff(db: Session, staff_id: str, user_id: str) -> bool:
     db_staff.is_deleted = False
     db_staff.deleted_at = None
     db_staff.deleted_by = None
+    db_staff.status = "active"  # Re-activate staff on restore
+
+    # Also restore the associated User record so they can login again
+    if db_staff.user_id:
+        db_user = db.query(User).filter(User.id == db_staff.user_id).first()
+        if db_user:
+            db_user.is_deleted = False
+            db_user.deleted_at = None
+            db_user.deleted_by = None
+            db_user.status = "active"  # Re-activate user account on restore
+
     db.commit()
     log_activity(db, user_id, "restore_staff", f"Restored staff employee: ID {staff_id}")
     return True
@@ -846,6 +1136,244 @@ def log_attendance(db: Session, att: AttendanceCreate) -> Attendance:
         db.commit()
         db.refresh(db_att)
         return db_att
+
+
+def time_to_minutes(time_str: str) -> int:
+    try:
+        h, m = map(int, time_str.split(":"))
+        return h * 60 + m
+    except Exception:
+        return 0
+
+def attendance_check_in(
+    db: Session,
+    staff_id: str,
+    date_val: date,
+    time_str: str,
+    device: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    device_fingerprint: Optional[str] = None,
+    browser_details: Optional[str] = None
+) -> Attendance:
+    existing = db.query(Attendance).filter(
+        Attendance.staff_id == staff_id,
+        Attendance.date == date_val
+    ).first()
+    
+    if existing:
+        raise ValueError("Already checked in today")
+        
+    staff_member = db.query(Staff).filter(Staff.id == staff_id).first()
+    rules = get_attendance_rules(db)
+    grace = rules.late_grace_minutes if rules else 0
+    
+    shift_check_in = staff_member.shift.check_in_time if (staff_member and staff_member.shift) else "09:30"
+    
+    check_in_mins = time_to_minutes(time_str)
+    shift_in_mins = time_to_minutes(shift_check_in)
+    
+    late_arrival = check_in_mins > (shift_in_mins + grace)
+    
+    # Anti-proxy duplicate device fingerprint check
+    is_suspicious = False
+    suspicious_reason = None
+    if device_fingerprint:
+        duplicates = db.query(Attendance).filter(
+            Attendance.date == date_val,
+            Attendance.check_in_fingerprint == device_fingerprint,
+            Attendance.staff_id != staff_id
+        ).all()
+        if duplicates:
+            is_suspicious = True
+            suspicious_reason = f"Proxy Alert: Same device fingerprint '{device_fingerprint}' used by multiple employees for checkin."
+            for dup in duplicates:
+                dup.is_suspicious = True
+                dup.suspicious_reason = (dup.suspicious_reason + "; " + suspicious_reason) if dup.suspicious_reason else suspicious_reason
+            create_system_notification(
+                db,
+                title="Proxy Attempt Detected",
+                description=f"Multiple employees checked in using the same device fingerprint today.",
+                notif_type="proxy_alert"
+            )
+            
+    # Look up last attendance record for the employee
+    last_att = db.query(Attendance).filter(
+        Attendance.staff_id == staff_id
+    ).order_by(Attendance.date.desc()).first()
+    
+    if last_att:
+        patterns = []
+        if device_fingerprint and last_att.check_in_fingerprint and device_fingerprint != last_att.check_in_fingerprint:
+            patterns.append("device fingerprint changed from yesterday")
+        if ip_address and last_att.ip_address and ip_address != last_att.ip_address:
+            patterns.append("IP address changed from yesterday")
+        if browser_details and last_att.check_in_browser and browser_details != last_att.check_in_browser:
+            patterns.append("browser details changed from yesterday")
+            
+        if patterns:
+            is_suspicious = True
+            change_reason = "Suspicious Pattern: Attendance " + " and ".join(patterns) + "."
+            suspicious_reason = (suspicious_reason + "; " + change_reason) if suspicious_reason else change_reason
+            create_system_notification(
+                db,
+                title="Proxy Attempt Detected",
+                description=f"Employee check-in details changed from their last attendance record.",
+                notif_type="proxy_alert"
+            )
+            
+    db_att = Attendance(
+        staff_id=staff_id,
+        date=date_val,
+        status="present",
+        check_in=time_str,
+        check_out=None,
+        device=device,
+        ip_address=ip_address,
+        total_hours=0.0,
+        overtime_hours=0.0,
+        late_arrival=late_arrival,
+        early_departure=False,
+        check_in_fingerprint=device_fingerprint,
+        check_in_browser=browser_details,
+        is_suspicious=is_suspicious,
+        suspicious_reason=suspicious_reason
+    )
+    db.add(db_att)
+    db.commit()
+    db.refresh(db_att)
+    return db_att
+
+
+def attendance_check_out(
+    db: Session,
+    staff_id: str,
+    date_val: date,
+    time_str: str,
+    device: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    device_fingerprint: Optional[str] = None,
+    browser_details: Optional[str] = None,
+    project_id: Optional[str] = None,
+    task: Optional[str] = None,
+    work_photo: Optional[str] = None,
+    remarks: Optional[str] = None,
+    progress_percentage: Optional[int] = None
+) -> Attendance:
+    db_att = db.query(Attendance).filter(
+        Attendance.staff_id == staff_id,
+        Attendance.date == date_val
+    ).first()
+    
+    if not db_att or not db_att.check_in:
+        raise ValueError("Must check in first")
+        
+    if db_att.check_out:
+        raise ValueError("Already checked out today")
+        
+    staff_member = db.query(Staff).filter(Staff.id == staff_id).first()
+    if staff_member and staff_member.shift:
+        role_lower = staff_member.role.lower()
+        if "admin" not in role_lower and "manager" not in role_lower:
+            if time_to_minutes(time_str) < time_to_minutes(staff_member.shift.check_out_time):
+                raise ValueError("You cannot check out before shift completion.")
+                
+    db_att.check_out = time_str
+    db_att.check_out_device = device
+    db_att.check_out_ip = ip_address
+    db_att.check_out_fingerprint = device_fingerprint
+    db_att.check_out_browser = browser_details
+    
+    # Project-linked details
+    if project_id:
+        db_att.project_id = project_id
+    if task:
+        db_att.task = task
+    if work_photo:
+        db_att.work_photo = work_photo
+    if remarks:
+        db_att.remarks = remarks
+    if progress_percentage is not None:
+        db_att.progress_percentage = progress_percentage
+        
+    # Anti-Proxy Verification
+    reasons = []
+    if db_att.check_in_fingerprint and device_fingerprint and db_att.check_in_fingerprint != device_fingerprint:
+        reasons.append("Device fingerprint mismatch")
+    if db_att.ip_address and ip_address and db_att.ip_address != ip_address:
+        reasons.append("IP address mismatch")
+    if db_att.check_in_browser and browser_details and db_att.check_in_browser != browser_details:
+        reasons.append("Browser details mismatch")
+        
+    if device_fingerprint:
+        duplicates = db.query(Attendance).filter(
+            Attendance.date == date_val,
+            Attendance.check_out_fingerprint == device_fingerprint,
+            Attendance.staff_id != staff_id
+        ).all()
+        if duplicates:
+            reasons.append(f"Proxy Alert: Same device fingerprint '{device_fingerprint}' used by multiple employees for checkout.")
+            for dup in duplicates:
+                dup.is_suspicious = True
+                dup_reason = f"Proxy Alert: Same device fingerprint '{device_fingerprint}' used by multiple employees."
+                dup.suspicious_reason = (dup.suspicious_reason + "; " + dup_reason) if dup.suspicious_reason else dup_reason
+            create_system_notification(
+                db,
+                title="Proxy Attempt Detected",
+                description=f"Multiple employees checked out using the same device fingerprint today.",
+                notif_type="proxy_alert"
+            )
+            
+    if reasons:
+        db_att.is_suspicious = True
+        added_reasons = "; ".join(reasons)
+        db_att.suspicious_reason = (db_att.suspicious_reason + "; " + added_reasons) if db_att.suspicious_reason else added_reasons
+        log_detailed_activity(
+            db, None, "Attendance", "flag_suspicious", db_att.id,
+            f"Suspicious attendance flagged for staff ID {staff_id}: {db_att.suspicious_reason}"
+        )
+    
+    # Calculate hours
+    try:
+        in_total = time_to_minutes(db_att.check_in)
+        out_total = time_to_minutes(time_str)
+        diff = out_total - in_total
+        total_hours = max(0.0, round(diff / 60.0, 2))
+    except Exception:
+        total_hours = 8.0  # Default fallback if parsing fails
+        
+    # Calculate overtime
+    overtime_hours = 0.0
+    shift_end = staff_member.shift.check_out_time if (staff_member and staff_member.shift) else "18:00"
+    try:
+        if time_str > shift_end:
+            limit_total = time_to_minutes(shift_end)
+            ot_diff = out_total - limit_total
+            overtime_hours = max(0.0, round(ot_diff / 60.0, 2))
+    except Exception:
+        pass
+        
+    early_departure = False
+    if staff_member and staff_member.shift:
+        early_departure = time_to_minutes(time_str) < time_to_minutes(staff_member.shift.check_out_time)
+    else:
+        early_departure = time_str < "18:00"
+        
+    db_att.total_hours = total_hours
+    db_att.overtime_hours = overtime_hours
+    db_att.early_departure = early_departure
+    
+    # Update status based on threshold rules
+    rules = get_attendance_rules(db)
+    half_day_threshold = rules.half_day_threshold_hours if rules else 4.0
+    if total_hours < half_day_threshold:
+        db_att.status = "half_day"
+    else:
+        db_att.status = "present"
+        
+    db.commit()
+    db.refresh(db_att)
+    return db_att
+
 
 # --- NOTIFICATIONS ---
 def get_notifications(db: Session, unread_only: bool = False) -> List[Notification]:
@@ -1099,3 +1627,121 @@ def get_version_histories(db: Session, entity_type: str, entity_id: str) -> List
         VersionHistory.entity_type == entity_type,
         VersionHistory.entity_id == entity_id
     ).order_by(VersionHistory.version_num.desc()).all()
+
+
+# --- PROJECT ASSIGNMENTS ---
+
+def get_project_assignments(db: Session, project_id: str) -> List[ProjectAssignment]:
+    return db.query(ProjectAssignment).filter(ProjectAssignment.project_id == project_id).all()
+
+def create_project_assignment(db: Session, project_id: str, user_id: str) -> ProjectAssignment:
+    existing = db.query(ProjectAssignment).filter(
+        ProjectAssignment.project_id == project_id,
+        ProjectAssignment.user_id == user_id
+    ).first()
+    if existing:
+        return existing
+    assignment = ProjectAssignment(project_id=project_id, user_id=user_id)
+    db.add(assignment)
+    db.commit()
+    db.refresh(assignment)
+    return assignment
+
+def delete_project_assignment(db: Session, project_id: str, user_id: str) -> bool:
+    assignment = db.query(ProjectAssignment).filter(
+        ProjectAssignment.project_id == project_id,
+        ProjectAssignment.user_id == user_id
+    ).first()
+    if not assignment:
+        return False
+    db.delete(assignment)
+    db.commit()
+    return True
+
+def get_user_project_ids(db: Session, user_id: str) -> List[str]:
+    return [a.project_id for a in db.query(ProjectAssignment.project_id).filter(ProjectAssignment.user_id == user_id).all()]
+
+
+# --- DAILY WORK LOGS ---
+
+def create_daily_work_log(
+    db: Session,
+    user_id: str,
+    project_id: str,
+    task: str,
+    hours_worked: float,
+    progress_percentage: int,
+    remarks: Optional[str] = None,
+    work_photo: Optional[str] = None
+) -> DailyWorkLog:
+    log = DailyWorkLog(
+        user_id=user_id,
+        project_id=project_id,
+        task=task,
+        hours_worked=hours_worked,
+        progress_percentage=progress_percentage,
+        remarks=remarks,
+        work_photo=work_photo
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    return log
+
+def get_daily_work_logs(db: Session, user_id: Optional[str] = None) -> List[DailyWorkLog]:
+    query = db.query(DailyWorkLog)
+    if user_id:
+        query = query.filter(DailyWorkLog.user_id == user_id)
+    return query.order_by(DailyWorkLog.created_at.desc()).all()
+
+
+# Daily Expense CRUD
+def create_daily_expense(db: Session, exp: DailyExpenseCreate, user_id: str) -> DailyExpense:
+    target_date = exp.expense_date or date.today()
+    date_str = target_date.strftime("%Y%m%d")
+    exp_count = db.query(func.count(DailyExpense.id)).filter(DailyExpense.expense_date == target_date).scalar()
+    expense_id = f"EXP-{date_str}-{exp_count + 1:04d}"
+    
+    db_exp = DailyExpense(
+        expense_id=expense_id,
+        expense_date=target_date,
+        expense_category=exp.expense_category,
+        description=exp.description,
+        amount=exp.amount,
+        vendor=exp.vendor,
+        project_id=exp.project_id,
+        created_by=user_id,
+        attachment_url=exp.attachment_url
+    )
+    db.add(db_exp)
+    db.commit()
+    db.refresh(db_exp)
+    log_detailed_activity(db, user_id, "DailyExpense", "create", db_exp.id, f"Created expense {db_exp.expense_id} of amount {db_exp.amount}")
+    return db_exp
+
+def get_daily_expenses(
+    db: Session,
+    project_id: Optional[str] = None,
+    category: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None
+) -> List[DailyExpense]:
+    query = db.query(DailyExpense).filter(DailyExpense.is_deleted == False)
+    if project_id:
+        query = query.filter(DailyExpense.project_id == project_id)
+    if category:
+        query = query.filter(DailyExpense.expense_category == category)
+    if start_date:
+        query = query.filter(DailyExpense.expense_date >= start_date)
+    if end_date:
+        query = query.filter(DailyExpense.expense_date <= end_date)
+    return query.order_by(DailyExpense.expense_date.desc()).all()
+
+def delete_daily_expense(db: Session, expense_id: str, user_id: str) -> Optional[DailyExpense]:
+    db_exp = db.query(DailyExpense).filter(DailyExpense.id == expense_id, DailyExpense.is_deleted == False).first()
+    if not db_exp:
+        return None
+    db_exp.is_deleted = True
+    db.commit()
+    log_detailed_activity(db, user_id, "DailyExpense", "delete", expense_id, f"Soft-deleted expense {db_exp.expense_id}")
+    return db_exp

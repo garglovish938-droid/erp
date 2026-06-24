@@ -18,6 +18,13 @@ class User(Base):
     role = Column(String(20), default="worker", nullable=False)  # admin, manager, store, accountant, worker
     full_name = Column(String(100), nullable=False)
     phone = Column(String(20), unique=True, nullable=True)
+    employee_code = Column(String(50), unique=True, index=True, nullable=True)
+    department = Column(String(100), nullable=True)
+    status = Column(String(20), default="active", nullable=False)
+    permissions = Column(Text, nullable=True)
+    otp_code = Column(String(10), nullable=True)
+    otp_expires_at = Column(DateTime, nullable=True)
+    refresh_token = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     # Soft delete
@@ -129,6 +136,7 @@ class Project(Base):
     start_date = Column(Date, nullable=True)
     end_date = Column(Date, nullable=True)
     budget = Column(Float, default=0.0, nullable=False)
+    completion_percentage = Column(Integer, default=0, nullable=False)  # NEW: 0-100
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     # Soft delete
@@ -178,7 +186,7 @@ class MaterialRequest(Base):
     __tablename__ = "material_requests"
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False)
     requested_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     quantity = Column(Float, nullable=False)
@@ -211,9 +219,27 @@ class PurchaseOrder(Base):
     total_cost = Column(Float, nullable=False)
     status = Column(String(20), default="pending", nullable=False)  # pending, approved, ordered, delivered, received
     requested_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    category = Column(String(50), default="Raw Material", nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
+    # Redesign Purchase Order Additional Fields
+    po_date = Column(Date, default=date.today, nullable=True)
+    vendor_name = Column(String(100), nullable=True)
+    vendor_contact = Column(String(50), nullable=True)
+    vendor_gst = Column(String(20), nullable=True)
+    vendor_address = Column(Text, nullable=True)
+    material_name = Column(String(100), nullable=True)
+    sku = Column(String(50), nullable=True)
+    unit = Column(String(20), nullable=True)
+    expected_delivery_date = Column(Date, nullable=True)
+    received_quantity = Column(Float, default=0.0, nullable=True)
+    pending_quantity = Column(Float, default=0.0, nullable=True)
+    invoice_number = Column(String(50), nullable=True)
+    invoice_date = Column(Date, nullable=True)
+    payment_status = Column(String(20), default="Pending", nullable=False)
+    remarks = Column(Text, nullable=True)
+
     # Soft delete
     is_deleted = Column(Boolean, default=False, nullable=False)
     deleted_at = Column(DateTime, nullable=True)
@@ -222,7 +248,6 @@ class PurchaseOrder(Base):
     # Relationships
     supplier = relationship("Supplier", back_populates="purchase_orders")
     inventory = relationship("InventoryItem", back_populates="purchase_orders")
-
 class Staff(Base):
     __tablename__ = "staff"
     
@@ -234,6 +259,9 @@ class Staff(Base):
     email = Column(String(100), nullable=True)
     salary = Column(Float, default=0.0, nullable=False)
     status = Column(String(20), default="active", nullable=False)  # active, inactive
+    shift_id = Column(String(36), ForeignKey("shifts.id", ondelete="SET NULL"), nullable=True)
+    category = Column(String(50), nullable=True)
+    department = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     # Soft delete
@@ -243,6 +271,7 @@ class Staff(Base):
 
     # Relationships
     attendance_records = relationship("Attendance", back_populates="staff_member", cascade="all, delete-orphan")
+    shift = relationship("Shift", back_populates="staff_members")
 
 class Attendance(Base):
     __tablename__ = "attendance"
@@ -253,13 +282,62 @@ class Attendance(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     staff_id = Column(String(36), ForeignKey("staff.id", ondelete="CASCADE"), nullable=False)
     date = Column(Date, nullable=False)
-    status = Column(String(20), nullable=False)  # present, absent, leave
+    status = Column(String(20), nullable=False)  # present, absent, leave, half_day
     check_in = Column(String(10), nullable=True)  # HH:MM format
     check_out = Column(String(10), nullable=True)  # HH:MM format
+    device = Column(String(100), nullable=True)
+    ip_address = Column(String(50), nullable=True)
+    total_hours = Column(Float, default=0.0)
+    overtime_hours = Column(Float, default=0.0)
+    late_minutes = Column(Integer, default=0)  # NEW: minutes late from shift start
+    late_arrival = Column(Boolean, default=False)
+    early_departure = Column(Boolean, default=False)
+    check_in_selfie = Column(String(255), nullable=True)
+    check_out_selfie = Column(String(255), nullable=True)
+    
+    # Anti-Proxy tracking
+    check_in_fingerprint = Column(String(100), nullable=True)
+    check_in_browser = Column(Text, nullable=True)
+    check_out_device = Column(String(100), nullable=True)
+    check_out_ip = Column(String(50), nullable=True)
+    check_out_fingerprint = Column(String(100), nullable=True)
+    check_out_browser = Column(Text, nullable=True)
+    is_suspicious = Column(Boolean, default=False)
+    suspicious_reason = Column(Text, nullable=True)
+    
+    # Project-linked updates
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    task = Column(String(200), nullable=True)
+    work_photo = Column(String(255), nullable=True)
+    remarks = Column(Text, nullable=True)
+    progress_percentage = Column(Integer, default=0)
+    
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     # Relationships
     staff_member = relationship("Staff", back_populates="attendance_records")
+    project = relationship("Project")
+
+class Shift(Base):
+    __tablename__ = "shifts"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    name = Column(String(50), unique=True, nullable=False)
+    check_in_time = Column(String(10), nullable=False)  # HH:MM format
+    check_out_time = Column(String(10), nullable=False)  # HH:MM format
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    is_deleted = Column(Boolean, default=False, nullable=False)
+
+    staff_members = relationship("Staff", back_populates="shift")
+
+class AttendanceRule(Base):
+    __tablename__ = "attendance_rules"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    late_grace_minutes = Column(Integer, default=0, nullable=False)
+    half_day_threshold_hours = Column(Float, default=4.0, nullable=False)
+    min_hours_present = Column(Float, default=8.0, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 class Notification(Base):
     __tablename__ = "notifications"
@@ -279,6 +357,7 @@ class ActivityLog(Base):
     action = Column(String(100), nullable=False)  # login, create_user, stock_adjustment, etc.
     details = Column(Text, nullable=True)
     ip_address = Column(String(50), nullable=True)
+    device = Column(String(100), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     # Relationships
@@ -410,3 +489,78 @@ class VersionHistory(Base):
     serialized_data = Column(Text, nullable=False)  # JSON dump of data values
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     created_by = Column(String(36), nullable=True)
+
+
+class ProjectAssignment(Base):
+    __tablename__ = "project_assignments"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    project = relationship("Project")
+    user = relationship("User")
+
+
+class DailyWorkLog(Base):
+    __tablename__ = "daily_work_logs"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    task = Column(String(200), nullable=False)
+    hours_worked = Column(Float, nullable=False)
+    progress_percentage = Column(Integer, nullable=False)
+    remarks = Column(Text, nullable=True)
+    work_photo = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User")
+    project = relationship("Project")
+
+
+class ProjectDailyLog(Base):
+    """NEW: Daily progress log submitted by employees for a project.
+    Multiple logs per project per day (one per staff member).
+    Separate from DailyWorkLog to avoid schema conflicts.
+    """
+    __tablename__ = "project_daily_logs"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    staff_id = Column(String(36), ForeignKey("staff.id", ondelete="SET NULL"), nullable=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    log_date = Column(Date, nullable=False, default=date.today)
+    task = Column(String(300), nullable=False)
+    hours_worked = Column(Float, nullable=False, default=0.0)
+    progress_percentage = Column(Integer, nullable=False, default=0)  # 0-100
+    remarks = Column(Text, nullable=True)
+    work_photos = Column(Text, nullable=True)  # JSON array of file paths
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    project = relationship("Project")
+    staff = relationship("Staff")
+    user = relationship("User")
+
+
+class DailyExpense(Base):
+    """NEW: Daily Expenses records and categories.
+    """
+    __tablename__ = "daily_expenses"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    expense_id = Column(String(50), unique=True, index=True, nullable=False)
+    expense_date = Column(Date, nullable=False, default=date.today)
+    expense_category = Column(String(50), nullable=False)
+    description = Column(Text, nullable=True)
+    amount = Column(Float, nullable=False)
+    vendor = Column(String(100), nullable=True)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    attachment_url = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    is_deleted = Column(Boolean, default=False, nullable=False)
+
+    project = relationship("Project")
+    creator = relationship("User")

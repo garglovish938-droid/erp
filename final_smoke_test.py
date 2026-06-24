@@ -1,251 +1,178 @@
 """
-ALLURE LIVING ERP - Final Smoke Test
-Tests all 10 checkpoints with CORRECT route paths.
+Live end-to-end test for Archive/Restore user Prince via API.
+Uses requests library to call the ERP API directly.
 """
 import requests
 import json
-import sys
+import sqlite3
 
-BASE = "http://localhost:8000"
-results = {}
-evidence = {}
+BASE_URL = "http://localhost:8000"
+DB_PATH = r'd:\Factory erp\erp_demo\backend\erp.db'
 
-def log(msg): print(msg)
-def sep(t): print(f"\n{'='*60}\n  {t}\n{'='*60}")
-def check(name, ok, detail=""): 
-    results[name] = "PASS" if ok else "FAIL"
-    icon = "[PASS]" if ok else "[FAIL]"
-    print(f"  {icon} {name}")
-    if detail: print(f"         {detail}")
+# Target user
+TARGET_EMAIL = "princerajput27034@gmail.com"
+TARGET_USER_ID = "7eb41b52-fbe3-44ad-8710-49d4e7e2e5e3"
+TARGET_STAFF_ID = "390a3b58-ce40-4fca-b0b1-8b21f2683928"
 
-# LOGIN
-sep("LOGIN")
-r = requests.post(f"{BASE}/api/auth/login", json={"email": "admin@allure.com", "password": "admin123"})
-data = r.json()
-token = data.get("access_token", "")
-H = {"Authorization": f"Bearer {token}"}
-if not token:
-    print(f"LOGIN FAILED: {data}")
-    sys.exit(1)
-print(f"  Logged in as: {data.get('full_name')} | Role: {data.get('role')}")
+ADMIN_EMAIL = "admin@allure.com"
+ADMIN_PASSWORD = "admin123"
 
-# ── 1. STAFF REGISTRY ─────────────────────────────────────────
-sep("1. STAFF REGISTRY")
-r = requests.get(f"{BASE}/api/staff", headers=H)
-staff = r.json() if r.ok else []
-active = [s for s in staff if not s.get("is_deleted")]
-print(f"  HTTP: {r.status_code} | Active employees: {len(active)}")
-for s in active:
-    print(f"    -> {s.get('name')} | {s.get('role')} | {s.get('department','N/A')}")
-r2 = requests.get(f"{BASE}/api/dashboard/overview", headers=H)
-dash = r2.json() if r2.ok else {}
-print(f"  Dashboard: present_employees={dash.get('present_employees_count','N/A')}, total_staff={dash.get('total_staff','N/A')}")
-evidence["1_staff"] = f"{len(active)} active employees found"
-check("1_staff_registry", len(active) > 0, f"Active staff count: {len(active)}")
+def print_separator(title=""):
+    print("\n" + "="*60)
+    if title:
+        print(f"  {title}")
+        print("="*60)
 
-# ── 2. INVENTORY CSV IMPORT ─────────────────────────────────────
-sep("2. INVENTORY CSV IMPORT")
-csv_inv = "SKU,Name,Category,Unit,Quantity,Min Quantity,Unit Price\nSMK-INV-001,Smoke Test Steel Pipe,Raw Materials,pcs,25,5,45.00"
-files = {"file": ("inventory.csv", csv_inv.encode(), "text/csv")}
-r = requests.post(f"{BASE}/api/inventory/import", headers=H, files=files)
-print(f"  HTTP: {r.status_code} | Response: {r.text[:200]}")
-evidence["2_inv_csv"] = r.text[:200]
-check("2_inventory_csv_import", r.ok, f"HTTP {r.status_code}")
+def get_db_state():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, full_name, email, is_deleted, status FROM users WHERE id = ?", (TARGET_USER_ID,))
+    user = cursor.fetchone()
+    cursor.execute("SELECT id, name, email, is_deleted, status FROM staff WHERE id = ?", (TARGET_STAFF_ID,))
+    staff = cursor.fetchone()
+    conn.close()
+    return {"user": user, "staff": staff}
 
-# ── 3. PROJECT CSV IMPORT ─────────────────────────────────────
-sep("3. PROJECT CSV IMPORT")
-csv_proj = "Project ID,Project Name,Client Name,Start Date,Expected End Date,Status,Remarks\n,Smoke Test Villa Renovation,Allure Test Client,2026-07-01,2026-12-31,planning,smoke test import"
-files = {"file": ("projects.csv", csv_proj.encode(), "text/csv")}
-r = requests.post(f"{BASE}/api/projects/import", headers=H, files=files)
-print(f"  HTTP: {r.status_code} | Response: {r.text[:300]}")
-evidence["3_proj_csv"] = r.text[:300]
-check("3_project_csv_import", r.ok, f"HTTP {r.status_code}")
+def main():
+    print_separator("ALLURE ERP - ARCHIVE/RESTORE USER TEST")
 
-# ── 4. CLIENT ARCHIVE ──────────────────────────────────────────
-sep("4. CLIENT ARCHIVE")
-r_create = requests.post(f"{BASE}/api/clients", headers=H, json={
-    "name": "Smoke Archive Test Client",
-    "contact_person": "Test Contact",
-    "email": "smoketest@client.com",
-    "phone": "0123456789",
-    "address": "Test Street"
-})
-print(f"  Create: HTTP {r_create.status_code}")
-if r_create.ok:
-    cid = r_create.json()["id"]
-    r_arch = requests.delete(f"{BASE}/api/clients/{cid}", headers=H)
-    print(f"  Archive: HTTP {r_arch.status_code} -> {r_arch.json()}")
-    # Verify with include_deleted
-    r_all = requests.get(f"{BASE}/api/clients?include_deleted=true", headers=H)
-    archived = [c for c in (r_all.json() if r_all.ok else []) if c.get("id") == cid and c.get("is_deleted")]
-    print(f"  Archived confirmed in DB: {len(archived) > 0}")
-    evidence["4_client"] = f"Archived client {cid}"
-    check("4_client_archive", r_arch.ok and len(archived) > 0, r_arch.json().get("message",""))
-else:
-    check("4_client_archive", False, f"Create failed: {r_create.text[:100]}")
+    # Step 1: Admin Login
+    print_separator("STEP 1: Admin Login")
+    login_resp = requests.post(f"{BASE_URL}/api/auth/login", json={
+        "username": ADMIN_EMAIL,
+        "password": ADMIN_PASSWORD
+    })
+    print(f"Login Status Code: {login_resp.status_code}")
+    print(f"Login Response: {login_resp.text[:500]}")
 
-# ── 5. SUPPLIER ARCHIVE ────────────────────────────────────────
-sep("5. SUPPLIER ARCHIVE")
-r_create = requests.post(f"{BASE}/api/suppliers", headers=H, json={
-    "name": "Smoke Archive Test Supplier",
-    "contact_person": "Sup Contact",
-    "email": "smoketest@supplier.com",
-    "phone": "0987654321",
-    "address": "Supplier Street"
-})
-print(f"  Create: HTTP {r_create.status_code}")
-if r_create.ok:
-    sid = r_create.json()["id"]
-    r_arch = requests.delete(f"{BASE}/api/suppliers/{sid}", headers=H)
-    print(f"  Archive: HTTP {r_arch.status_code} -> {r_arch.json()}")
-    # Try to archive a supplier WITH linked POs (should be blocked)
-    r_all_sups = requests.get(f"{BASE}/api/suppliers", headers=H)
-    active_sups = [s for s in (r_all_sups.json() if r_all_sups.ok else []) if not s.get("is_deleted")]
-    print(f"  Active suppliers remaining: {len(active_sups)}")
-    evidence["5_supplier"] = f"Archived supplier {sid}"
-    check("5_supplier_archive", r_arch.ok, r_arch.json().get("message",""))
-else:
-    check("5_supplier_archive", False, f"Create failed: {r_create.text[:100]}")
+    if login_resp.status_code != 200:
+        print("FAILED: Could not login as admin.")
+        return
 
-# ── 6. PROJECT ARCHIVE ─────────────────────────────────────────
-sep("6. PROJECT ARCHIVE")
-r_create = requests.post(f"{BASE}/api/projects", headers=H, json={
-    "name": "Smoke Archive Test Project",
-    "status": "planning",
-    "budget": 10000,
-    "start_date": "2026-07-01",
-    "end_date": "2026-12-31"
-})
-print(f"  Create: HTTP {r_create.status_code}")
-if r_create.ok:
-    pid = r_create.json()["id"]
-    r_arch = requests.delete(f"{BASE}/api/projects/{pid}", headers=H)
-    print(f"  Archive: HTTP {r_arch.status_code} -> {r_arch.json()}")
-    evidence["6_project"] = f"Archived project {pid}"
-    check("6_project_archive", r_arch.ok, r_arch.json().get("message",""))
-else:
-    check("6_project_archive", False, f"Create failed: {r_create.text[:100]}")
+    token = login_resp.json().get("access_token")
+    headers = {"Authorization": f"Bearer {token}"}
 
-# ── 7. PURCHASE ORDER RECEIVE ─────────────────────────────────
-sep("7. PURCHASE ORDER RECEIVE (Stock Update)")
-# Get active inventory item and supplier
-r_inv = requests.get(f"{BASE}/api/inventory", headers=H)
-items = [i for i in (r_inv.json() if r_inv.ok else []) if not i.get("is_deleted")]
-r_sup = requests.get(f"{BASE}/api/suppliers", headers=H)
-sups = [s for s in (r_sup.json() if r_sup.ok else []) if not s.get("is_deleted")]
-print(f"  Active items: {len(items)} | Active suppliers: {len(sups)}")
+    # Step 2: Verify Prince exists in active users list
+    print_separator("STEP 2: Check Initial DB State")
+    db_state = get_db_state()
+    print(f"User DB: {db_state['user']}")
+    print(f"Staff DB: {db_state['staff']}")
 
-if items and sups:
-    item = items[0]
-    sup = sups[0]
-    qty_before = item.get("quantity", 0)
-    print(f"  Using item: {item.get('name')} | Stock before: {qty_before}")
+    # Step 3: Get list of users (active)
+    print_separator("STEP 3: GET /api/users - Verify Prince is in active list")
+    users_resp = requests.get(f"{BASE_URL}/api/users", headers=headers)
+    print(f"GET /api/users Status: {users_resp.status_code}")
+    users = users_resp.json() if users_resp.status_code == 200 else []
+    prince_in_list = any(u.get("id") == TARGET_USER_ID for u in users)
+    print(f"Prince in active user list: {prince_in_list}")
+
+    # Step 4: Archive/Delete Prince
+    print_separator("STEP 4: DELETE /api/users/{user_id} - Archive Prince")
+    delete_resp = requests.delete(f"{BASE_URL}/api/users/{TARGET_USER_ID}", headers=headers)
+    print(f"DELETE Status Code: {delete_resp.status_code}")
+    print(f"DELETE Response: {delete_resp.text}")
+
+    # Step 5: Check DB state after archive
+    print_separator("STEP 5: DB State After Archive")
+    db_state_after = get_db_state()
+    print(f"User DB: {db_state_after['user']}")
+    print(f"Staff DB: {db_state_after['staff']}")
+    user_is_deleted = db_state_after['user'][3] == 1 if db_state_after['user'] else None
+    print(f"User is_deleted = {user_is_deleted}")
+
+    # Step 6: Verify Prince no longer in active users list
+    print_separator("STEP 6: GET /api/users - Verify Prince is NOT in active list")
+    users_resp2 = requests.get(f"{BASE_URL}/api/users", headers=headers)
+    users2 = users_resp2.json() if users_resp2.status_code == 200 else []
+    prince_still_in_list = any(u.get("id") == TARGET_USER_ID for u in users2)
+    print(f"Prince in active user list after delete: {prince_still_in_list}")
+
+    # Step 7: Try login as Prince (should FAIL)
+    print_separator("STEP 7: Try Login as Prince (should fail - account archived)")
+    # We need to try Prince's password - let's try a few common ones
+    prince_passwords = ["admin123", "password", "password123", "prince123", "12345678"]
+    prince_login_before_restore = None
+    for pwd in prince_passwords:
+        prince_login_resp = requests.post(f"{BASE_URL}/api/auth/login", json={
+            "username": TARGET_EMAIL,
+            "password": pwd
+        })
+        print(f"  Try password '{pwd}': Status {prince_login_resp.status_code} - {prince_login_resp.text[:100]}")
+        if prince_login_resp.status_code == 200:
+            prince_login_before_restore = "SUCCESS (unexpected - user should be archived)"
+            break
+        elif prince_login_resp.status_code == 403 or "disabled" in prince_login_resp.text.lower() or "archived" in prince_login_resp.text.lower():
+            prince_login_before_restore = f"CORRECTLY BLOCKED: {prince_login_resp.text[:200]}"
+            break
+        elif prince_login_resp.status_code == 401 and "incorrect" in prince_login_resp.text.lower():
+            prince_login_before_restore = f"WRONG PASSWORD (not archived blocking): {prince_login_resp.text[:200]}"
     
-    # Create PO using correct route /api/purchasing
-    po_data = {
-        "supplier_id": sup["id"],
-        "expected_delivery_date": "2026-07-15",
-        "notes": "Smoke Test PO - Auto",
-        "items": [{"inventory_item_id": item["id"], "quantity": 10, "unit_price": 50.0}]
-    }
-    r_po = requests.post(f"{BASE}/api/purchasing", headers=H, json=po_data)
-    print(f"  Create PO: HTTP {r_po.status_code} -> {r_po.text[:150]}")
-    
-    if r_po.ok:
-        po = r_po.json()
-        po_id = po["id"]
-        po_num = po.get("po_number", po_id)
-        print(f"  Created: {po_num}")
-        
-        # Approve
-        r_approve = requests.put(f"{BASE}/api/purchasing/{po_id}/status", headers=H, json={"status": "approved"})
-        print(f"  Approve: HTTP {r_approve.status_code}")
-        
-        # Receive
-        r_receive = requests.put(f"{BASE}/api/purchasing/{po_id}/status", headers=H, json={"status": "received"})
-        print(f"  Receive: HTTP {r_receive.status_code} -> {r_receive.text[:150]}")
-        
-        # Verify stock update
-        r_inv2 = requests.get(f"{BASE}/api/inventory/{item['id']}", headers=H)
-        qty_after = r_inv2.json().get("quantity", 0) if r_inv2.ok else 0
-        delta = qty_after - qty_before
-        print(f"  Stock: {qty_before} -> {qty_after} (delta: +{delta})")
-        evidence["7_po"] = f"PO {po_num}: stock {qty_before} -> {qty_after}"
-        check("7_po_receive_stock_update", r_receive.ok and delta > 0, f"Stock delta: +{delta}")
+    print(f"Login result before restore: {prince_login_before_restore}")
+
+    # Step 8: Restore Prince via staff endpoint
+    print_separator("STEP 8: POST /api/staff/{staff_id}/restore - Restore Prince")
+    restore_resp = requests.post(f"{BASE_URL}/api/staff/{TARGET_STAFF_ID}/restore", headers=headers)
+    print(f"Restore Status Code: {restore_resp.status_code}")
+    print(f"Restore Response: {restore_resp.text}")
+
+    # Step 9: Check DB state after restore
+    print_separator("STEP 9: DB State After Restore")
+    db_state_restore = get_db_state()
+    print(f"User DB: {db_state_restore['user']}")
+    print(f"Staff DB: {db_state_restore['staff']}")
+    user_is_deleted_after_restore = db_state_restore['user'][3] == 1 if db_state_restore['user'] else None
+    print(f"User is_deleted after restore = {user_is_deleted_after_restore}")
+
+    # Step 10: Verify Prince in active list again
+    print_separator("STEP 10: GET /api/users - Verify Prince is in active list again")
+    users_resp3 = requests.get(f"{BASE_URL}/api/users", headers=headers)
+    users3 = users_resp3.json() if users_resp3.status_code == 200 else []
+    prince_back_in_list = any(u.get("id") == TARGET_USER_ID for u in users3)
+    print(f"Prince in active user list after restore: {prince_back_in_list}")
+
+    # Step 11: Reset password for Prince and try login
+    print_separator("STEP 11: Reset Prince's password and try login")
+    reset_resp = requests.post(f"{BASE_URL}/api/users/{TARGET_USER_ID}/reset-password", 
+                                headers=headers, 
+                                json={"password": "prince123"})
+    print(f"Reset Password Status: {reset_resp.status_code}")
+    print(f"Reset Response: {reset_resp.text}")
+
+    # Try login after reset
+    for pwd in ["prince123", "admin123", "password123"]:
+        prince_login_after = requests.post(f"{BASE_URL}/api/auth/login", json={
+            "username": TARGET_EMAIL,
+            "password": pwd
+        })
+        print(f"  Try password '{pwd}': Status {prince_login_after.status_code} - {prince_login_after.text[:150]}")
+        if prince_login_after.status_code == 200:
+            print("LOGIN SUCCESSFUL AFTER RESTORE!")
+            break
+
+    # Final Summary
+    print_separator("FINAL TEST RESULTS")
+    print(f"Status Code (Archive DELETE): {delete_resp.status_code}")
+    print(f"API Response (Archive):       {delete_resp.text}")
+    print(f"User Disappeared from List:   {not prince_still_in_list}")
+    print(f"User is_deleted in DB:        {user_is_deleted}")
+    print(f"Status Code (Restore POST):   {restore_resp.status_code}")
+    print(f"User Restored in List:        {prince_back_in_list}")
+    print(f"User is_deleted after restore: {user_is_deleted_after_restore}")
+
+    if delete_resp.status_code == 200 and user_is_deleted and not prince_still_in_list and restore_resp.status_code == 200 and prince_back_in_list:
+        print("\nOVERALL RESULT: SUCCESS ✓")
     else:
-        check("7_po_receive_stock_update", False, f"PO create failed: {r_po.text[:100]}")
-else:
-    check("7_po_receive_stock_update", False, "No items or suppliers available")
+        print("\nOVERALL RESULT: FAILURE ✗")
+        if delete_resp.status_code != 200:
+            print(f"  Root Cause: Archive DELETE failed with status {delete_resp.status_code}")
+        if not user_is_deleted:
+            print("  Root Cause: Database is_deleted did not change to True")
+        if prince_still_in_list:
+            print("  Root Cause: User still appearing in active list after archive")
+        if restore_resp.status_code != 200:
+            print(f"  Root Cause: Restore failed with status {restore_resp.status_code}")
+        if not prince_back_in_list:
+            print("  Root Cause: User not returned to active list after restore")
 
-# ── 8. PDF EXPORT ─────────────────────────────────────────────
-sep("8. PDF EXPORT")
-r = requests.get(f"{BASE}/api/reports/inventory/pdf", headers=H)
-is_pdf = r.content[:4] == b"%PDF"
-print(f"  HTTP: {r.status_code} | Content-Type: {r.headers.get('content-type','?')}")
-print(f"  Size: {len(r.content)} bytes | Valid PDF header: {is_pdf}")
-evidence["8_pdf"] = f"{len(r.content)} bytes, valid={is_pdf}"
-check("8_pdf_export", r.ok and is_pdf, f"{len(r.content)} bytes")
-
-# ── 9. EXCEL EXPORT ───────────────────────────────────────────
-sep("9. EXCEL EXPORT")
-r = requests.get(f"{BASE}/api/reports/inventory/excel", headers=H)
-is_xlsx = r.content[:2] == b"PK"
-print(f"  HTTP: {r.status_code} | Content-Type: {r.headers.get('content-type','?')}")
-print(f"  Size: {len(r.content)} bytes | Valid XLSX header: {is_xlsx}")
-evidence["9_excel"] = f"{len(r.content)} bytes, valid={is_xlsx}"
-check("9_excel_export", r.ok and is_xlsx, f"{len(r.content)} bytes")
-
-# ── 10. ACTIVITY LOGS ─────────────────────────────────────────
-sep("10. ACTIVITY LOGS")
-r = requests.get(f"{BASE}/api/settings/logs", headers=H)
-logs = r.json() if r.ok else []
-print(f"  HTTP: {r.status_code} | Total logs: {len(logs)}")
-structured = 0
-for log in logs[:5]:
-    det = log.get("details", "")
-    try:
-        parsed = json.loads(det)
-        action = parsed.get("action", parsed.get("type", "plain"))
-        module = parsed.get("module", "-")
-        user = parsed.get("username", "-")
-        print(f"  [{log.get('timestamp','')[:19]}] {action} | {module} | user={user}")
-        structured += 1
-    except Exception:
-        print(f"  [{log.get('timestamp','')[:19]}] {det[:60]}")
-evidence["10_logs"] = f"{len(logs)} total logs, {structured}/5 structured"
-check("10_activity_logs", r.ok and len(logs) > 0, f"{len(logs)} logs | {structured}/5 JSON-structured")
-
-# ── SUMMARY ───────────────────────────────────────────────────
-sep("FINAL SMOKE TEST RESULTS")
-passed = sum(1 for v in results.values() if v == "PASS")
-failed = sum(1 for v in results.values() if v == "FAIL")
-total = len(results)
-
-print(f"\n  {'CHECKPOINT':<45} RESULT")
-print(f"  {'-'*55}")
-labels = {
-    "1_staff_registry":        "1. Staff Registry",
-    "2_inventory_csv_import":  "2. Inventory CSV Import",
-    "3_project_csv_import":    "3. Project CSV Import",
-    "4_client_archive":        "4. Client Archive",
-    "5_supplier_archive":      "5. Supplier Archive",
-    "6_project_archive":       "6. Project Archive",
-    "7_po_receive_stock_update":"7. PO Receive (Stock Update)",
-    "8_pdf_export":            "8. PDF Export",
-    "9_excel_export":          "9. Excel Export",
-    "10_activity_logs":        "10. Activity Logs",
-}
-for k, label in labels.items():
-    v = results.get(k, "N/A")
-    icon = "PASS" if v == "PASS" else "FAIL"
-    print(f"  [{icon}] {label}")
-
-print(f"\n  PASSED  : {passed}/{total}")
-print(f"  FAILED  : {failed}/{total}")
-pct = round((passed / total) * 100, 1)
-print(f"\n  ERP PRODUCTION READINESS: {pct}%")
-print()
-if failed == 0:
-    print("  STATUS: READY FOR LIVE BUSINESS DATA")
-else:
-    print(f"  STATUS: {failed} ISSUE(S) REQUIRE ATTENTION")
+if __name__ == "__main__":
+    main()

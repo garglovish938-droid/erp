@@ -8,7 +8,8 @@ class BaseSchema(BaseModel):
 
 # Authentication & Users
 class UserLogin(BaseModel):
-    email: EmailStr
+    username: Optional[str] = None
+    email: Optional[str] = None
     password: str
 
 class UserCreate(BaseModel):
@@ -17,21 +18,44 @@ class UserCreate(BaseModel):
     full_name: str
     phone: Optional[str] = None
     role: str = "worker"  # admin, manager, store, accountant, worker
+    employee_code: Optional[str] = None
+    department: Optional[str] = None
+    status: Optional[str] = "active"
+    permissions: Optional[str] = None
+
+class UserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    password: Optional[str] = None
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    role: Optional[str] = None
+    employee_code: Optional[str] = None
+    department: Optional[str] = None
+    status: Optional[str] = None
+    permissions: Optional[str] = None
 
 class UserResponse(BaseSchema):
     id: str
     email: EmailStr
     role: str
     full_name: str
-    phone: Optional[str]
+    phone: Optional[str] = None
+    employee_code: Optional[str] = None
+    department: Optional[str] = None
+    status: str = "active"
+    permissions: Optional[str] = None
     created_at: datetime
     is_deleted: bool
 
 class Token(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str
     role: str
     full_name: str
+
+class TokenRefreshRequest(BaseModel):
+    refresh_token: str
 
 class TokenData(BaseModel):
     email: Optional[str] = None
@@ -346,7 +370,7 @@ class StockTransactionCreate(BaseModel):
 
 # Material Request
 class MaterialRequestCreate(BaseModel):
-    project_id: str
+    project_id: Optional[str] = None
     inventory_id: str
     quantity: float
     notes: Optional[str] = None
@@ -360,7 +384,7 @@ class MaterialRequestCreate(BaseModel):
 
 class MaterialRequestResponse(BaseSchema):
     id: str
-    project_id: str
+    project_id: Optional[str] = None
     inventory_id: str
     requested_by: Optional[str]
     quantity: float
@@ -380,12 +404,38 @@ class PurchaseOrderCreate(BaseModel):
     inventory_id: str
     quantity: float
     unit_cost: float
+    category: str = "Raw Material"
+    
+    # Redesign Purchase Order Additional Fields
+    po_date: Optional[date] = None
+    vendor_name: Optional[str] = None
+    vendor_contact: Optional[str] = None
+    vendor_gst: Optional[str] = None
+    vendor_address: Optional[str] = None
+    material_name: Optional[str] = None
+    sku: Optional[str] = None
+    unit: Optional[str] = None
+    expected_delivery_date: Optional[date] = None
+    received_quantity: Optional[float] = 0.0
+    pending_quantity: Optional[float] = 0.0
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[date] = None
+    payment_status: Optional[str] = "Pending"
+    remarks: Optional[str] = None
 
     @field_validator('quantity', 'unit_cost')
     @classmethod
     def validate_positives(cls, v: float, info) -> float:
         if v <= 0:
             raise ValueError(f"{info.field_name} must be greater than 0")
+        return v
+
+    @field_validator('category')
+    @classmethod
+    def validate_category(cls, v: str) -> str:
+        allowed = ["Raw Material", "Food Expense", "Shipping", "Labour", "Maintenance", "Packing", "Miscellaneous", "Hettich", "Hafele", "Ebco", "Ozone", "Board", "Hardware", "Misc"]
+        if v not in allowed:
+            raise ValueError(f"Category must be one of {allowed}")
         return v
 
 class PurchaseOrderResponse(BaseSchema):
@@ -397,12 +447,57 @@ class PurchaseOrderResponse(BaseSchema):
     unit_cost: float
     total_cost: float
     status: str
+    category: str
     requested_by: Optional[str]
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
+    
+    # Redesign Purchase Order Additional Fields
+    po_date: Optional[date] = None
+    vendor_name: Optional[str] = None
+    vendor_contact: Optional[str] = None
+    vendor_gst: Optional[str] = None
+    vendor_address: Optional[str] = None
+    material_name: Optional[str] = None
+    sku: Optional[str] = None
+    unit: Optional[str] = None
+    expected_delivery_date: Optional[date] = None
+    received_quantity: Optional[float] = 0.0
+    pending_quantity: Optional[float] = 0.0
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[date] = None
+    payment_status: Optional[str] = "Pending"
+    remarks: Optional[str] = None
+    
     supplier: Optional[SupplierResponse] = None
     inventory: Optional[InventoryItemResponse] = None
+
+# Shifts & Rules
+class ShiftCreate(BaseModel):
+    name: str
+    check_in_time: str
+    check_out_time: str
+
+class ShiftResponse(BaseSchema):
+    id: str
+    name: str
+    check_in_time: str
+    check_out_time: str
+    created_at: datetime
+    is_deleted: bool
+
+class AttendanceRuleUpdate(BaseModel):
+    late_grace_minutes: int
+    half_day_threshold_hours: float
+    min_hours_present: float
+
+class AttendanceRuleResponse(BaseSchema):
+    id: str
+    late_grace_minutes: int
+    half_day_threshold_hours: float
+    min_hours_present: float
+    created_at: datetime
 
 # Staff
 class StaffCreate(BaseModel):
@@ -412,6 +507,7 @@ class StaffCreate(BaseModel):
     email: Optional[str] = None
     salary: float = 0.0
     status: str = "active"
+    shift_id: Optional[str] = None
 
     @field_validator('salary')
     @classmethod
@@ -427,6 +523,7 @@ class StaffUpdate(BaseModel):
     email: Optional[str] = None
     salary: Optional[float] = None
     status: Optional[str] = None
+    shift_id: Optional[str] = None
 
     @field_validator('salary')
     @classmethod
@@ -444,6 +541,8 @@ class StaffResponse(BaseSchema):
     email: Optional[str]
     salary: float
     status: str
+    shift_id: Optional[str] = None
+    shift: Optional[ShiftResponse] = None
     created_at: datetime
     is_deleted: bool
 
@@ -462,8 +561,42 @@ class AttendanceResponse(BaseSchema):
     status: str
     check_in: Optional[str]
     check_out: Optional[str]
+    device: Optional[str] = None
+    ip_address: Optional[str] = None
+    total_hours: float
+    overtime_hours: float
+    late_arrival: bool
+    early_departure: bool
+    check_in_selfie: Optional[str] = None
+    check_out_selfie: Optional[str] = None
+    
+    # Anti-Proxy fields
+    check_in_fingerprint: Optional[str] = None
+    check_in_browser: Optional[str] = None
+    check_out_device: Optional[str] = None
+    check_out_ip: Optional[str] = None
+    check_out_fingerprint: Optional[str] = None
+    check_out_browser: Optional[str] = None
+    is_suspicious: bool = False
+    suspicious_reason: Optional[str] = None
+    
+    # Project-linked details
+    project_id: Optional[str] = None
+    task: Optional[str] = None
+    work_photo: Optional[str] = None
+    remarks: Optional[str] = None
+    progress_percentage: int = 0
+    project: Optional[ProjectResponse] = None
+
     created_at: datetime
     staff_member: Optional[StaffResponse] = None
+
+class AttendanceCorrection(BaseModel):
+    status: Optional[str] = None
+    check_in: Optional[str] = None
+    check_out: Optional[str] = None
+    total_hours: Optional[float] = None
+    overtime_hours: Optional[float] = None
 
 # Notification
 class NotificationResponse(BaseSchema):
@@ -500,6 +633,7 @@ class DashboardOverview(BaseModel):
     pending_deliveries_count: int
     present_employees_count: int
     absent_employees_count: int
+    today_expense_total: float = 0.0
 
 
 # --- CONFIGURATION SCHEMAS ---
@@ -648,3 +782,119 @@ class VersionHistoryResponse(BaseSchema):
     serialized_data: str
     created_at: datetime
     created_by: Optional[str]
+
+
+class ProjectAssignmentCreate(BaseModel):
+    project_id: str
+    user_id: str
+
+class ProjectAssignmentResponse(BaseSchema):
+    id: str
+    project_id: str
+    user_id: str
+    created_at: datetime
+    project: Optional[ProjectResponse] = None
+    user: Optional[UserResponse] = None
+
+
+class DailyWorkLogCreate(BaseModel):
+    project_id: str
+    task: str
+    hours_worked: float
+    progress_percentage: int
+    remarks: Optional[str] = None
+    work_photo: Optional[str] = None
+
+    @field_validator('hours_worked')
+    @classmethod
+    def validate_hours(cls, v: float) -> float:
+        if v <= 0 or v > 24:
+            raise ValueError("hours_worked must be between 0.1 and 24.0")
+        return v
+
+    @field_validator('progress_percentage')
+    @classmethod
+    def validate_progress(cls, v: int) -> int:
+        if v < 0 or v > 100:
+            raise ValueError("progress_percentage must be between 0 and 100")
+        return v
+
+class DailyWorkLogResponse(BaseSchema):
+    id: str
+    user_id: str
+    project_id: str
+    task: str
+    hours_worked: float
+    progress_percentage: int
+    remarks: Optional[str]
+    work_photo: Optional[str] = None
+    created_at: datetime
+    user: Optional[UserResponse] = None
+    project: Optional[ProjectResponse] = None
+
+
+class CheckInRequest(BaseModel):
+    device: Optional[str] = None
+    ip_address: Optional[str] = None
+    device_fingerprint: Optional[str] = None
+    browser_details: Optional[str] = None
+    custom_time: Optional[str] = None
+    custom_date: Optional[date] = None
+
+
+class CheckOutRequest(BaseModel):
+    device: Optional[str] = None
+    ip_address: Optional[str] = None
+    device_fingerprint: Optional[str] = None
+    browser_details: Optional[str] = None
+    custom_time: Optional[str] = None
+    custom_date: Optional[date] = None
+    project_id: Optional[str] = None
+    task: Optional[str] = None
+    work_photo: Optional[str] = None
+    remarks: Optional[str] = None
+    progress_percentage: Optional[int] = None
+
+
+# Daily Expense
+class DailyExpenseCreate(BaseModel):
+    expense_date: Optional[date] = None
+    expense_category: str
+    description: Optional[str] = None
+    amount: float
+    vendor: Optional[str] = None
+    project_id: Optional[str] = None
+    attachment_url: Optional[str] = None
+
+    @field_validator('amount')
+    @classmethod
+    def validate_positive_amount(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("Amount must be greater than 0")
+        return v
+
+    @field_validator('expense_category')
+    @classmethod
+    def validate_category(cls, v: str) -> str:
+        allowed = ["Fuel", "Food", "Transport", "Courier", "Loading", "Labour", "Maintenance", "Electricity", "Internet", "Miscellaneous"]
+        if v not in allowed:
+            raise ValueError(f"Category must be one of {allowed}")
+        return v
+
+class DailyExpenseResponse(BaseSchema):
+    id: str
+    expense_id: str
+    expense_date: date
+    expense_category: str
+    description: Optional[str]
+    amount: float
+    vendor: Optional[str]
+    project_id: Optional[str]
+    created_by: Optional[str]
+    attachment_url: Optional[str]
+    created_at: datetime
+    is_deleted: bool
+    project: Optional[ProjectResponse] = None
+    creator: Optional[UserResponse] = None
+
+

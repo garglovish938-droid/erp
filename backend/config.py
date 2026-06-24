@@ -13,8 +13,17 @@ class Settings:
     ).replace("postgres://", "postgresql://", 1)
 
     # JWT security settings — ALWAYS override SECRET_KEY via environment variable in production!
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "allure_living_super_secret_key_123456789")
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "")
+    
+    # Run safety checks
+    if not SECRET_KEY:
+        db_url = os.getenv("DATABASE_URL", "")
+        if "postgres" in db_url or os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("ENVIRONMENT") == "production":
+            raise ValueError("CRITICAL SECURITY ERROR: SECRET_KEY environment variable MUST be set in production environments!")
+        SECRET_KEY = "allure_living_super_secret_key_123456789"
+        
     ALGORITHM: str = "HS256"
+
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 600
 
     # File storage paths — relative by default, override via env vars in production
