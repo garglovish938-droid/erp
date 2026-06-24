@@ -42,18 +42,24 @@ app = FastAPI(
 )
 
 # CORS configuration
+# Explicit origins are required when allow_credentials=True
+# Using allow_origin_regex with credentials causes Starlette to silently drop the CORS headers
+_default_origins = [
+    "https://erp-eight-orpin.vercel.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
 if allowed_origins_env:
-    allowed_origins = allowed_origins_env.split(",")
-    allow_origin_regex = None
+    # Merge env-provided origins with the defaults
+    extra = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+    allowed_origins = list(set(_default_origins + extra))
 else:
-    allowed_origins = []
-    allow_origin_regex = "https?://.*"
+    allowed_origins = _default_origins
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -95,13 +101,6 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 def read_root():
     return {"message": "Welcome to Allure Living ERP API System", "status": "running"}
 
-@app.get("/api/debug-env")
-def debug_env():
-    return {
-        "DATABASE_URL": os.getenv("DATABASE_URL", "not_set"),
-        "SECRET_KEY_SET": bool(os.getenv("SECRET_KEY")),
-        "ENVIRONMENT": os.getenv("ENVIRONMENT", "not_set")
-    }
 
 # --- AUTH & USER MANAGEMENT ---
 @app.post("/api/auth/register", response_model=schemas.UserResponse)
