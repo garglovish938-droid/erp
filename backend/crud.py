@@ -13,7 +13,7 @@ from models import (
     Document, VersionHistory, ProjectAssignment, DailyWorkLog, Shift, AttendanceRule
 )
 from schemas import (
-    UserCreate, CategoryCreate, InventoryItemCreate, InventoryItemUpdate,
+    UserCreate, UserUpdate, CategoryCreate, InventoryItemCreate, InventoryItemUpdate,
     SupplierCreate, SupplierUpdate, ClientCreate, ClientUpdate, ProjectCreate,
     ProjectUpdate, ProjectBOMCreate, MaterialRequestCreate, PurchaseOrderCreate,
     StaffCreate, StaffUpdate, AttendanceCreate, CustomFieldDefinitionCreate,
