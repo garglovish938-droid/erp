@@ -1950,6 +1950,61 @@ def read_notification(notification_id: str, db: Session = Depends(get_db), curre
     return notif
 
 
+# --- ADMIN FORCE CLEANUP (ONE-TIME USE) ---
+@app.delete("/api/admin/force-cleanup")
+def admin_force_cleanup(db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    """
+    ONE-TIME admin endpoint: hard-deletes all MRs, POs, and remaining suppliers/clients/projects
+    bypassing all business-logic guards. Use only for initial DB wipe before go-live.
+    """
+    from sqlalchemy import text
+    deleted_summary = {}
+    try:
+        # Delete in dependency order (children first)
+        tables_ordered = [
+            ("project_assignments", "project_assignments"),
+            ("project_bom",         "project_bom"),
+            ("material_requests",   "material_requests"),
+            ("stock_transactions",  "stock_transactions"),
+            ("purchase_orders",     "purchase_orders"),
+            ("attendance",          "attendance"),
+            ("daily_work_logs",     "daily_work_logs"),
+            ("notifications",       "notifications"),
+            ("activity_logs",       "activity_logs"),
+            ("custom_field_values", "custom_field_values"),
+            ("projects",            "projects"),
+            ("clients",             "clients"),
+            ("suppliers",           "suppliers"),
+            ("inventory_items",     "inventory_items"),
+            ("categories",          "categories"),
+            ("staff",               "staff"),
+        ]
+        for label, table in tables_ordered:
+            try:
+                result = db.execute(text(f"DELETE FROM {table}"))
+                db.commit()
+                deleted_summary[label] = result.rowcount
+            except Exception as e:
+                db.rollback()
+                deleted_summary[label] = f"ERROR: {str(e)[:80]}"
+
+        # Hard-delete all users except admin
+        result = db.execute(text(
+            "DELETE FROM users WHERE email != 'admin@allure.com'"
+        ))
+        db.commit()
+        deleted_summary["users (non-admin)"] = result.rowcount
+
+        return {
+            "status": "success",
+            "message": "Force cleanup complete. All records deleted except admin user.",
+            "deleted": deleted_summary
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Force cleanup failed: {str(e)}")
+
+
 # --- DYNAMIC CUSTOM FIELD CONFIGURATION ROUTER ---
 
 @app.get("/api/custom-fields/{entity_type}", response_model=List[schemas.CustomFieldDefinitionResponse])
