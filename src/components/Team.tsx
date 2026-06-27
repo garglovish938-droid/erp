@@ -67,6 +67,11 @@ export default function Team({ token, role }: { token: string; role: string }) {
   const [confirmAction, setConfirmAction] = useState<() => void>(() => {});
   const [confirmMessage, setConfirmMessage] = useState("");
   const [selfieModalData, setSelfieModalData] = useState<{ employeeName: string; type: string; time: string; imagePath: string; device?: string; ipAddress?: string; isSuspicious?: boolean; suspiciousReason?: string } | null>(null);
+  const [zoom, setZoom] = useState(1);
+
+  useEffect(() => {
+    setZoom(1);
+  }, [selfieModalData]);
 
   // Attendance Correction Modal States
   const [showAttendanceModal, setShowAttendanceModal] = useState(false);
@@ -76,6 +81,29 @@ export default function Team({ token, role }: { token: string; role: string }) {
 
   const isManagerOrHigher = ["admin", "manager"].includes(role);
   const isAdmin = role === "admin";
+
+  const formatUtcTimeToIst = (timeStr: string | null): string => {
+    if (!timeStr) return "--:--";
+    try {
+      if (timeStr.includes("T") || timeStr.includes("Z")) {
+        const d = new Date(timeStr);
+        return d.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: '2-digit', minute: '2-digit', hour12: true });
+      }
+      const [hoursStr, minutesStr] = timeStr.split(":");
+      const hours = parseInt(hoursStr, 10);
+      const minutes = parseInt(minutesStr, 10);
+      const utcDate = new Date();
+      utcDate.setUTCHours(hours, minutes, 0, 0);
+      return utcDate.toLocaleTimeString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true
+      });
+    } catch (e) {
+      return timeStr;
+    }
+  };
 
   const fetchData = async () => {
     try {
@@ -821,13 +849,13 @@ export default function Team({ token, role }: { token: string; role: string }) {
                         {att?.check_in && (
                           <div className="text-[10px] text-slate-400 block mt-1 font-mono flex flex-col gap-0.5">
                             <span className="flex items-center gap-1">
-                              In: {att.check_in}
+                              In: {formatUtcTimeToIst(att.check_in)}
                               {att.check_in_selfie && (
                                 <button 
                                   onClick={() => setSelfieModalData({ 
                                     employeeName: emp.name, 
                                     type: "Check-In", 
-                                    time: att.check_in, 
+                                    time: formatUtcTimeToIst(att.check_in), 
                                     imagePath: att.check_in_selfie, 
                                     device: att.device, 
                                     ipAddress: att.ip_address,
@@ -841,13 +869,13 @@ export default function Team({ token, role }: { token: string; role: string }) {
                               )}
                             </span>
                             <span className="flex items-center gap-1">
-                              Out: {att.check_out || "--:--"}
+                              Out: {formatUtcTimeToIst(att.check_out)}
                               {att.check_out_selfie && (
                                 <button 
                                   onClick={() => setSelfieModalData({ 
                                     employeeName: emp.name, 
                                     type: "Check-Out", 
-                                    time: att.check_out, 
+                                    time: formatUtcTimeToIst(att.check_out), 
                                     imagePath: att.check_out_selfie, 
                                     device: att.check_out_device || att.device, 
                                     ipAddress: att.check_out_ip || att.ip_address,
@@ -1113,12 +1141,42 @@ export default function Team({ token, role }: { token: string; role: string }) {
               </button>
             </div>
 
-            <div className="relative aspect-video rounded-2xl overflow-hidden bg-slate-950 border border-slate-250/20 shadow-inner flex items-center justify-center">
+            <div className="relative aspect-video rounded-2xl overflow-hidden bg-slate-950 border border-slate-250/20 shadow-inner flex items-center justify-center group/viewer">
               <img 
                 src={`${API_BASE_URL}${selfieModalData.imagePath.startsWith('/') ? '' : '/'}${selfieModalData.imagePath}`} 
                 alt={`${selfieModalData.employeeName} ${selfieModalData.type}`} 
-                className="w-full h-full object-cover scale-x-[-1]"
+                style={{ transform: `scale(${zoom}) scaleX(-1)` }}
+                className="w-full h-full object-contain transition-transform duration-200"
               />
+              
+              {/* Zoom & Download Actions Panel */}
+              <div className="absolute bottom-4 right-4 bg-black/70 backdrop-blur-xs px-3 py-1.5 rounded-xl flex items-center gap-3 border border-white/10 opacity-0 group-hover/viewer:opacity-100 transition-opacity duration-300 z-20">
+                <button
+                  onClick={() => setZoom(z => Math.max(1, z - 0.25))}
+                  className="text-white hover:text-indigo-400 font-extrabold text-sm px-1 cursor-pointer"
+                  title="Zoom Out"
+                >
+                  -
+                </button>
+                <span className="text-white text-[10px] font-mono select-none">{Math.round(zoom * 100)}%</span>
+                <button
+                  onClick={() => setZoom(z => Math.min(3, z + 0.25))}
+                  className="text-white hover:text-indigo-400 font-extrabold text-sm px-1 cursor-pointer"
+                  title="Zoom In"
+                >
+                  +
+                </button>
+                <div className="w-px h-3 bg-white/20" />
+                <a
+                  href={`${API_BASE_URL}${selfieModalData.imagePath.startsWith('/') ? '' : '/'}${selfieModalData.imagePath}`}
+                  download={`${selfieModalData.employeeName}_selfie.jpg`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-white hover:text-indigo-400 font-bold text-[10px] flex items-center gap-1 cursor-pointer"
+                >
+                  Download
+                </a>
+              </div>
             </div>
 
             <div className="bg-slate-50 dark:bg-slate-955 p-4 rounded-2xl text-xs space-y-2 border border-slate-100 dark:border-slate-800">

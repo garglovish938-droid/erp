@@ -5262,3 +5262,97 @@ def legacy_list_backups(current_user: User = Depends(auth.require_admin)):
 def legacy_read_logs(db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
     """Legacy read activity logs endpoint."""
     return read_activity_logs(db=db, current_user=current_user)
+
+
+from pydantic import BaseModel
+
+class AIChatPayload(BaseModel):
+    message: str
+
+@app.get("/api/time")
+def get_server_time():
+    from datetime import datetime, timezone
+    return {"utc_time": datetime.now(timezone.utc).isoformat()}
+
+@app.post("/api/ai/chat")
+def resolve_ai_chat_response(payload: AIChatPayload, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    msg = payload.message.strip().lower()
+    
+    # 1. Inventory Keywords
+    if any(k in msg for k in ["inventory", "stock", "material", "reorder", "quantity"]):
+        items = db.query(models.InventoryItem).filter(models.InventoryItem.is_deleted == False).all()
+        low_stock = [item for item in items if item.quantity <= item.minimum_stock_level]
+        total_value = sum(item.quantity * item.unit_cost for item in items)
+        
+        reply = f"Here is the real-time Inventory Status:\n"
+        reply += f"• Total material items: {len(items)}\n"
+        reply += f"• Low stock items: {len(low_stock)}\n"
+        reply += f"• Estimated total inventory value: INR {total_value:,.2f}\n\n"
+        if low_stock:
+            reply += "Low Stock Highlights:\n"
+            for item in low_stock[:5]:
+                reply += f"- **{item.name}** (SKU: {item.sku}): {item.quantity} {item.unit} left (Reorder: {item.minimum_stock_level})\n"
+        else:
+            reply += "✓ All inventory items are currently above their reorder stock thresholds!"
+        return {"response": reply}
+        
+    # 2. Project Keywords
+    elif any(k in msg for k in ["project", "task", "bom", "design"]):
+        projects = db.query(models.Project).filter(models.Project.is_deleted == False).all()
+        active = [p for p in projects if p.status == "active"]
+        completed = [p for p in projects if p.status == "completed"]
+        
+        reply = f"Here are the active Project Insights:\n"
+        reply += f"• Active Projects: {len(active)} / Total: {len(projects)}\n"
+        reply += f"• Completed Projects: {len(completed)}\n\n"
+        if active:
+            reply += "Active Projects Progress:\n"
+            for p in active[:5]:
+                reply += f"- **{p.name}** ({p.department or 'General'}): {p.completion_percentage}% done. Site: {p.site_location or 'N/A'}\n"
+        else:
+            reply += "There are no active projects listed in the database currently."
+        return {"response": reply}
+        
+    # 3. Attendance Keywords
+    elif any(k in msg for k in ["attendance", "checked", "late", "selfie", "absent", "present"]):
+        from datetime import date
+        today = date.today()
+        attendance_logs = db.query(models.Attendance).filter(models.Attendance.date == today).all()
+        present_count = len(attendance_logs)
+        late_count = sum(1 for log in attendance_logs if log.late_arrival)
+        missing_selfie = sum(1 for log in attendance_logs if not log.check_in_selfie)
+        
+        reply = f"Here is Today's ({today.strftime('%Y-%m-%d')}) Attendance Summary:\n"
+        reply += f"• Checked-in staff: {present_count}\n"
+        reply += f"• Late arrivals: {late_count}\n"
+        reply += f"• Check-ins missing selfie: {missing_selfie}\n\n"
+        if attendance_logs:
+            reply += "Recent Check-In Activity:\n"
+            for att in attendance_logs[:5]:
+                staff_name = att.staff_member.name if att.staff_member else "Unknown Staff"
+                time_in = att.check_in or "--:--"
+                reply += f"- **{staff_name}** checked in at {time_in} (Late: {'Yes' if att.late_arrival else 'No'})\n"
+        else:
+            reply += "No employee attendance logs have been recorded for today yet."
+        return {"response": reply}
+        
+    # 4. Supplier Keywords
+    elif any(k in msg for k in ["supplier", "vendor", "gst"]):
+        suppliers = db.query(models.Supplier).filter(models.Supplier.is_deleted == False).all()
+        reply = f"Here is the Supplier Registry Summary:\n"
+        reply += f"• Registered suppliers: {len(suppliers)}\n\n"
+        if suppliers:
+            reply += "Vendor Quick Links:\n"
+            for sup in suppliers[:5]:
+                reply += f"- **{sup.name}**: {sup.phone or 'No phone'} | GST: {sup.gst_number or 'N/A'}\n"
+        return {"response": reply}
+        
+    # 5. General Help & Fallback
+    else:
+        reply = "Hello! I am your AI ERP Assistant. How can I help you manage the factory today?\n\n"
+        reply += "You can ask me questions like:\n"
+        reply += "• *'Show low stock inventory items'* to review materials.\n"
+        reply += "• *'What is the status of active projects?'* to see construction progress.\n"
+        reply += "• *'Who checked in today?'* to fetch live attendance details.\n"
+        reply += "• *'List registered suppliers'* to check your contact directory."
+        return {"response": reply}

@@ -89,6 +89,8 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [activeCameraId, setActiveCameraId] = useState<string>("");
   const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [flashActive, setFlashActive] = useState(false);
 
   // New check-out fields
   const [checkoutProject, setCheckoutProject] = useState("");
@@ -301,6 +303,49 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
         }
       }
     }
+  };
+
+  const formatUtcTimeToIst = (timeStr: string | null): string => {
+    if (!timeStr) return "--:--";
+    try {
+      if (timeStr.includes("T") || timeStr.includes("Z")) {
+        const d = new Date(timeStr);
+        return d.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: '2-digit', minute: '2-digit', hour12: true });
+      }
+      const [hoursStr, minutesStr] = timeStr.split(":");
+      const hours = parseInt(hoursStr, 10);
+      const minutes = parseInt(minutesStr, 10);
+      const utcDate = new Date();
+      utcDate.setUTCHours(hours, minutes, 0, 0);
+      return utcDate.toLocaleTimeString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true
+      });
+    } catch (e) {
+      return timeStr;
+    }
+  };
+
+  const triggerCountdownCapture = () => {
+    setCountdown(3);
+    const intervalId = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev === null) {
+          clearInterval(intervalId);
+          return null;
+        }
+        if (prev <= 1) {
+          clearInterval(intervalId);
+          setFlashActive(true);
+          setTimeout(() => setFlashActive(false), 150);
+          captureSnapshot();
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
   };
 
   const handleSubmitSelfieAttendance = async () => {
@@ -731,7 +776,7 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
           </div>
           <div className="flex items-center gap-2 text-slate-500 text-sm font-semibold">
             <Calendar className="w-4 h-4" />
-            {new Date().toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            {new Date().toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
           </div>
         </header>
 
@@ -772,13 +817,13 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
                 <div className="bg-white dark:bg-slate-950/40 p-3 rounded-xl border border-slate-250/20 dark:border-slate-800/45">
                   <p className="text-[10px] uppercase font-bold text-slate-400">Checked In</p>
                   <p className="text-base font-bold text-slate-800 dark:text-slate-200 mt-0.5">
-                    {attendanceStatus?.attendance?.check_in || "--:--"}
+                    {formatUtcTimeToIst(attendanceStatus?.attendance?.check_in)}
                   </p>
                 </div>
-                <div className="bg-white dark:bg-slate-950/40 p-3 rounded-xl border border-slate-250/20 dark:border-slate-800/45">
+                <div className="bg-white dark:bg-slate-955/40 p-3 rounded-xl border border-slate-250/20 dark:border-slate-800/45">
                   <p className="text-[10px] uppercase font-bold text-slate-400">Checked Out</p>
                   <p className="text-base font-bold text-slate-800 dark:text-slate-200 mt-0.5">
-                    {attendanceStatus?.attendance?.check_out || "--:--"}
+                    {formatUtcTimeToIst(attendanceStatus?.attendance?.check_out)}
                   </p>
                 </div>
               </div>
@@ -1039,7 +1084,7 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
         {/* Attendance Camera Modal */}
         {showCameraModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-300">
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-xl p-6 shadow-2xl space-y-6">
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-2xl p-6 shadow-2xl space-y-6">
               
               {cameraMode === "in" ? (
                 <>
@@ -1075,17 +1120,51 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
                             muted 
                             className="w-full h-full object-contain scale-x-[-1]"
                           />
+                          
+                          {/* Camera Selection Dropdown */}
+                          {cameras.length > 0 && (
+                            <div className="absolute top-4 left-4 z-20">
+                              <select
+                                value={activeCameraId}
+                                onChange={(e) => {
+                                  setActiveCameraId(e.target.value);
+                                  startCamera(e.target.value);
+                                }}
+                                className="bg-black/60 text-white border border-white/10 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none backdrop-blur-xs font-semibold"
+                              >
+                                {cameras.map((cam) => (
+                                  <option key={cam.deviceId} value={cam.deviceId} className="bg-slate-900 text-white">
+                                    {cam.label || `Camera ${cameras.indexOf(cam) + 1}`}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
                           {cameras.length > 1 && (
                             <button
                               onClick={toggleCamera}
                               type="button"
-                              className="absolute top-4 right-4 bg-black/60 hover:bg-black/80 text-white px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border border-white/10 flex items-center justify-center gap-1.5 text-xs font-semibold backdrop-blur-xs"
+                              className="absolute top-4 right-4 bg-black/60 hover:bg-black/80 text-white px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border border-white/10 flex items-center justify-center gap-1.5 text-xs font-semibold backdrop-blur-xs z-20"
                               title="Switch Camera"
                             >
                               <ArrowLeftRight className="w-4 h-4" />
                               <span>Switch Camera</span>
                             </button>
                           )}
+                          
+                          {/* Animated countdown overlay */}
+                          {countdown !== null && (
+                            <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-30">
+                              <span className="text-white text-7xl font-extrabold tracking-widest animate-ping">{countdown}</span>
+                            </div>
+                          )}
+
+                          {/* Flash snapshot animation */}
+                          {flashActive && (
+                            <div className="absolute inset-0 bg-white z-40" />
+                          )}
+
                           <div className="absolute inset-0 border-[3px] border-dashed border-indigo-500/50 rounded-2xl pointer-events-none m-4 flex items-center justify-center">
                             <div className="w-40 h-40 border border-dashed border-indigo-400/40 rounded-full opacity-50" />
                           </div>
@@ -1103,12 +1182,12 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
                   <div className="flex gap-3">
                     {!capturedImage ? (
                       <button
-                        onClick={captureSnapshot}
-                        disabled={!!cameraError}
+                        onClick={triggerCountdownCapture}
+                        disabled={!!cameraError || countdown !== null}
                         className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 dark:shadow-none disabled:opacity-50"
                       >
                         <Camera className="w-5 h-5" />
-                        Capture Photo
+                        {countdown !== null ? `Capturing in ${countdown}...` : "Capture Photo"}
                       </button>
                     ) : (
                       <>
@@ -1173,28 +1252,63 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
                           muted 
                           className="w-full h-full object-contain scale-x-[-1]"
                         />
+                        
+                        {/* Camera Selection Dropdown */}
+                        {cameras.length > 0 && (
+                          <div className="absolute top-4 left-4 z-20">
+                            <select
+                              value={activeCameraId}
+                              onChange={(e) => {
+                                  setActiveCameraId(e.target.value);
+                                  startCamera(e.target.value);
+                              }}
+                              className="bg-black/60 text-white border border-white/10 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none backdrop-blur-xs font-semibold"
+                            >
+                              {cameras.map((cam) => (
+                                <option key={cam.deviceId} value={cam.deviceId} className="bg-slate-900 text-white">
+                                  {cam.label || `Camera ${cameras.indexOf(cam) + 1}`}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
                         {cameras.length > 1 && (
                           <button
                             onClick={toggleCamera}
                             type="button"
-                            className="absolute top-4 right-4 bg-black/60 hover:bg-black/80 text-white px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border border-white/10 flex items-center justify-center gap-1.5 text-xs font-semibold backdrop-blur-xs"
+                            className="absolute top-4 right-4 bg-black/60 hover:bg-black/80 text-white px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border border-white/10 flex items-center justify-center gap-1.5 text-xs font-semibold backdrop-blur-xs z-20"
                             title="Switch Camera"
                           >
                             <ArrowLeftRight className="w-4 h-4" />
                             <span>Switch Camera</span>
                           </button>
                         )}
+
+                        {/* Animated countdown overlay */}
+                        {countdown !== null && (
+                          <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-30">
+                            <span className="text-white text-7xl font-extrabold tracking-widest animate-ping">{countdown}</span>
+                          </div>
+                        )}
+
+                        {/* Flash snapshot animation */}
+                        {flashActive && (
+                          <div className="absolute inset-0 bg-white z-40" />
+                        )}
+
                         <div className="absolute inset-0 border-[3px] border-dashed border-indigo-500/50 rounded-2xl pointer-events-none m-4 flex items-center justify-center">
                           <div className="w-40 h-40 border border-dashed border-indigo-400/40 rounded-full opacity-50" />
                         </div>
                       </div>
                       <p className="text-xs text-slate-500 text-center font-semibold">Please look at the camera to capture your check-out selfie.</p>
                       <button
-                        onClick={captureSnapshot}
-                        className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 dark:shadow-none"
+                        onClick={triggerCountdownCapture}
+                        disabled={countdown !== null}
+                        className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 dark:shadow-none disabled:opacity-50"
                       >
                         <Camera className="w-5 h-5" />
-                        Capture Selfie
+                        {countdown !== null ? `Capturing in ${countdown}...` : "Capture Selfie"}
                       </button>
                     </div>
                   )}
@@ -1210,17 +1324,51 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
                           muted 
                           className="w-full h-full object-contain"
                         />
+                        
+                        {/* Camera Selection Dropdown */}
+                        {cameras.length > 0 && (
+                          <div className="absolute top-4 left-4 z-20">
+                            <select
+                              value={activeCameraId}
+                              onChange={(e) => {
+                                  setActiveCameraId(e.target.value);
+                                  startCamera(e.target.value);
+                              }}
+                              className="bg-black/60 text-white border border-white/10 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none backdrop-blur-xs font-semibold"
+                            >
+                              {cameras.map((cam) => (
+                                <option key={cam.deviceId} value={cam.deviceId} className="bg-slate-900 text-white">
+                                  {cam.label || `Camera ${cameras.indexOf(cam) + 1}`}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
                         {cameras.length > 1 && (
                           <button
                             onClick={toggleCamera}
                             type="button"
-                            className="absolute top-4 right-4 bg-black/60 hover:bg-black/80 text-white px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border border-white/10 flex items-center justify-center gap-1.5 text-xs font-semibold backdrop-blur-xs"
+                            className="absolute top-4 right-4 bg-black/60 hover:bg-black/80 text-white px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border border-white/10 flex items-center justify-center gap-1.5 text-xs font-semibold backdrop-blur-xs z-20"
                             title="Switch Camera"
                           >
                             <ArrowLeftRight className="w-4 h-4" />
                             <span>Switch Camera</span>
                           </button>
                         )}
+
+                        {/* Animated countdown overlay */}
+                        {countdown !== null && (
+                          <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-30">
+                            <span className="text-white text-7xl font-extrabold tracking-widest animate-ping">{countdown}</span>
+                          </div>
+                        )}
+
+                        {/* Flash snapshot animation */}
+                        {flashActive && (
+                          <div className="absolute inset-0 bg-white z-40" />
+                        )}
+
                         <div className="absolute inset-0 border-[3px] border-dashed border-indigo-500/50 rounded-2xl pointer-events-none m-4" />
                       </div>
                       <p className="text-xs text-slate-500 text-center font-semibold">Capture a photo of the completed furniture / work progress (Optional).</p>
@@ -1236,8 +1384,9 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
                           Skip Step
                         </button>
                         <button
-                          onClick={captureSnapshot}
-                          className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 dark:shadow-none"
+                          onClick={triggerCountdownCapture}
+                          disabled={countdown !== null}
+                          className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 dark:shadow-none disabled:opacity-50"
                         >
                           <Camera className="w-5 h-5" />
                           Capture Work Photo
