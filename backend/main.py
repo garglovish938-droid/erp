@@ -5456,3 +5456,16 @@ def resolve_ai_chat_response(payload: AIChatPayload, db: Session = Depends(get_d
         reply += "• *'Who checked in today?'* to fetch live attendance details.\n"
         reply += "• *'List registered suppliers'* to check your contact directory."
         return {"response": reply}
+
+
+@app.post("/api/admin/run-migration-to-supabase")
+async def trigger_supabase_migration(secret: str):
+    if secret != settings.SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+        
+    from migrate_to_supabase import run_migration
+    import threading
+    thread = threading.Thread(target=run_migration)
+    thread.start()
+    return {"message": "Migration triggered in the background. Check Render container logs."}
+
