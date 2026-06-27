@@ -5458,30 +5458,3 @@ def resolve_ai_chat_response(payload: AIChatPayload, db: Session = Depends(get_d
         return {"response": reply}
 
 
-@app.post("/api/admin/run-migration-to-supabase")
-async def trigger_supabase_migration(secret: str):
-    if secret != settings.SECRET_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized")
-        
-    from migrate_to_supabase import run_migration
-    import threading
-    thread = threading.Thread(target=run_migration)
-    thread.start()
-    return {"message": "Migration triggered in the background. Check Render container logs."}
-
-
-@app.get("/api/admin/list-container-uploads")
-def list_container_uploads(secret: str):
-    if secret != settings.SECRET_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized")
-    import os
-    res = {}
-    up_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
-    if not os.path.exists(up_dir):
-        return {"error": f"Dir {up_dir} does not exist"}
-    for root, dirs, files in os.walk(up_dir):
-        rel = os.path.relpath(root, up_dir)
-        res[rel] = files
-    return res
-
-
