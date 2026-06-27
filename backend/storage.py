@@ -170,7 +170,7 @@ class SupabaseStorageProvider(StorageProvider):
             if signed_url_path:
                 # Add full domain if Supabase returns relative signed URL path
                 if signed_url_path.startswith('/'):
-                    return f"{self.url}{signed_url_path}"
+                    return f"{self.url}/storage/v1{signed_url_path}"
                 return signed_url_path
         except Exception as e:
             logger.error(f"Error generating signed URL: {e}")
