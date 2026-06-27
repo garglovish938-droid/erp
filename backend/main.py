@@ -102,6 +102,26 @@ async def add_security_headers(request: Request, call_next):
 # Ensure database tables exist
 Base.metadata.create_all(bind=engine)
 
+# Safely apply projects.department migration for both SQLite and PostgreSQL on startup
+from sqlalchemy import text
+try:
+    with engine.connect() as conn:
+        dialect_name = engine.dialect.name
+        if dialect_name == "sqlite":
+            try:
+                conn.execute(text("ALTER TABLE projects ADD COLUMN department TEXT"))
+                conn.commit()
+            except Exception:
+                pass
+        else:
+            try:
+                conn.execute(text("ALTER TABLE projects ADD COLUMN IF NOT EXISTS department VARCHAR(100)"))
+                conn.commit()
+            except Exception:
+                pass
+except Exception:
+    pass
+
 # Auto-seed database if no users exist (useful for first-time deploy or empty SQLite DB)
 from database import SessionLocal
 from models import User
