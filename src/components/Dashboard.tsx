@@ -86,6 +86,9 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
   const [cameraMode, setCameraMode] = useState<"in" | "out">("in");
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
+  const [activeCameraId, setActiveCameraId] = useState<string>("");
+  const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
 
   // New check-out fields
   const [checkoutProject, setCheckoutProject] = useState("");
@@ -100,20 +103,48 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  const startCamera = async () => {
+  const startCamera = async (cameraId?: string, fMode?: "user" | "environment") => {
     setCameraError(null);
     setCapturedImage(null);
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error("navigator.mediaDevices or getUserMedia not available");
       }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: 640, height: 480 }
-      });
+      
+      const targetFacingMode = fMode || facingMode;
+      const targetCameraId = cameraId || activeCameraId;
+      
+      const constraints: MediaStreamConstraints = {
+        video: targetCameraId
+          ? { deviceId: { exact: targetCameraId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+          : { facingMode: targetFacingMode, width: { ideal: 1280 }, height: { ideal: 720 } }
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
       }
+      
+      // Enumerate available video input devices
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(device => device.kind === "videoinput");
+        setCameras(videoDevices);
+        
+        if (!targetCameraId && videoDevices.length > 0) {
+          const activeTrack = stream.getVideoTracks()[0];
+          if (activeTrack) {
+            const settings = activeTrack.getSettings();
+            if (settings.deviceId) {
+              setActiveCameraId(settings.deviceId);
+            }
+          }
+        }
+      } catch (enumErr) {
+        console.error("Failed to enumerate devices:", enumErr);
+      }
+      
     } catch (e: any) {
       console.error("Camera access failed:", e);
       
@@ -227,6 +258,21 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
     }
   };
 
+  const toggleCamera = async () => {
+    stopCamera();
+    if (cameras.length > 1) {
+      const currentIndex = cameras.findIndex(c => c.deviceId === activeCameraId);
+      const nextIndex = (currentIndex + 1) % cameras.length;
+      const nextCamera = cameras[nextIndex];
+      setActiveCameraId(nextCamera.deviceId);
+      await startCamera(nextCamera.deviceId);
+    } else {
+      const nextFacingMode = facingMode === "user" ? "environment" : "user";
+      setFacingMode(nextFacingMode);
+      await startCamera(undefined, nextFacingMode);
+    }
+  };
+
   const captureSnapshot = () => {
     if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
@@ -293,7 +339,6 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
       const formData = new FormData();
       formData.append("file", file);
       formData.append("device", device);
-      formData.append("ip_address", "127.0.0.1");
       formData.append("device_fingerprint", fingerprint);
       formData.append("browser_details", browser);
 
@@ -994,7 +1039,7 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
         {/* Attendance Camera Modal */}
         {showCameraModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-300">
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-6">
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-xl p-6 shadow-2xl space-y-6">
               
               {cameraMode === "in" ? (
                 <>
@@ -1028,8 +1073,19 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
                             autoPlay 
                             playsInline 
                             muted 
-                            className="w-full h-full object-cover scale-x-[-1]"
+                            className="w-full h-full object-contain scale-x-[-1]"
                           />
+                          {cameras.length > 1 && (
+                            <button
+                              onClick={toggleCamera}
+                              type="button"
+                              className="absolute top-4 right-4 bg-black/60 hover:bg-black/80 text-white px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border border-white/10 flex items-center justify-center gap-1.5 text-xs font-semibold backdrop-blur-xs"
+                              title="Switch Camera"
+                            >
+                              <ArrowLeftRight className="w-4 h-4" />
+                              <span>Switch Camera</span>
+                            </button>
+                          )}
                           <div className="absolute inset-0 border-[3px] border-dashed border-indigo-500/50 rounded-2xl pointer-events-none m-4 flex items-center justify-center">
                             <div className="w-40 h-40 border border-dashed border-indigo-400/40 rounded-full opacity-50" />
                           </div>
@@ -1038,7 +1094,7 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
                         <img 
                           src={capturedImage} 
                           alt="Captured selfie" 
-                          className="w-full h-full object-cover scale-x-[-1]"
+                          className="w-full h-full object-contain scale-x-[-1]"
                         />
                       )}
                     </div>
@@ -1115,8 +1171,19 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
                           autoPlay 
                           playsInline 
                           muted 
-                          className="w-full h-full object-cover scale-x-[-1]"
+                          className="w-full h-full object-contain scale-x-[-1]"
                         />
+                        {cameras.length > 1 && (
+                          <button
+                            onClick={toggleCamera}
+                            type="button"
+                            className="absolute top-4 right-4 bg-black/60 hover:bg-black/80 text-white px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border border-white/10 flex items-center justify-center gap-1.5 text-xs font-semibold backdrop-blur-xs"
+                            title="Switch Camera"
+                          >
+                            <ArrowLeftRight className="w-4 h-4" />
+                            <span>Switch Camera</span>
+                          </button>
+                        )}
                         <div className="absolute inset-0 border-[3px] border-dashed border-indigo-500/50 rounded-2xl pointer-events-none m-4 flex items-center justify-center">
                           <div className="w-40 h-40 border border-dashed border-indigo-400/40 rounded-full opacity-50" />
                         </div>
@@ -1141,8 +1208,19 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
                           autoPlay 
                           playsInline 
                           muted 
-                          className="w-full h-full object-cover"
+                          className="w-full h-full object-contain"
                         />
+                        {cameras.length > 1 && (
+                          <button
+                            onClick={toggleCamera}
+                            type="button"
+                            className="absolute top-4 right-4 bg-black/60 hover:bg-black/80 text-white px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border border-white/10 flex items-center justify-center gap-1.5 text-xs font-semibold backdrop-blur-xs"
+                            title="Switch Camera"
+                          >
+                            <ArrowLeftRight className="w-4 h-4" />
+                            <span>Switch Camera</span>
+                          </button>
+                        )}
                         <div className="absolute inset-0 border-[3px] border-dashed border-indigo-500/50 rounded-2xl pointer-events-none m-4" />
                       </div>
                       <p className="text-xs text-slate-500 text-center font-semibold">Capture a photo of the completed furniture / work progress (Optional).</p>

@@ -2047,8 +2047,12 @@ async def selfie_check_in(
         
     time_str = now.strftime("%H:%M")
     
-    if not ip_address:
-        ip_address = request.client.host if request.client else None
+    if not ip_address or ip_address in ["127.0.0.1", "localhost", "unknown"]:
+        x_forwarded_for = request.headers.get("x-forwarded-for")
+        if x_forwarded_for:
+            ip_address = [ip.strip() for ip in x_forwarded_for.split(",")][0]
+        else:
+            ip_address = request.client.host if request.client else "unknown"
     if not browser_details:
         browser_details = request.headers.get("user-agent")
 
@@ -2146,8 +2150,12 @@ async def selfie_check_out(
             
     time_str = now.strftime("%H:%M")
     
-    if not ip_address:
-        ip_address = request.client.host if request.client else None
+    if not ip_address or ip_address in ["127.0.0.1", "localhost", "unknown"]:
+        x_forwarded_for = request.headers.get("x-forwarded-for")
+        if x_forwarded_for:
+            ip_address = [ip.strip() for ip in x_forwarded_for.split(",")][0]
+        else:
+            ip_address = request.client.host if request.client else "unknown"
     if not browser_details:
         browser_details = request.headers.get("user-agent")
 

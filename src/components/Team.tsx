@@ -1115,7 +1115,7 @@ export default function Team({ token, role }: { token: string; role: string }) {
 
             <div className="relative aspect-video rounded-2xl overflow-hidden bg-slate-950 border border-slate-250/20 shadow-inner flex items-center justify-center">
               <img 
-                src={`${API_BASE_URL}${selfieModalData.imagePath}`} 
+                src={`${API_BASE_URL}${selfieModalData.imagePath.startsWith('/') ? '' : '/'}${selfieModalData.imagePath}`} 
                 alt={`${selfieModalData.employeeName} ${selfieModalData.type}`} 
                 className="w-full h-full object-cover scale-x-[-1]"
               />
