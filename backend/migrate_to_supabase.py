@@ -23,7 +23,12 @@ def run_migration():
     print("=== STARTING FILE MIGRATION TO SUPABASE STORAGE ===")
     
     db = SessionLocal()
-    uploads_dir = settings.UPLOAD_DIR
+    
+    # Check backend/uploads first, then fall back to settings.UPLOAD_DIR
+    uploads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+    if not os.path.exists(uploads_dir):
+        uploads_dir = settings.UPLOAD_DIR
+        
     if not os.path.exists(uploads_dir):
         print(f"Uploads directory {os.path.abspath(uploads_dir)} does not exist.")
         db.close()
