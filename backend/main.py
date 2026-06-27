@@ -5280,7 +5280,7 @@ def resolve_ai_chat_response(payload: AIChatPayload, db: Session = Depends(get_d
     
     # 1. Inventory Keywords
     if any(k in msg for k in ["inventory", "stock", "material", "reorder", "quantity"]):
-        items = db.query(models.InventoryItem).filter(models.InventoryItem.is_deleted == False).all()
+        items = db.query(InventoryItem).filter(InventoryItem.is_deleted == False).all()
         low_stock = [item for item in items if item.quantity <= item.minimum_stock_level]
         total_value = sum(item.quantity * item.unit_cost for item in items)
         
@@ -5298,7 +5298,7 @@ def resolve_ai_chat_response(payload: AIChatPayload, db: Session = Depends(get_d
         
     # 2. Project Keywords
     elif any(k in msg for k in ["project", "task", "bom", "design"]):
-        projects = db.query(models.Project).filter(models.Project.is_deleted == False).all()
+        projects = db.query(Project).filter(Project.is_deleted == False).all()
         active = [p for p in projects if p.status == "active"]
         completed = [p for p in projects if p.status == "completed"]
         
@@ -5317,7 +5317,7 @@ def resolve_ai_chat_response(payload: AIChatPayload, db: Session = Depends(get_d
     elif any(k in msg for k in ["attendance", "checked", "late", "selfie", "absent", "present"]):
         from datetime import date
         today = date.today()
-        attendance_logs = db.query(models.Attendance).filter(models.Attendance.date == today).all()
+        attendance_logs = db.query(Attendance).filter(Attendance.date == today).all()
         present_count = len(attendance_logs)
         late_count = sum(1 for log in attendance_logs if log.late_arrival)
         missing_selfie = sum(1 for log in attendance_logs if not log.check_in_selfie)
@@ -5338,7 +5338,7 @@ def resolve_ai_chat_response(payload: AIChatPayload, db: Session = Depends(get_d
         
     # 4. Supplier Keywords
     elif any(k in msg for k in ["supplier", "vendor", "gst"]):
-        suppliers = db.query(models.Supplier).filter(models.Supplier.is_deleted == False).all()
+        suppliers = db.query(Supplier).filter(Supplier.is_deleted == False).all()
         reply = f"Here is the Supplier Registry Summary:\n"
         reply += f"• Registered suppliers: {len(suppliers)}\n\n"
         if suppliers:
