@@ -296,6 +296,7 @@ class ProjectCreate(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     budget: float = 0.0
+    department: Optional[str] = None
 
     @field_validator('client_id', 'start_date', 'end_date', mode='before')
     @classmethod
@@ -325,6 +326,7 @@ class ProjectUpdate(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     budget: Optional[float] = None
+    department: Optional[str] = None
 
     @field_validator('client_id', 'start_date', 'end_date', mode='before')
     @classmethod
@@ -355,6 +357,7 @@ class ProjectResponse(BaseSchema):
     start_date: Optional[date]
     end_date: Optional[date]
     budget: float
+    department: Optional[str] = None
     created_at: datetime
     is_deleted: bool
     client: Optional[ClientResponse] = None

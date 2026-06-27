@@ -24,7 +24,7 @@ class Settings:
         
     ALGORITHM: str = "HS256"
 
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 600
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
     # File storage paths — relative by default, override via env vars in production
     BACKUP_DIR: str = os.getenv("BACKUP_DIR", "./backups")

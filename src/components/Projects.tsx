@@ -113,13 +113,30 @@ export default function Projects({ token, role }: { token: string; role: string 
   useEffect(() => {
     fetchData();
 
-    // Real-Time Sync Polling (every 15 seconds)
+    const handleWebsocketEvent = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      if (customEvent.detail?.event === "project_change") {
+        fetchData();
+        // If a project is expanded, refetch its documents and assignments as well
+        if (expandedProj) {
+          fetchProjectDocs(expandedProj);
+          fetchAssignments(expandedProj);
+        }
+      }
+    };
+
+    window.addEventListener("erp_websocket_event", handleWebsocketEvent);
+
+    // Fallback polling (every 30 seconds)
     const pollInterval = setInterval(() => {
       fetchData();
-    }, 15000);
+    }, 30000);
 
-    return () => clearInterval(pollInterval);
-  }, [token, statusFilter]);
+    return () => {
+      window.removeEventListener("erp_websocket_event", handleWebsocketEvent);
+      clearInterval(pollInterval);
+    };
+  }, [token, statusFilter, expandedProj]);
 
   // Fetch project specific documents and assignments when expanded
   useEffect(() => {

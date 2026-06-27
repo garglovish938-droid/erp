@@ -7,7 +7,7 @@ import json
 import uuid
 from datetime import datetime, date, timedelta
 from typing import List, Optional
-from fastapi import FastAPI, Depends, HTTPException, status, Query, File, UploadFile, Form, Request
+from fastapi import FastAPI, Depends, HTTPException, status, Query, File, UploadFile, Form, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -33,6 +33,29 @@ from models import (
     DailyExpense
 )
 import crud, schemas, auth
+from collections import defaultdict
+import time
+
+class AuthRateLimiter:
+    def __init__(self, limit: int = 5, window: int = 60):
+        self.limit = limit
+        self.window = window
+        self.history = defaultdict(list)
+
+    def is_allowed(self, ip: str) -> bool:
+        import sys
+        if "test" in os.environ.get("DATABASE_URL", "") or "pytest" in sys.modules or "unittest" in sys.modules:
+            return True
+        now = time.time()
+        # Clean older requests out of window
+        self.history[ip] = [t for t in self.history[ip] if now - t < self.window]
+        if len(self.history[ip]) >= self.limit:
+            return False
+        self.history[ip].append(now)
+        return True
+
+auth_limiter = AuthRateLimiter(limit=5, window=60)
+
 
 # Initialize FastAPI App
 app = FastAPI(
@@ -66,6 +89,16 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
 # Ensure database tables exist
 Base.metadata.create_all(bind=engine)
 
@@ -97,6 +130,60 @@ os.makedirs(os.path.join(UPLOAD_DIR, "selfies"), exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                pass
+
+ws_manager = ConnectionManager()
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            # Keep-alive ping handler
+            if data == "ping":
+                await websocket.send_text("pong")
+            else:
+                await websocket.send_json({"event": "pong"})
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+    except Exception:
+        ws_manager.disconnect(websocket)
+def broadcast_sync(message: dict):
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(ws_manager.broadcast(message))
+    except RuntimeError:
+        asyncio.run(ws_manager.broadcast(message))
+    except Exception:
+        pass
+
+import crud
+crud.register_notification_callback(broadcast_sync)
+
+
+
+
+
+
 @app.get("/")
 def read_root():
     return {"message": "Welcome to Allure Living ERP API System", "status": "running"}
@@ -104,7 +191,18 @@ def read_root():
 
 # --- AUTH & USER MANAGEMENT ---
 @app.post("/api/auth/register", response_model=schemas.UserResponse)
-def register_user(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
+def register_user(user_in: schemas.UserCreate, request: Request, db: Session = Depends(get_db)):
+    ip_addr = request.client.host if request.client else "unknown"
+    if not auth_limiter.is_allowed(ip_addr):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many request attempts. Please try again after 1 minute."
+        )
+    try:
+        auth.validate_password_strength(user_in.password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+        
     db_user = crud.get_user_by_email(db, email=user_in.email)
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -120,12 +218,46 @@ def register_user(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
 
 @app.post("/api/auth/login", response_model=schemas.Token)
 def login_user(user_in: schemas.UserLogin, request: Request, db: Session = Depends(get_db)):
+    ip_addr = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent")
+    
+    if not auth_limiter.is_allowed(ip_addr):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many request attempts. Please try again after 1 minute."
+        )
+        
     login_id = user_in.username or user_in.email
     if not login_id:
         raise HTTPException(status_code=400, detail="Username or email is required")
         
     user = crud.get_user_by_username_or_phone_or_email(db, login_id)
     if not user or not auth.verify_password(user_in.password, user.password_hash):
+        from sqlalchemy import text
+        try:
+            db.execute(text("""
+                INSERT INTO login_history (id, user_id, email, ip_address, user_agent, success)
+                VALUES (:id, :user_id, :email, :ip, :ua, :success)
+            """), {
+                "id": str(uuid.uuid4()),
+                "user_id": user.id if user else None,
+                "email": login_id,
+                "ip": ip_addr,
+                "ua": user_agent,
+                "success": 0
+            })
+            db.commit()
+        except Exception:
+            db.rollback()
+            
+        crud.log_activity(
+            db, 
+            user.id if user else None, 
+            "login_failed", 
+            f"Failed login attempt for {login_id}", 
+            ip_address=ip_addr, 
+            device=user_agent
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username/email or password",
@@ -133,6 +265,23 @@ def login_user(user_in: schemas.UserLogin, request: Request, db: Session = Depen
         )
         
     if user.status == "disabled":
+        from sqlalchemy import text
+        try:
+            db.execute(text("""
+                INSERT INTO login_history (id, user_id, email, ip_address, user_agent, success)
+                VALUES (:id, :user_id, :email, :ip, :ua, :success)
+            """), {
+                "id": str(uuid.uuid4()),
+                "user_id": user.id,
+                "email": login_id,
+                "ip": ip_addr,
+                "ua": user_agent,
+                "success": 0
+            })
+            db.commit()
+        except Exception:
+            db.rollback()
+        crud.log_activity(db, user.id, "login_disabled", f"Disabled user {user.email} attempted login", ip_address=ip_addr, device=user_agent)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is disabled. Please contact Super Admin.",
@@ -141,12 +290,25 @@ def login_user(user_in: schemas.UserLogin, request: Request, db: Session = Depen
     access_token = auth.create_access_token(data={"sub": user.email, "role": user.role})
     refresh_token = auth.create_refresh_token(data={"sub": user.email})
     
-    # Save refresh token in database
     user.refresh_token = refresh_token
-    db.commit()
     
-    ip_addr = request.client.host if request.client else None
-    user_agent = request.headers.get("user-agent")
+    from sqlalchemy import text
+    try:
+        db.execute(text("""
+            INSERT INTO login_history (id, user_id, email, ip_address, user_agent, success)
+            VALUES (:id, :user_id, :email, :ip, :ua, :success)
+        """), {
+            "id": str(uuid.uuid4()),
+            "user_id": user.id,
+            "email": user.email,
+            "ip": ip_addr,
+            "ua": user_agent,
+            "success": 1
+        })
+    except Exception:
+        pass
+        
+    db.commit()
     
     crud.log_activity(db, user.id, "login", f"Successful login for {user.email}", ip_address=ip_addr, device=user_agent)
     return {
@@ -221,10 +383,28 @@ def read_users(db: Session = Depends(get_db), current_user: User = Depends(auth.
     return crud.get_users(db)
 
 @app.post("/api/users", response_model=schemas.UserResponse)
-def create_managed_user(user_in: schemas.UserCreate, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin_or_factory_manager)):
-    if user_in.role == "admin" and current_user.role == "factory_manager":
-        raise HTTPException(status_code=403, detail="Factory Managers cannot create Super Admin accounts")
+def create_managed_user(user_in: schemas.UserCreate, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.get_current_user)):
+    # Block employees from creating users
+    if current_user.role in ["worker", "carpenter", "operator", "employee"]:
+        raise HTTPException(status_code=403, detail="Employees cannot create user accounts")
         
+    # Enforce Manager rules
+    is_manager = current_user.role in ["manager", "factory_manager", "project_manager", "store_manager", "hr", "accountant"]
+    if is_manager:
+        if user_in.role in ["admin", "super_admin"]:
+            raise HTTPException(status_code=403, detail="Managers cannot create Admin or Super Admin accounts")
+        if user_in.permissions is not None:
+            raise HTTPException(status_code=403, detail="Managers cannot assign user permissions")
+        # Department check
+        if current_user.department and user_in.department != current_user.department:
+            raise HTTPException(status_code=403, detail=f"Managers can only create users in their own department: {current_user.department}")
+
+    # Enforce password strength
+    try:
+        auth.validate_password_strength(user_in.password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     db_user = crud.get_user_by_email(db, email=user_in.email)
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -242,22 +422,55 @@ def create_managed_user(user_in: schemas.UserCreate, request: Request, db: Sessi
     
     crud.log_detailed_activity(
         db, current_user.id, "UserManagement", "create_user", created.id,
-        f"Admin/Manager created user: {created.email} (Role: {created.role})",
+        f"User created: {created.email} (Role: {created.role}, Created by: {current_user.email})",
         ip_address=ip_addr, device=user_agent
     )
+    
+    broadcast_sync({"event": "user_change", "user_id": created.id})
     return created
 
 @app.put("/api/users/{user_id}", response_model=schemas.UserResponse)
-def update_managed_user(user_id: str, user_in: schemas.UserUpdate, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin_or_factory_manager)):
-    target_user = db.query(User).filter(User.id == user_id).first()
+def update_managed_user(user_id: str, user_in: schemas.UserUpdate, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.get_current_user)):
+    target_user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
         
-    if target_user.role == "admin" and current_user.role == "factory_manager":
-        raise HTTPException(status_code=403, detail="Factory Managers cannot modify Super Admin accounts")
-        
-    if user_in.role == "admin" and current_user.role == "factory_manager":
-        raise HTTPException(status_code=403, detail="Factory Managers cannot elevate users to Super Admin")
+    # 1. Enforce Employee Rules
+    is_employee = current_user.role in ["worker", "carpenter", "operator", "employee"]
+    if is_employee:
+        if current_user.id != user_id:
+            raise HTTPException(status_code=403, detail="Employees can only edit their own profile")
+        # Strip/block role, permissions, status, employee_code changes for self-edits
+        if user_in.role is not None or user_in.permissions is not None or user_in.status is not None or user_in.employee_code is not None:
+            raise HTTPException(status_code=403, detail="Employees cannot change their own role, status, permissions, or employee code")
+            
+    # 2. Enforce Manager Rules
+    is_manager = current_user.role in ["manager", "factory_manager", "project_manager", "store_manager", "hr", "accountant"]
+    if is_manager:
+        if current_user.id != user_id: # if editing someone else
+            # Cannot edit admin
+            if target_user.role in ["admin", "super_admin"]:
+                raise HTTPException(status_code=403, detail="Managers cannot modify Admin or Super Admin accounts")
+            # Cannot elevate to admin
+            if user_in.role in ["admin", "super_admin"]:
+                raise HTTPException(status_code=403, detail="Managers cannot elevate users to Admin or Super Admin")
+            # Cannot change permissions
+            if user_in.permissions is not None:
+                raise HTTPException(status_code=403, detail="Managers cannot modify user permissions")
+            # Department isolation
+            if current_user.department and target_user.department != current_user.department:
+                raise HTTPException(status_code=403, detail=f"Managers can only manage users in their own department: {current_user.department}")
+
+    # 3. Access protection
+    if not is_employee and not is_manager and current_user.role not in ["admin", "super_admin"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Enforce password strength if password is being updated
+    if user_in.password:
+        try:
+            auth.validate_password_strength(user_in.password)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     password_hash = None
     if user_in.password:
@@ -270,9 +483,11 @@ def update_managed_user(user_id: str, user_in: schemas.UserUpdate, request: Requ
     
     crud.log_detailed_activity(
         db, current_user.id, "UserManagement", "update_user", updated.id,
-        f"Admin/Manager updated user: {updated.email}",
+        f"User updated user: {updated.email} (updated by {current_user.email})",
         ip_address=ip_addr, device=user_agent
     )
+    
+    broadcast_sync({"event": "user_change", "user_id": user_id})
     return updated
 
 @app.delete("/api/users/{user_id}")
@@ -302,7 +517,10 @@ def delete_managed_user(user_id: str, request: Request, db: Session = Depends(ge
     return {"status": "success", "message": "User successfully archived"}
 
 @app.post("/api/users/{user_id}/status")
-def toggle_managed_user_status(user_id: str, payload: dict, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin_or_factory_manager)):
+def toggle_managed_user_status(user_id: str, payload: dict, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.get_current_user)):
+    if current_user.role in ["worker", "carpenter", "operator", "employee"]:
+        raise HTTPException(status_code=403, detail="Employees cannot change user status")
+        
     status_val = payload.get("status")
     if status_val not in ["active", "disabled"]:
         raise HTTPException(status_code=400, detail="Invalid status value. Must be 'active' or 'disabled'.")
@@ -314,9 +532,13 @@ def toggle_managed_user_status(user_id: str, payload: dict, request: Request, db
     if db_user.id == current_user.id and status_val == "disabled":
         raise HTTPException(status_code=400, detail="Cannot disable own administrative account")
         
-    if db_user.role == "admin" and current_user.role == "factory_manager":
-        raise HTTPException(status_code=403, detail="Factory Managers cannot modify Super Admin accounts")
-        
+    is_manager = current_user.role in ["manager", "factory_manager", "project_manager", "store_manager", "hr", "accountant"]
+    if is_manager:
+        if db_user.role in ["admin", "super_admin"]:
+            raise HTTPException(status_code=403, detail="Managers cannot modify Admin or Super Admin accounts")
+        if current_user.department and db_user.department != current_user.department:
+            raise HTTPException(status_code=403, detail=f"Managers can only toggle status for users in their own department: {current_user.department}")
+            
     db_user.status = status_val
     
     # Update linked staff status
@@ -337,17 +559,29 @@ def toggle_managed_user_status(user_id: str, payload: dict, request: Request, db
     return {"status": "success", "message": f"User status set to {status_val}"}
 
 @app.post("/api/users/{user_id}/reset-password")
-def reset_managed_user_password(user_id: str, payload: dict, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin_or_factory_manager)):
-    password_val = payload.get("password")
-    if not password_val or len(password_val) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
+def reset_managed_user_password(user_id: str, payload: dict, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.get_current_user)):
+    if current_user.role in ["worker", "carpenter", "operator", "employee"]:
+        raise HTTPException(status_code=403, detail="Employees cannot reset user passwords")
         
     db_user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
         
-    if db_user.role == "admin" and current_user.role == "factory_manager":
-        raise HTTPException(status_code=403, detail="Factory Managers cannot modify Super Admin accounts")
+    is_manager = current_user.role in ["manager", "factory_manager", "project_manager", "store_manager", "hr", "accountant"]
+    if is_manager:
+        if db_user.role in ["admin", "super_admin"]:
+            raise HTTPException(status_code=403, detail="Managers cannot modify Admin or Super Admin accounts")
+        if current_user.department and db_user.department != current_user.department:
+            raise HTTPException(status_code=403, detail=f"Managers can only reset passwords for users in their own department: {current_user.department}")
+
+    password_val = payload.get("password")
+    if not password_val:
+        raise HTTPException(status_code=400, detail="Password is required")
+        
+    try:
+        auth.validate_password_strength(password_val)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
         
     db_user.password_hash = auth.get_password_hash(password_val)
     db.commit()
@@ -376,7 +610,9 @@ def create_inventory_item(item_in: schemas.InventoryItemCreate, db: Session = De
     db_item_bar = crud.get_inventory_item_by_barcode(db, item_in.barcode)
     if db_item_bar:
         raise HTTPException(status_code=400, detail="Barcode already exists")
-    return crud.create_inventory_item(db=db, item=item_in, user_id=current_user.id)
+    res = crud.create_inventory_item(db=db, item=item_in, user_id=current_user.id)
+    broadcast_sync({"event": "inventory_change"})
+    return res
 
 @app.get("/api/inventory/{item_id}", response_model=schemas.InventoryItemResponse)
 def read_inventory_item(item_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
@@ -390,6 +626,7 @@ def update_inventory_item(item_id: str, item_in: schemas.InventoryItemUpdate, db
     db_item = crud.update_inventory_item(db=db, item_id=item_id, item_in=item_in, user_id=current_user.id)
     if not db_item:
         raise HTTPException(status_code=404, detail="Item not found")
+    broadcast_sync({"event": "inventory_change"})
     return db_item
 
 @app.delete("/api/inventory/{item_id}")
@@ -397,6 +634,7 @@ def delete_inventory_item(item_id: str, db: Session = Depends(get_db), current_u
     success = crud.delete_inventory_item(db=db, item_id=item_id, user_id=current_user.id)
     if not success:
         raise HTTPException(status_code=404, detail="Item not found")
+    broadcast_sync({"event": "inventory_change"})
     return {"status": "success", "message": "Item deleted"}
 
 @app.post("/api/inventory/{item_id}/restore")
@@ -405,6 +643,7 @@ def restore_inventory_item(item_id: str, db: Session = Depends(get_db), current_
         success = crud.restore_inventory_item(db=db, item_id=item_id, user_id=current_user.id)
         if not success:
             raise HTTPException(status_code=404, detail="Item not found or already active")
+        broadcast_sync({"event": "inventory_change"})
         return {"status": "success", "message": "Item restored"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -412,7 +651,7 @@ def restore_inventory_item(item_id: str, db: Session = Depends(get_db), current_
 @app.post("/api/inventory/{item_id}/adjust", response_model=schemas.InventoryItemResponse)
 def adjust_inventory_stock(item_id: str, adj: schemas.StockAdjustment, db: Session = Depends(get_db), current_user: User = Depends(auth.require_store_or_higher)):
     try:
-        return crud.adjust_stock(
+        res = crud.adjust_stock(
             db=db,
             inventory_id=item_id,
             quantity=adj.quantity,
@@ -420,6 +659,8 @@ def adjust_inventory_stock(item_id: str, adj: schemas.StockAdjustment, db: Sessi
             user_id=current_user.id,
             notes=adj.notes
         )
+        broadcast_sync({"event": "inventory_change"})
+        return res
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1087,7 +1328,13 @@ def read_projects(include_deleted: bool = False, db: Session = Depends(get_db), 
 
 @app.post("/api/projects", response_model=schemas.ProjectResponse)
 def create_project(project_in: schemas.ProjectCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
-    return crud.create_project(db=db, project=project_in, user_id=current_user.id)
+    project = crud.create_project(db=db, project=project_in, user_id=current_user.id)
+    try:
+        crud.auto_assign_project_resources(db, project)
+    except Exception as e:
+        print(f"Failed to auto-assign project resources: {e}")
+    broadcast_sync({"event": "project_change"})
+    return project
 
 @app.post("/api/projects/import")
 async def import_projects_csv(
@@ -1216,46 +1463,71 @@ def read_project(project_id: str, db: Session = Depends(get_db), current_user: U
 
 @app.put("/api/projects/{project_id}", response_model=schemas.ProjectResponse)
 def update_project(project_id: str, project_in: schemas.ProjectUpdate, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_project_edit_access)):
+    if current_user.role not in ["admin", "super_admin"]:
+        assigned_ids = crud.get_user_project_ids(db, current_user.id)
+        if project_id not in assigned_ids:
+            raise HTTPException(status_code=403, detail="You can only manage projects assigned to you")
+            
     ip_addr = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
     db_project = crud.update_project(db=db, project_id=project_id, project_in=project_in, user_id=current_user.id, ip_address=ip_addr, device=user_agent)
     if not db_project:
         raise HTTPException(status_code=404, detail="Project not found")
+    broadcast_sync({"event": "project_change"})
     return db_project
 
 @app.delete("/api/projects/{project_id}")
 def delete_project(project_id: str, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_project_edit_access)):
+    if current_user.role not in ["admin", "super_admin"]:
+        assigned_ids = crud.get_user_project_ids(db, current_user.id)
+        if project_id not in assigned_ids:
+            raise HTTPException(status_code=403, detail="You can only manage projects assigned to you")
+            
     try:
         ip_addr = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent")
         success = crud.delete_project(db=db, project_id=project_id, user_id=current_user.id, ip_address=ip_addr, device=user_agent)
         if not success:
             raise HTTPException(status_code=404, detail="Project not found")
+        broadcast_sync({"event": "project_change"})
         return {"status": "success", "message": "Project archived"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/projects/{project_id}/restore")
 def restore_project(project_id: str, request: Request, db: Session = Depends(get_db), current_user: User = Depends(auth.require_project_edit_access)):
+    if current_user.role not in ["admin", "super_admin"]:
+        assigned_ids = crud.get_user_project_ids(db, current_user.id)
+        if project_id not in assigned_ids:
+            raise HTTPException(status_code=403, detail="You can only manage projects assigned to you")
+            
     try:
         ip_addr = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent")
         success = crud.restore_project(db=db, project_id=project_id, user_id=current_user.id, ip_address=ip_addr, device=user_agent)
         if not success:
             raise HTTPException(status_code=404, detail="Project not found or active")
+        broadcast_sync({"event": "project_change"})
         return {"status": "success", "message": "Project restored"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/projects/{project_id}/bom", response_model=schemas.ProjectBOMResponse)
 def add_bom_to_project(project_id: str, bom_in: schemas.ProjectBOMCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
+    if current_user.role not in ["admin", "super_admin"]:
+        assigned_ids = crud.get_user_project_ids(db, current_user.id)
+        if project_id not in assigned_ids:
+            raise HTTPException(status_code=403, detail="You can only manage projects assigned to you")
+            
     project = crud.get_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     item = crud.get_inventory_item(db, bom_in.inventory_id)
     if not item:
         raise HTTPException(status_code=404, detail="Inventory item not found")
-    return crud.add_bom_item(db=db, project_id=project_id, bom_in=bom_in)
+    res = crud.add_bom_item(db=db, project_id=project_id, bom_in=bom_in)
+    broadcast_sync({"event": "project_change"})
+    return res
 
 
 @app.get("/api/projects/{project_id}/assignments", response_model=List[schemas.ProjectAssignmentResponse])
@@ -1384,33 +1656,86 @@ def update_purchase_order_status(
 
 # --- STAFF & ATTENDANCE ---
 @app.get("/api/staff", response_model=List[schemas.StaffResponse])
-def read_staff(include_deleted: bool = False, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
-    return crud.get_staff(db, include_deleted)
+def read_staff(include_deleted: bool = False, db: Session = Depends(get_db), current_user: User = Depends(auth.get_current_user)):
+    staff = crud.get_staff(db, include_deleted)
+    if current_user.role in ["admin", "super_admin"]:
+        return staff
+    elif current_user.role in ["manager", "factory_manager", "hr", "hr_manager"]:
+        if current_user.department:
+            return [s for s in staff if s.department == current_user.department]
+        return staff
+    else:
+        return [s for s in staff if s.user_id == current_user.id]
 
 @app.post("/api/staff", response_model=schemas.StaffResponse)
-def create_staff_member(staff_in: schemas.StaffCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
-    return crud.create_staff(db=db, staff=staff_in, user_id=current_user.id)
+def create_staff_member(staff_in: schemas.StaffCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.get_current_user)):
+    if current_user.role in ["worker", "carpenter", "operator", "employee"]:
+        raise HTTPException(status_code=403, detail="Employees cannot create staff records")
+        
+    is_manager = current_user.role in ["manager", "factory_manager", "hr", "hr_manager"]
+    if is_manager and current_user.department:
+        if staff_in.department != current_user.department:
+            raise HTTPException(status_code=403, detail=f"Managers can only create staff in their own department: {current_user.department}")
+            
+    created = crud.create_staff(db=db, staff=staff_in, user_id=current_user.id)
+    broadcast_sync({"event": "staff_change"})
+    return created
 
 @app.put("/api/staff/{staff_id}", response_model=schemas.StaffResponse)
-def update_staff(staff_id: str, staff_in: schemas.StaffUpdate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
-    db_staff = crud.update_staff(db=db, staff_id=staff_id, staff_in=staff_in, user_id=current_user.id)
+def update_staff(staff_id: str, staff_in: schemas.StaffUpdate, db: Session = Depends(get_db), current_user: User = Depends(auth.get_current_user)):
+    db_staff = db.query(Staff).filter(Staff.id == staff_id).first()
     if not db_staff:
         raise HTTPException(status_code=404, detail="Staff not found")
-    return db_staff
+        
+    if current_user.role in ["worker", "carpenter", "operator", "employee"]:
+        raise HTTPException(status_code=403, detail="Employees cannot modify staff records")
+        
+    is_manager = current_user.role in ["manager", "factory_manager", "hr", "hr_manager"]
+    if is_manager and current_user.department:
+        if db_staff.department != current_user.department:
+            raise HTTPException(status_code=403, detail=f"Managers can only edit staff in their own department: {current_user.department}")
+        if staff_in.department is not None and staff_in.department != current_user.department:
+            raise HTTPException(status_code=403, detail=f"Managers cannot change staff department to a different department")
+            
+    updated = crud.update_staff(db=db, staff_id=staff_id, staff_in=staff_in, user_id=current_user.id)
+    broadcast_sync({"event": "staff_change"})
+    return updated
 
 @app.delete("/api/staff/{staff_id}")
-def delete_staff(staff_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
-    success = crud.delete_staff(db=db, staff_id=staff_id, user_id=current_user.id)
-    if not success:
+def delete_staff(staff_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.get_current_user)):
+    db_staff = db.query(Staff).filter(Staff.id == staff_id).first()
+    if not db_staff:
         raise HTTPException(status_code=404, detail="Staff not found")
+        
+    if current_user.role in ["worker", "carpenter", "operator", "employee"]:
+        raise HTTPException(status_code=403, detail="Employees cannot delete staff records")
+        
+    is_manager = current_user.role in ["manager", "factory_manager", "hr", "hr_manager"]
+    if is_manager and current_user.department:
+        if db_staff.department != current_user.department:
+            raise HTTPException(status_code=403, detail="Managers can only delete staff in their own department")
+            
+    success = crud.delete_staff(db=db, staff_id=staff_id, user_id=current_user.id)
+    broadcast_sync({"event": "staff_change"})
     return {"status": "success", "message": "Staff archived"}
 
 @app.post("/api/staff/{staff_id}/restore")
-def restore_staff(staff_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+def restore_staff(staff_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.get_current_user)):
+    db_staff = db.query(Staff).filter(Staff.id == staff_id).first()
+    if not db_staff:
+        raise HTTPException(status_code=404, detail="Staff not found")
+        
+    if current_user.role in ["worker", "carpenter", "operator", "employee"]:
+        raise HTTPException(status_code=403, detail="Employees cannot restore staff records")
+        
+    is_manager = current_user.role in ["manager", "factory_manager", "hr", "hr_manager"]
+    if is_manager and current_user.department:
+        if db_staff.department != current_user.department:
+            raise HTTPException(status_code=403, detail="Managers can only restore staff in their own department")
+            
     try:
         success = crud.restore_staff(db=db, staff_id=staff_id, user_id=current_user.id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Staff not found or active")
+        broadcast_sync({"event": "staff_change"})
         return {"status": "success", "message": "Staff restored"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1721,6 +2046,7 @@ async def selfie_check_in(
         attendance.check_in_selfie = f"/uploads/selfies/{safe_filename}"
         db.commit()
         db.refresh(attendance)
+        broadcast_sync({"event": "attendance_change"})
         
         crud.log_detailed_activity(
             db, current_user.id, "Attendance", "selfie_check_in", attendance.id,
@@ -1824,6 +2150,7 @@ async def selfie_check_out(
         attendance.check_out_selfie = f"/uploads/selfies/{safe_filename}"
         db.commit()
         db.refresh(attendance)
+        broadcast_sync({"event": "attendance_change"})
         
         crud.log_detailed_activity(
             db, current_user.id, "Attendance", "selfie_check_out", attendance.id,

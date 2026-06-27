@@ -137,6 +137,7 @@ class Project(Base):
     end_date = Column(Date, nullable=True)
     budget = Column(Float, default=0.0, nullable=False)
     completion_percentage = Column(Integer, default=0, nullable=False)  # NEW: 0-100
+    department = Column(String(100), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     # Soft delete

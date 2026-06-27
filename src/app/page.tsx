@@ -54,6 +54,89 @@ export default function Home() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!user) return;
+
+    const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    let wsHost = window.location.host;
+    
+    // Fallback or override if API server is on a different host
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
+    if (apiUrl) {
+      try {
+        const urlObj = new URL(apiUrl);
+        wsHost = urlObj.host;
+      } catch (e) {}
+    }
+    
+    // Ensure we resolve properly for backend server (usually same host/port in dev proxy, or custom)
+    // If we are in dev mode and using Next.js dev server on 3000, backend is on 8000
+    if (wsHost.includes("localhost:3000") || wsHost.includes("127.0.0.1:3000")) {
+      wsHost = "localhost:8000";
+    }
+    
+    const wsUrl = `${wsProto}//${wsHost}/ws`;
+    console.log("Connecting to WebSocket:", wsUrl);
+    
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: any = null;
+    let isDisposed = false;
+    
+    function connect() {
+      if (isDisposed) return;
+      
+      ws = new WebSocket(wsUrl);
+      
+      ws.onopen = () => {
+        console.log("WebSocket connected successfully");
+      };
+      
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          console.log("WebSocket message received:", message);
+          
+          const customEvent = new CustomEvent("erp_websocket_event", { detail: message });
+          window.dispatchEvent(customEvent);
+        } catch (e) {
+          // If it's plain text (like 'pong')
+          if (event.data === "pong") {
+            console.log("WebSocket keepalive pong received");
+          } else {
+            console.error("Failed to parse websocket message", e);
+          }
+        }
+      };
+      
+      ws.onclose = () => {
+        console.log("WebSocket closed. Attempting reconnect...");
+        if (!isDisposed) {
+          reconnectTimeout = setTimeout(connect, 3000);
+        }
+      };
+      
+      ws.onerror = (err) => {
+        console.error("WebSocket error:", err);
+      };
+    }
+    
+    connect();
+    
+    // Keepalive ping interval (every 30 seconds)
+    const pingInterval = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send("ping");
+      }
+    }, 30000);
+    
+    return () => {
+      isDisposed = true;
+      clearInterval(pingInterval);
+      if (ws) ws.close();
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+    };
+  }, [user]);
+
   const handleLogin = (userData: { token: string; refresh_token: string; role: string; name: string }) => {
     setUser(userData);
     localStorage.setItem("allure_erp_user", JSON.stringify(userData));

@@ -96,6 +96,21 @@ export default function AttendanceDashboard({ token, role }: AttendanceDashboard
     if (activeTab === "trends") loadTrends();
   }, [activeTab, loadDashboard, loadHistory, loadMonthly, loadTrends]);
 
+  useEffect(() => {
+    const handleWebsocketEvent = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      if (customEvent.detail?.event === "attendance_change") {
+        if (activeTab === "today") { loadDashboard(); loadTrends(); }
+        if (activeTab === "history") loadHistory();
+        if (activeTab === "monthly") loadMonthly();
+        if (activeTab === "trends") loadTrends();
+      }
+    };
+
+    window.addEventListener("erp_websocket_event", handleWebsocketEvent);
+    return () => window.removeEventListener("erp_websocket_event", handleWebsocketEvent);
+  }, [activeTab, loadDashboard, loadHistory, loadMonthly, loadTrends]);
+
   const exportAttendance = async (format: string) => {
     const url = `/api/attendance/export?year=${reportYear}&month=${reportMonth}&format=${format}`;
     

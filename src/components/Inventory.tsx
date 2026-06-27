@@ -89,12 +89,24 @@ export default function Inventory({ token, role }: { token: string; role: string
   useEffect(() => {
     fetchData();
 
-    // Real-Time Sync Polling (every 15 seconds)
+    const handleWebsocketEvent = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      if (customEvent.detail?.event === "inventory_change") {
+        fetchData();
+      }
+    };
+
+    window.addEventListener("erp_websocket_event", handleWebsocketEvent);
+
+    // Fallback polling (every 30 seconds)
     const pollInterval = setInterval(() => {
       fetchData();
-    }, 15000);
+    }, 30000);
 
-    return () => clearInterval(pollInterval);
+    return () => {
+      window.removeEventListener("erp_websocket_event", handleWebsocketEvent);
+      clearInterval(pollInterval);
+    };
   }, [token, statusFilter]);
 
   const handleOpenAdd = () => {

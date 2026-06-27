@@ -420,16 +420,34 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
       fetchData();
     }
 
-    // Real-Time Sync Polling (every 15 seconds)
+    const handleWebsocketEvent = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const eventType = customEvent.detail?.event;
+      if (isWorker) {
+        if (["attendance_change", "project_change"].includes(eventType)) {
+          fetchWorkerData();
+        }
+      } else {
+        // Refresh dashboard overview upon notifications, stock changes, etc.
+        fetchData();
+      }
+    };
+
+    window.addEventListener("erp_websocket_event", handleWebsocketEvent);
+
+    // Fallback polling (kept at 30 seconds for safety)
     const pollInterval = setInterval(() => {
       if (isWorker) {
         fetchWorkerData();
       } else {
         fetchData();
       }
-    }, 15000);
+    }, 30000);
 
-    return () => clearInterval(pollInterval);
+    return () => {
+      window.removeEventListener("erp_websocket_event", handleWebsocketEvent);
+      clearInterval(pollInterval);
+    };
   }, [token, role]);
 
   const handleUpdateWidgetPosition = (id: string, dir: "left" | "right") => {

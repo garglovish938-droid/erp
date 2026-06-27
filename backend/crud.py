@@ -1,6 +1,6 @@
 import json
 from datetime import datetime, date
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from typing import List, Optional
 
@@ -56,10 +56,31 @@ def log_detailed_activity(db: Session, user_id: Optional[str], module: str, acti
 
 
 # Notification Helper
+_notification_callback = None
+
+def register_notification_callback(cb):
+    global _notification_callback
+    _notification_callback = cb
+
 def create_system_notification(db: Session, title: str, description: str, notif_type: str):
     notification = Notification(title=title, description=description, type=notif_type)
     db.add(notification)
     db.commit()
+    db.refresh(notification)
+    if _notification_callback:
+        try:
+            _notification_callback({
+                "event": "notification",
+                "data": {
+                    "id": notification.id,
+                    "title": notification.title,
+                    "description": notification.description,
+                    "type": notification.type,
+                    "created_at": notification.created_at.isoformat()
+                }
+            })
+        except Exception:
+            pass
 
 # Versioning Helper
 def save_version_snapshot(db: Session, entity_type: str, entity_id: str, data_dict: dict, user_id: Optional[str]):
@@ -388,7 +409,10 @@ def restore_client(db: Session, client_id: str, user_id: str) -> bool:
 
 # --- INVENTORY ---
 def get_inventory_items(db: Session, include_deleted: bool = False) -> List[InventoryItem]:
-    query = db.query(InventoryItem)
+    query = db.query(InventoryItem).options(
+        joinedload(InventoryItem.category),
+        joinedload(InventoryItem.supplier)
+    )
     if not include_deleted:
         query = query.filter(InventoryItem.is_deleted == False)
     return query.all()
@@ -578,7 +602,8 @@ def create_project(db: Session, project: ProjectCreate, user_id: Optional[str] =
         status=project.status,
         start_date=project.start_date,
         end_date=project.end_date,
-        budget=project.budget
+        budget=project.budget,
+        department=project.department
     )
     db.add(db_project)
     db.commit()
@@ -1650,6 +1675,38 @@ def create_project_assignment(db: Session, project_id: str, user_id: str) -> Pro
     db.commit()
     db.refresh(assignment)
     return assignment
+
+def auto_assign_project_resources(db: Session, project: Project):
+    # 1. Automatically assign Project Manager (users with role 'manager' or 'project_manager')
+    pms = db.query(User).filter(User.role.in_(["manager", "project_manager"]), User.is_deleted == False).all()
+    for pm in pms:
+        create_project_assignment(db, project.id, pm.id)
+        
+    # 2. Automatically assign Store Manager (users with role 'store', 'store_manager')
+    sms = db.query(User).filter(User.role.in_(["store", "store_manager"]), User.is_deleted == False).all()
+    for sm in sms:
+        create_project_assignment(db, project.id, sm.id)
+        
+    # 3. Automatically assign Purchase Team (users with role 'accountant', 'purchase_manager')
+    pts = db.query(User).filter(User.role.in_(["accountant", "purchase_manager"]), User.is_deleted == False).all()
+    for pt in pts:
+        create_project_assignment(db, project.id, pt.id)
+        
+    # 4. Automatically assign Employees (workers, carpenters, operators, quality_inspectors, machine_operators, employees)
+    # matching the project department (if specified)
+    if project.department:
+        worker_roles = [
+            "worker", "carpenter", "operator", "machine_operator", 
+            "quality_inspector", "store_assistant", "employee"
+        ]
+        emps = db.query(User).filter(
+            User.role.in_(worker_roles),
+            User.department == project.department,
+            User.is_deleted == False
+        ).all()
+        for emp in emps:
+            create_project_assignment(db, project.id, emp.id)
+
 
 def delete_project_assignment(db: Session, project_id: str, user_id: str) -> bool:
     assignment = db.query(ProjectAssignment).filter(
