@@ -5469,3 +5469,19 @@ async def trigger_supabase_migration(secret: str):
     thread.start()
     return {"message": "Migration triggered in the background. Check Render container logs."}
 
+
+@app.get("/api/admin/list-container-uploads")
+def list_container_uploads(secret: str):
+    if secret != settings.SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+    import os
+    res = {}
+    up_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+    if not os.path.exists(up_dir):
+        return {"error": f"Dir {up_dir} does not exist"}
+    for root, dirs, files in os.walk(up_dir):
+        rel = os.path.relpath(root, up_dir)
+        res[rel] = files
+    return res
+
+
