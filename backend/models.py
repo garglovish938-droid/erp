@@ -565,3 +565,15 @@ class DailyExpense(Base):
 
     project = relationship("Project")
     creator = relationship("User")
+
+
+class LoginHistory(Base):
+    __tablename__ = "login_history"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), nullable=True)
+    email = Column(String(255), nullable=True)
+    login_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    ip_address = Column(String(50), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    success = Column(Integer, default=1, nullable=False)

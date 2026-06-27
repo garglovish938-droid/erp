@@ -30,7 +30,7 @@ from models import (
     StockTransaction, MaterialRequest, PurchaseOrder, Staff, Attendance,
     Notification, ActivityLog, CustomFieldDefinition, CustomFieldValue,
     Shift, AttendanceRule, Task, DailyWorkLog, ProjectAssignment, ProjectDailyLog,
-    DailyExpense
+    DailyExpense, LoginHistory
 )
 import crud, schemas, auth
 from collections import defaultdict
@@ -291,6 +291,7 @@ def login_user(user_in: schemas.UserLogin, request: Request, db: Session = Depen
     refresh_token = auth.create_refresh_token(data={"sub": user.email})
     
     user.refresh_token = refresh_token
+    db.commit()
     
     from sqlalchemy import text
     try:
@@ -305,10 +306,9 @@ def login_user(user_in: schemas.UserLogin, request: Request, db: Session = Depen
             "ua": user_agent,
             "success": 1
         })
+        db.commit()
     except Exception:
-        pass
-        
-    db.commit()
+        db.rollback()
     
     crud.log_activity(db, user.id, "login", f"Successful login for {user.email}", ip_address=ip_addr, device=user_agent)
     return {
