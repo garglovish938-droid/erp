@@ -108,9 +108,9 @@ def run_migration():
                 subpath=subpath
             )
             success_count += 1
-            print(f"  ✓ Successfully uploaded {rel_path}")
+            print(f"  [OK] Successfully uploaded {rel_path}")
         except Exception as e:
-            print(f"  ✗ Failed to upload {rel_path}: {e}")
+            print(f"  [ERROR] Failed to upload {rel_path}: {e}")
             fail_count += 1
 
     db.close()

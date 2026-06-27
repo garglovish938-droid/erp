@@ -113,17 +113,17 @@ def init_buckets():
             }
             res = requests.put(update_url, headers=headers, json=payload, timeout=10)
             if res.status_code == 200:
-                print(f"  ✓ Bucket '{b_id}' updated successfully.")
+                print(f"  [OK] Bucket '{b_id}' updated successfully.")
             else:
-                print(f"  ✗ Failed to update bucket '{b_id}' (HTTP {res.status_code}): {res.text}")
+                print(f"  [ERROR] Failed to update bucket '{b_id}' (HTTP {res.status_code}): {res.text}")
         else:
             print(f"Creating bucket '{b_id}'...")
             create_url = f"{url}/storage/v1/bucket"
             res = requests.post(create_url, headers=headers, json=b, timeout=10)
             if res.status_code == 200:
-                print(f"  ✓ Bucket '{b_id}' created successfully.")
+                print(f"  [OK] Bucket '{b_id}' created successfully.")
             else:
-                print(f"  ✗ Failed to create bucket '{b_id}' (HTTP {res.status_code}): {res.text}")
+                print(f"  [ERROR] Failed to create bucket '{b_id}' (HTTP {res.status_code}): {res.text}")
 
     print("\nSupabase storage bucket initialization complete.")
 
