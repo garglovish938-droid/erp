@@ -1,13 +1,12 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { 
   TrendingUp, AlertCircle, PackageCheck, CheckCircle2, DollarSign, 
   ShieldAlert, Layers, Bell, LayoutGrid, Settings, Plus, Trash2, 
   ChevronLeft, ChevronRight, Maximize2, Minimize2, Save, Loader2,
   Clock, ClipboardList, CheckSquare, Sparkles, MapPin, Laptop, Calendar,
-  LogOut, Camera, X, Video, ShoppingCart, Receipt, Users, FolderKanban,
-  ArrowLeftRight
+  LogOut, Camera, ShoppingCart, Receipt, Users, FolderKanban
 } from "lucide-react";
 import { 
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, 
@@ -17,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { useToast } from "./Toast";
 import { inventoryService } from "@/services/inventoryService";
 import { API_BASE_URL } from "@/lib/api";
+import CameraModal from "./CameraModal";
 
 const COLORS = ["#4f46e5", "#ec4899", "#10b981", "#f59e0b", "#8b5cf6"];
 
@@ -81,229 +81,42 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
   const [workLogPhoto, setWorkLogPhoto] = useState<File | null>(null);
   const [todayAttendance, setTodayAttendance] = useState<any[]>([]);
 
-  // Selfie Attendance state and refs
+  // Attendance camera state
   const [showCameraModal, setShowCameraModal] = useState(false);
   const [cameraMode, setCameraMode] = useState<"in" | "out">("in");
-  const [capturedImage, setCapturedImage] = useState<string | null>(null);
-  const [cameraError, setCameraError] = useState<string | null>(null);
-  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
-  const [activeCameraId, setActiveCameraId] = useState<string>("");
-  const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
-  const [countdown, setCountdown] = useState<number | null>(null);
-  const [flashActive, setFlashActive] = useState(false);
-
-  // New check-out fields
+  // Checkout sub-step: selfie → work_photo → details
+  const [checkoutStep, setCheckoutStep] = useState<"selfie" | "work_photo" | "details">("selfie");
+  const [checkoutSelfieImage, setCheckoutSelfieImage] = useState<string | null>(null);
+  const [checkoutWorkPhoto, setCheckoutWorkPhoto] = useState<string | null>(null);
+  // Checkout form fields
   const [checkoutProject, setCheckoutProject] = useState("");
   const [checkoutTask, setCheckoutTask] = useState("");
   const [checkoutRemarks, setCheckoutRemarks] = useState("");
   const [checkoutProgress, setCheckoutProgress] = useState(10);
-  const [checkoutSelfieImage, setCheckoutSelfieImage] = useState<string | null>(null);
-  const [checkoutWorkPhoto, setCheckoutWorkPhoto] = useState<string | null>(null);
-  const [checkoutCaptureStep, setCheckoutCaptureStep] = useState<"selfie" | "work_photo">("selfie");
 
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-
-  const startCamera = async (cameraId?: string, fMode?: "user" | "environment") => {
-    setCameraError(null);
-    setCapturedImage(null);
-    try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error("navigator.mediaDevices or getUserMedia not available");
-      }
-      
-      const targetFacingMode = fMode || facingMode;
-      const targetCameraId = cameraId || activeCameraId;
-      
-      const constraints: MediaStreamConstraints = {
-        video: targetCameraId
-          ? { deviceId: { exact: targetCameraId }, width: { ideal: 1280 }, height: { ideal: 720 } }
-          : { facingMode: targetFacingMode, width: { ideal: 1280 }, height: { ideal: 720 } }
-      };
-
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-      
-      // Enumerate available video input devices
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoDevices = devices.filter(device => device.kind === "videoinput");
-        setCameras(videoDevices);
-        
-        if (!targetCameraId && videoDevices.length > 0) {
-          const activeTrack = stream.getVideoTracks()[0];
-          if (activeTrack) {
-            const settings = activeTrack.getSettings();
-            if (settings.deviceId) {
-              setActiveCameraId(settings.deviceId);
-            }
-          }
-        }
-      } catch (enumErr) {
-        console.error("Failed to enumerate devices:", enumErr);
-      }
-      
-    } catch (e: any) {
-      console.error("Camera access failed:", e);
-      
-      // Strict rule: Simulated camera only allowed in automated testing (headless/webdriver context)
-      const isAutomatedTest = typeof navigator !== "undefined" && (
-        navigator.webdriver || 
-        navigator.userAgent.toLowerCase().includes("headless") || 
-        navigator.userAgent.toLowerCase().includes("puppeteer") || 
-        navigator.userAgent.toLowerCase().includes("playwright") ||
-        window.location.search.includes("mock_camera=true")
-      );
-      
-      if (!isAutomatedTest) {
-        setCameraError("Could not access camera. Please make sure you have allowed camera permission and are using a secure connection (HTTPS).");
-        return;
-      }
-      
-      try {
-        // Fallback to simulated canvas stream for automated testing / headless environments
-        const mockCanvas = document.createElement("canvas");
-        mockCanvas.width = 640;
-        mockCanvas.height = 480;
-        const ctx = mockCanvas.getContext("2d");
-        if (ctx) {
-          ctx.fillStyle = "#1e293b"; // Slate-800
-          ctx.fillRect(0, 0, 640, 480);
-          ctx.fillStyle = "#ffffff";
-          ctx.font = "bold 20px sans-serif";
-          ctx.textAlign = "center";
-          ctx.fillText("SIMULATED CAMERA STREAM", 320, 200);
-          ctx.font = "16px sans-serif";
-          ctx.fillText(`Active User: ${name || "Employee"}`, 320, 240);
-        }
-        
-        // Animate the simulated stream slightly
-        let frameCount = 0;
-        const intervalId = setInterval(() => {
-          if (!streamRef.current) {
-            clearInterval(intervalId);
-            return;
-          }
-          const ctx = mockCanvas.getContext("2d");
-          if (ctx) {
-            ctx.fillStyle = "#1e293b";
-            ctx.fillRect(0, 0, 640, 480);
-            
-            // Draw face guide overlay outline
-            ctx.strokeStyle = "#4f46e5";
-            ctx.lineWidth = 4;
-            ctx.beginPath();
-            ctx.ellipse(320, 240, 100, 140, 0, 0, Math.PI * 2);
-            ctx.stroke();
-            
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 22px sans-serif";
-            ctx.textAlign = "center";
-            ctx.fillText("SIMULATED LIVE CAMERA", 320, 60);
-            ctx.font = "14px sans-serif";
-            ctx.fillText(`Employee: ${name || "Worker"} (${role})`, 320, 100);
-            ctx.fillText(`Time: ${new Date().toLocaleTimeString()}`, 320, 420);
-            
-            // Animated indicator to prove it is a "live video"
-            ctx.fillStyle = (frameCount % 20 < 10) ? "#ef4444" : "#10b981"; // Red / green blink
-            ctx.beginPath();
-            ctx.arc(50, 50, 8, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = "#ffffff";
-            ctx.font = "bold 12px sans-serif";
-            ctx.textAlign = "left";
-            ctx.fillText("LIVE REC", 68, 54);
-            
-            frameCount++;
-          }
-        }, 100);
-
-        // Get stream from canvas
-        // @ts-ignore
-        const stream = mockCanvas.captureStream ? mockCanvas.captureStream(30) : (mockCanvas as any).mozCaptureStream ? (mockCanvas as any).mozCaptureStream(30) : null;
-        if (!stream) {
-          throw new Error("canvas.captureStream not supported in this browser");
-        }
-        streamRef.current = stream;
-        
-        // Store interval clean up on the stream object or tracks
-        const track = stream.getVideoTracks()[0];
-        if (track) {
-          const originalStop = track.stop;
-          track.stop = function() {
-            clearInterval(intervalId);
-            originalStop.apply(this, arguments as any);
-          };
-        }
-
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-        }
-      } catch (errMock) {
-        console.error("Simulated camera stream failed:", errMock);
-        setCameraError("Could not access camera or start simulated stream.");
-      }
-    }
+  // ── Helpers used by camera modal callbacks ───────────────────────────────
+  const resetCheckoutState = () => {
+    setCheckoutStep("selfie");
+    setCheckoutSelfieImage(null);
+    setCheckoutWorkPhoto(null);
+    setCheckoutProject("");
+    setCheckoutTask("");
+    setCheckoutRemarks("");
+    setCheckoutProgress(10);
   };
 
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
+  const openCheckIn = () => {
+    setCameraMode("in");
+    resetCheckoutState();
+    setShowCameraModal(true);
   };
 
-  const toggleCamera = async () => {
-    stopCamera();
-    if (cameras.length > 1) {
-      const currentIndex = cameras.findIndex(c => c.deviceId === activeCameraId);
-      const nextIndex = (currentIndex + 1) % cameras.length;
-      const nextCamera = cameras[nextIndex];
-      setActiveCameraId(nextCamera.deviceId);
-      await startCamera(nextCamera.deviceId);
-    } else {
-      const nextFacingMode = facingMode === "user" ? "environment" : "user";
-      setFacingMode(nextFacingMode);
-      await startCamera(undefined, nextFacingMode);
-    }
+  const openCheckOut = () => {
+    setCameraMode("out");
+    resetCheckoutState();
+    setShowCameraModal(true);
   };
 
-  const captureSnapshot = () => {
-    if (videoRef.current && canvasRef.current) {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
-        
-        if (cameraMode === "out") {
-          if (checkoutCaptureStep === "selfie") {
-            setCheckoutSelfieImage(dataUrl);
-            setCheckoutCaptureStep("work_photo");
-            setCapturedImage(dataUrl);
-            setTimeout(startCamera, 100);
-          } else {
-            setCheckoutWorkPhoto(dataUrl);
-            setCapturedImage(dataUrl);
-            stopCamera();
-          }
-        } else {
-          setCapturedImage(dataUrl);
-          stopCamera();
-        }
-      }
-    }
-  };
 
   const formatUtcTimeToIst = (timeStr: string | null): string => {
     if (!timeStr) return "--:--";
@@ -328,59 +141,25 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
     }
   };
 
-  const triggerCountdownCapture = () => {
-    setCountdown(3);
-    const intervalId = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev === null) {
-          clearInterval(intervalId);
-          return null;
-        }
-        if (prev <= 1) {
-          clearInterval(intervalId);
-          setFlashActive(true);
-          setTimeout(() => setFlashActive(false), 150);
-          captureSnapshot();
-          return null;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  };
-
-  const handleSubmitSelfieAttendance = async () => {
-    let imageToUpload = capturedImage;
-    if (cameraMode === "out") {
-      imageToUpload = checkoutSelfieImage;
-      if (!imageToUpload) {
-        showToast("Please capture your check-out selfie", "warning");
-        return;
-      }
-      if (!checkoutProject) {
-        showToast("Please select a project", "warning");
-        return;
-      }
-      if (!checkoutTask) {
-        showToast("Please enter task details", "warning");
-        return;
-      }
-    } else {
-      if (!imageToUpload) {
-        showToast("Please capture your check-in selfie", "warning");
-        return;
-      }
-    }
-
+  // ── Submit attendance (check-in or check-out) ────────────────────────────
+  const handleSubmitSelfieAttendance = async (
+    selfieDataUrl: string,
+    workPhotoDataUrl: string | null,
+    project: string,
+    task: string,
+    remarks: string,
+    progress: number
+  ) => {
     setAttActionLoading(true);
     try {
-      const response = await fetch(imageToUpload);
+      const response = await fetch(selfieDataUrl);
       const blob = await response.blob();
       const file = new File([blob], `${cameraMode === "in" ? "check_in" : "check_out"}.jpg`, { type: "image/jpeg" });
-      
+
       const fingerprint = getDeviceFingerprint();
       const browser = typeof window !== "undefined" ? window.navigator.userAgent : "unknown";
       const device = typeof window !== "undefined" ? window.navigator.userAgent.substring(0, 100) : "Web Browser";
-      
+
       const formData = new FormData();
       formData.append("file", file);
       formData.append("device", device);
@@ -388,58 +167,36 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
       formData.append("browser_details", browser);
 
       if (cameraMode === "out") {
-        formData.append("project_id", checkoutProject);
-        formData.append("task", checkoutTask);
-        formData.append("remarks", checkoutRemarks);
-        formData.append("progress_percentage", checkoutProgress.toString());
-        
-        if (checkoutWorkPhoto) {
-          const wResponse = await fetch(checkoutWorkPhoto);
+        formData.append("project_id", project);
+        formData.append("task", task);
+        formData.append("remarks", remarks);
+        formData.append("progress_percentage", progress.toString());
+
+        if (workPhotoDataUrl) {
+          const wResponse = await fetch(workPhotoDataUrl);
           const wBlob = await wResponse.blob();
           const wFile = new File([wBlob], "work_photo.jpg", { type: "image/jpeg" });
           formData.append("work_photo", wFile);
         }
       }
-      
-      const headers = { 
-        Authorization: `Bearer ${token}`,
-      };
-      
+
+      const headers = { Authorization: `Bearer ${token}` };
       const url = `${API_BASE_URL}/api/attendance/selfie-check-${cameraMode}`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: formData
-      });
+      const res = await fetch(url, { method: "POST", headers, body: formData });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || `Failed to check ${cameraMode}`);
-      
+
       showToast(`Successfully checked ${cameraMode === "in" ? "in" : "out"} with selfie!`, "success");
-      
-      // Reset checkout states
-      setCheckoutProject("");
-      setCheckoutTask("");
-      setCheckoutRemarks("");
-      setCheckoutProgress(10);
-      setCheckoutSelfieImage(null);
-      setCheckoutWorkPhoto(null);
-      setCheckoutCaptureStep("selfie");
-      
-      // Refresh status
-      const statusHeaders = { 
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      };
+
+      resetCheckoutState();
+      setShowCameraModal(false);
+
+      // Refresh attendance status
+      const statusHeaders = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
       const attRes = await fetch(`${API_BASE_URL}/api/attendance/status`, { headers: statusHeaders }).then(r => r.json());
       setAttendanceStatus(attRes);
-      
-      setShowCameraModal(false);
-      setCapturedImage(null);
     } catch (e: any) {
       showToast(e.message || `Failed to check ${cameraMode}`, "error");
-      if (cameraMode === "in" || checkoutCaptureStep === "selfie") {
-        startCamera();
-      }
     } finally {
       setAttActionLoading(false);
     }
@@ -859,30 +616,18 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
             {/* Check-In/Out CTA Button */}
             {!attendanceStatus?.checked_in ? (
               <button
-                onClick={() => {
-                  setCameraMode("in");
-                  setCapturedImage(null);
-                  setCameraError(null);
-                  setShowCameraModal(true);
-                  setTimeout(startCamera, 100);
-                }}
+                onClick={openCheckIn}
                 disabled={attActionLoading}
-                className="w-full flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-750 hover:to-purple-750 text-white font-bold rounded-2xl shadow-lg transition-all disabled:opacity-50"
+                className="w-full flex items-center justify-center gap-2 py-3.5 min-h-[56px] bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white font-bold rounded-2xl shadow-lg transition-all disabled:opacity-50 text-sm"
               >
                 {attActionLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Clock className="w-5 h-5" />}
                 Register Daily Check-In
               </button>
             ) : !attendanceStatus?.checked_out ? (
               <button
-                onClick={() => {
-                  setCameraMode("out");
-                  setCapturedImage(null);
-                  setCameraError(null);
-                  setShowCameraModal(true);
-                  setTimeout(startCamera, 100);
-                }}
+                onClick={openCheckOut}
                 disabled={attActionLoading}
-                className="w-full flex items-center justify-center gap-2 py-3 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-2xl shadow-lg transition-all disabled:opacity-50"
+                className="w-full flex items-center justify-center gap-2 py-3.5 min-h-[56px] bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-700 hover:to-rose-800 text-white font-bold rounded-2xl shadow-lg transition-all disabled:opacity-50 text-sm"
               >
                 {attActionLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <LogOut className="w-5 h-5" />}
                 Register Shift Check-Out
@@ -1081,430 +826,184 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
             )}
           </div>
         </div>
-        {/* Attendance Camera Modal */}
-        {showCameraModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-300">
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-2xl p-6 shadow-2xl space-y-6">
-              
-              {cameraMode === "in" ? (
-                <>
-                  <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
-                    <h3 className="text-lg font-bold flex items-center gap-2">
-                      <Camera className="w-5 h-5 text-indigo-500" />
-                      Verify Check-In Selfie
-                    </h3>
-                    <button 
-                      onClick={() => {
-                        stopCamera();
-                        setShowCameraModal(false);
-                      }} 
-                      className="text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded-xl transition-colors"
+
+        {/* ── Check-In Camera Modal ─────────────────────────────────────── */}
+        <CameraModal
+          open={showCameraModal && cameraMode === "in"}
+          title="Check-In Selfie"
+          mode="selfie"
+          hint="Look directly at the camera. Your face should fill the oval guide."
+          captureLabel="Capture Check-In Selfie"
+          onCapture={(dataUrl) => {
+            setShowCameraModal(false);
+            handleSubmitSelfieAttendance(dataUrl, null, "", "", "", 0);
+          }}
+          onClose={() => setShowCameraModal(false)}
+        />
+
+        {/* ── Check-Out Camera: Step 1 – Selfie ────────────────────────── */}
+        <CameraModal
+          open={showCameraModal && cameraMode === "out" && checkoutStep === "selfie"}
+          title="Step 1 of 3 — Check-Out Selfie"
+          mode="selfie"
+          hint="Capture your check-out selfie. Then you will photograph your work."
+          captureLabel="Capture Check-Out Selfie"
+          onCapture={(dataUrl) => {
+            setCheckoutSelfieImage(dataUrl);
+            setCheckoutStep("work_photo");
+          }}
+          onClose={() => {
+            resetCheckoutState();
+            setShowCameraModal(false);
+          }}
+        />
+
+        {/* ── Check-Out Camera: Step 2 – Work Photo ────────────────────── */}
+        <CameraModal
+          open={showCameraModal && cameraMode === "out" && checkoutStep === "work_photo"}
+          title="Step 2 of 3 — Work Photo (Optional)"
+          mode="work_photo"
+          hint="Capture a photo of your completed work or progress. You can also skip this step."
+          captureLabel="Capture Work Photo"
+          onCapture={(dataUrl) => {
+            setCheckoutWorkPhoto(dataUrl);
+            setCheckoutStep("details");
+          }}
+          onClose={() => {
+            // Skip work photo — go straight to details
+            setCheckoutWorkPhoto(null);
+            setCheckoutStep("details");
+          }}
+        />
+
+        {/* ── Check-Out: Step 3 – Details Form ─────────────────────────── */}
+        {showCameraModal && cameraMode === "out" && checkoutStep === "details" && (
+          <div
+            className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm animate-in fade-in duration-200"
+          >
+            <div className="bg-white dark:bg-slate-900 w-full max-w-lg sm:rounded-3xl rounded-t-3xl shadow-2xl border border-slate-200/50 dark:border-slate-700/50 overflow-hidden flex flex-col" style={{ maxHeight: "95dvh" }}>
+              {/* Header */}
+              <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex-shrink-0">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-emerald-100 dark:bg-emerald-950/60 flex items-center justify-center">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                  </div>
+                  <h3 className="font-bold text-slate-800 dark:text-slate-100 text-sm">Step 3 of 3 — Shift Details</h3>
+                </div>
+                <button
+                  onClick={() => { resetCheckoutState(); setShowCameraModal(false); }}
+                  className="p-2 rounded-xl text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                >
+                  <Camera className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Photo previews */}
+              <div className="flex-1 overflow-y-auto overscroll-contain p-4 space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Check-Out Selfie</span>
+                    <div className="aspect-video rounded-xl overflow-hidden bg-slate-900 border border-slate-200 dark:border-slate-800">
+                      {checkoutSelfieImage && <img src={checkoutSelfieImage} className="w-full h-full object-cover" alt="selfie" />}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Work Photo</span>
+                    <div className="aspect-video rounded-xl overflow-hidden bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-center">
+                      {checkoutWorkPhoto
+                        ? <img src={checkoutWorkPhoto} className="w-full h-full object-cover" alt="work" />
+                        : <span className="text-[10px] text-slate-500 italic">Skipped</span>
+                      }
+                    </div>
+                  </div>
+                </div>
+
+                {/* Form */}
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-400 uppercase block mb-1">Select Project *</label>
+                    <select
+                      value={checkoutProject}
+                      onChange={e => setCheckoutProject(e.target.value)}
+                      className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500"
+                      required
                     >
-                      <X className="w-5 h-5" />
-                    </button>
+                      <option value="">-- Choose Assigned Project --</option>
+                      {assignedProjects.map(p => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
                   </div>
 
-                  {cameraError ? (
-                    <div className="bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 p-4 rounded-2xl text-sm flex items-start gap-2">
-                      <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
-                      <span>{cameraError}</span>
-                    </div>
-                  ) : (
-                    <div className="relative aspect-video rounded-2xl overflow-hidden bg-slate-955 border border-slate-250/20 shadow-inner flex items-center justify-center">
-                      {!capturedImage ? (
-                        <>
-                          <video 
-                            ref={videoRef} 
-                            autoPlay 
-                            playsInline 
-                            muted 
-                            className="w-full h-full object-contain scale-x-[-1]"
-                          />
-                          
-                          {/* Camera Selection Dropdown */}
-                          {cameras.length > 0 && (
-                            <div className="absolute top-4 left-4 z-20">
-                              <select
-                                value={activeCameraId}
-                                onChange={(e) => {
-                                  setActiveCameraId(e.target.value);
-                                  startCamera(e.target.value);
-                                }}
-                                className="bg-black/60 text-white border border-white/10 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none backdrop-blur-xs font-semibold"
-                              >
-                                {cameras.map((cam) => (
-                                  <option key={cam.deviceId} value={cam.deviceId} className="bg-slate-900 text-white">
-                                    {cam.label || `Camera ${cameras.indexOf(cam) + 1}`}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                          )}
-
-                          {cameras.length > 1 && (
-                            <button
-                              onClick={toggleCamera}
-                              type="button"
-                              className="absolute top-4 right-4 bg-black/60 hover:bg-black/80 text-white px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border border-white/10 flex items-center justify-center gap-1.5 text-xs font-semibold backdrop-blur-xs z-20"
-                              title="Switch Camera"
-                            >
-                              <ArrowLeftRight className="w-4 h-4" />
-                              <span>Switch Camera</span>
-                            </button>
-                          )}
-                          
-                          {/* Animated countdown overlay */}
-                          {countdown !== null && (
-                            <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-30">
-                              <span className="text-white text-7xl font-extrabold tracking-widest animate-ping">{countdown}</span>
-                            </div>
-                          )}
-
-                          {/* Flash snapshot animation */}
-                          {flashActive && (
-                            <div className="absolute inset-0 bg-white z-40" />
-                          )}
-
-                          <div className="absolute inset-0 border-[3px] border-dashed border-indigo-500/50 rounded-2xl pointer-events-none m-4 flex items-center justify-center">
-                            <div className="w-40 h-40 border border-dashed border-indigo-400/40 rounded-full opacity-50" />
-                          </div>
-                        </>
-                      ) : (
-                        <img 
-                          src={capturedImage} 
-                          alt="Captured selfie" 
-                          className="w-full h-full object-contain scale-x-[-1]"
-                        />
-                      )}
-                    </div>
-                  )}
-
-                  <div className="flex gap-3">
-                    {!capturedImage ? (
-                      <button
-                        onClick={triggerCountdownCapture}
-                        disabled={!!cameraError || countdown !== null}
-                        className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 dark:shadow-none disabled:opacity-50"
-                      >
-                        <Camera className="w-5 h-5" />
-                        {countdown !== null ? `Capturing in ${countdown}...` : "Capture Photo"}
-                      </button>
-                    ) : (
-                      <>
-                        <button
-                          onClick={() => {
-                            setCapturedImage(null);
-                            startCamera();
-                          }}
-                          className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-250 font-bold rounded-2xl transition-all"
-                        >
-                          Retake
-                        </button>
-                        <button
-                          onClick={handleSubmitSelfieAttendance}
-                          disabled={attActionLoading}
-                          className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-250/20 disabled:opacity-50"
-                        >
-                          {attActionLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle2 className="w-5 h-5" />}
-                          Submit Check-In
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
-                    <h3 className="text-base font-bold flex items-center gap-2">
-                      <Camera className="w-5 h-5 text-indigo-500" />
-                      {checkoutCaptureStep === "selfie" && !checkoutSelfieImage ? "1. Capture Checkout Selfie" : 
-                       (checkoutCaptureStep === "work_photo" && !checkoutWorkPhoto ? "2. Capture Work Photo (Optional)" : "3. Complete Checkout Details")}
-                    </h3>
-                    <button 
-                      onClick={() => {
-                        stopCamera();
-                        setShowCameraModal(false);
-                        setCheckoutSelfieImage(null);
-                        setCheckoutWorkPhoto(null);
-                        setCheckoutCaptureStep("selfie");
-                      }} 
-                      className="text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded-xl transition-colors cursor-pointer"
-                    >
-                      <X className="w-5 h-5" />
-                    </button>
+                  <div>
+                    <label className="text-xs font-bold text-slate-400 uppercase block mb-1">Task Performed *</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Laminating board, assembling wardrobe drawer"
+                      value={checkoutTask}
+                      onChange={e => setCheckoutTask(e.target.value)}
+                      className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500"
+                      required
+                    />
                   </div>
 
-                  {cameraError && (checkoutCaptureStep === "selfie" && !checkoutSelfieImage) && (
-                    <div className="bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 p-4 rounded-2xl text-sm flex items-start gap-2">
-                      <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
-                      <span>{cameraError}</span>
+                  <div>
+                    <label className="text-xs font-bold text-slate-400 uppercase block mb-1">Remarks (Optional)</label>
+                    <textarea
+                      placeholder="Any machinery issues, material shortages..."
+                      value={checkoutRemarks}
+                      onChange={e => setCheckoutRemarks(e.target.value)}
+                      rows={2}
+                      className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-955 border border-slate-200 dark:border-slate-800 rounded-xl outline-none resize-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase mb-1">
+                      <span>Task Completion</span>
+                      <span className="text-indigo-600 dark:text-indigo-400">{checkoutProgress}%</span>
                     </div>
-                  )}
+                    <input
+                      type="range" min="0" max="100" step="5"
+                      value={checkoutProgress}
+                      onChange={e => setCheckoutProgress(parseInt(e.target.value))}
+                      className="w-full h-2 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                  </div>
+                </div>
+              </div>
 
-                  {/* STEP 1: SELFIE CAPTURE */}
-                  {checkoutCaptureStep === "selfie" && !checkoutSelfieImage && !cameraError && (
-                    <div className="space-y-4">
-                      <div className="relative aspect-video rounded-2xl overflow-hidden bg-slate-955 border border-slate-250/20 shadow-inner flex items-center justify-center">
-                        <video 
-                          ref={videoRef} 
-                          autoPlay 
-                          playsInline 
-                          muted 
-                          className="w-full h-full object-contain scale-x-[-1]"
-                        />
-                        
-                        {/* Camera Selection Dropdown */}
-                        {cameras.length > 0 && (
-                          <div className="absolute top-4 left-4 z-20">
-                            <select
-                              value={activeCameraId}
-                              onChange={(e) => {
-                                  setActiveCameraId(e.target.value);
-                                  startCamera(e.target.value);
-                              }}
-                              className="bg-black/60 text-white border border-white/10 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none backdrop-blur-xs font-semibold"
-                            >
-                              {cameras.map((cam) => (
-                                <option key={cam.deviceId} value={cam.deviceId} className="bg-slate-900 text-white">
-                                  {cam.label || `Camera ${cameras.indexOf(cam) + 1}`}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
-
-                        {cameras.length > 1 && (
-                          <button
-                            onClick={toggleCamera}
-                            type="button"
-                            className="absolute top-4 right-4 bg-black/60 hover:bg-black/80 text-white px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border border-white/10 flex items-center justify-center gap-1.5 text-xs font-semibold backdrop-blur-xs z-20"
-                            title="Switch Camera"
-                          >
-                            <ArrowLeftRight className="w-4 h-4" />
-                            <span>Switch Camera</span>
-                          </button>
-                        )}
-
-                        {/* Animated countdown overlay */}
-                        {countdown !== null && (
-                          <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-30">
-                            <span className="text-white text-7xl font-extrabold tracking-widest animate-ping">{countdown}</span>
-                          </div>
-                        )}
-
-                        {/* Flash snapshot animation */}
-                        {flashActive && (
-                          <div className="absolute inset-0 bg-white z-40" />
-                        )}
-
-                        <div className="absolute inset-0 border-[3px] border-dashed border-indigo-500/50 rounded-2xl pointer-events-none m-4 flex items-center justify-center">
-                          <div className="w-40 h-40 border border-dashed border-indigo-400/40 rounded-full opacity-50" />
-                        </div>
-                      </div>
-                      <p className="text-xs text-slate-500 text-center font-semibold">Please look at the camera to capture your check-out selfie.</p>
-                      <button
-                        onClick={triggerCountdownCapture}
-                        disabled={countdown !== null}
-                        className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 dark:shadow-none disabled:opacity-50"
-                      >
-                        <Camera className="w-5 h-5" />
-                        {countdown !== null ? `Capturing in ${countdown}...` : "Capture Selfie"}
-                      </button>
-                    </div>
-                  )}
-
-                  {/* STEP 2: WORK PHOTO CAPTURE */}
-                  {checkoutCaptureStep === "work_photo" && !checkoutWorkPhoto && (
-                    <div className="space-y-4">
-                      <div className="relative aspect-video rounded-2xl overflow-hidden bg-slate-955 border border-slate-250/20 shadow-inner flex items-center justify-center">
-                        <video 
-                          ref={videoRef} 
-                          autoPlay 
-                          playsInline 
-                          muted 
-                          className="w-full h-full object-contain"
-                        />
-                        
-                        {/* Camera Selection Dropdown */}
-                        {cameras.length > 0 && (
-                          <div className="absolute top-4 left-4 z-20">
-                            <select
-                              value={activeCameraId}
-                              onChange={(e) => {
-                                  setActiveCameraId(e.target.value);
-                                  startCamera(e.target.value);
-                              }}
-                              className="bg-black/60 text-white border border-white/10 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none backdrop-blur-xs font-semibold"
-                            >
-                              {cameras.map((cam) => (
-                                <option key={cam.deviceId} value={cam.deviceId} className="bg-slate-900 text-white">
-                                  {cam.label || `Camera ${cameras.indexOf(cam) + 1}`}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
-
-                        {cameras.length > 1 && (
-                          <button
-                            onClick={toggleCamera}
-                            type="button"
-                            className="absolute top-4 right-4 bg-black/60 hover:bg-black/80 text-white px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border border-white/10 flex items-center justify-center gap-1.5 text-xs font-semibold backdrop-blur-xs z-20"
-                            title="Switch Camera"
-                          >
-                            <ArrowLeftRight className="w-4 h-4" />
-                            <span>Switch Camera</span>
-                          </button>
-                        )}
-
-                        {/* Animated countdown overlay */}
-                        {countdown !== null && (
-                          <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-30">
-                            <span className="text-white text-7xl font-extrabold tracking-widest animate-ping">{countdown}</span>
-                          </div>
-                        )}
-
-                        {/* Flash snapshot animation */}
-                        {flashActive && (
-                          <div className="absolute inset-0 bg-white z-40" />
-                        )}
-
-                        <div className="absolute inset-0 border-[3px] border-dashed border-indigo-500/50 rounded-2xl pointer-events-none m-4" />
-                      </div>
-                      <p className="text-xs text-slate-500 text-center font-semibold">Capture a photo of the completed furniture / work progress (Optional).</p>
-                      <div className="flex gap-3">
-                        <button
-                          onClick={() => {
-                            setCheckoutCaptureStep("work_photo");
-                            setCheckoutWorkPhoto(null);
-                            stopCamera();
-                          }}
-                          className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-805 dark:hover:bg-slate-700 text-slate-750 font-bold rounded-2xl transition-all"
-                        >
-                          Skip Step
-                        </button>
-                        <button
-                          onClick={triggerCountdownCapture}
-                          disabled={countdown !== null}
-                          className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 dark:shadow-none disabled:opacity-50"
-                        >
-                          <Camera className="w-5 h-5" />
-                          Capture Work Photo
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* STEP 3: WORK DETAILS & CONFIRM */}
-                  {checkoutSelfieImage && (checkoutWorkPhoto || checkoutCaptureStep === "work_photo") && (
-                    <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
-                      {/* Photo previews */}
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <span className="text-[10px] font-bold text-slate-400 block mb-1">1. Check-Out Selfie</span>
-                          <div className="aspect-video rounded-xl overflow-hidden bg-slate-950 border border-slate-800">
-                            <img src={checkoutSelfieImage} className="w-full h-full object-cover scale-x-[-1]" />
-                          </div>
-                        </div>
-                        <div>
-                          <span className="text-[10px] font-bold text-slate-400 block mb-1">2. Work Photo</span>
-                          <div className="aspect-video rounded-xl overflow-hidden bg-slate-955 border border-slate-800 flex items-center justify-center text-slate-500">
-                            {checkoutWorkPhoto ? (
-                              <img src={checkoutWorkPhoto} className="w-full h-full object-cover" />
-                            ) : (
-                              <span className="text-[10px] font-medium italic">Skipped</span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Form fields */}
-                      <div className="space-y-3">
-                        <div>
-                          <label className="text-xs font-bold text-slate-400 uppercase block mb-1">Select Project*</label>
-                          <select
-                            value={checkoutProject}
-                            onChange={e => setCheckoutProject(e.target.value)}
-                            className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl outline-none text-slate-750"
-                            required
-                          >
-                            <option value="">-- Choose Assigned Project --</option>
-                            {assignedProjects.map(p => (
-                              <option key={p.id} value={p.id}>{p.name}</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="text-xs font-bold text-slate-400 uppercase block mb-1">Task Performed*</label>
-                          <input
-                            type="text"
-                            placeholder="e.g. Laminating board, assembling wardrobe drawer"
-                            value={checkoutTask}
-                            onChange={e => setCheckoutTask(e.target.value)}
-                            className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl outline-none"
-                            required
-                          />
-                        </div>
-
-                        <div>
-                          <label className="text-xs font-bold text-slate-400 uppercase block mb-1">Remarks (Optional)</label>
-                          <textarea
-                            placeholder="Any machinery issues, shortages, or logs..."
-                            value={checkoutRemarks}
-                            onChange={e => setCheckoutRemarks(e.target.value)}
-                            rows={2}
-                            className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-955 border border-slate-200 dark:border-slate-800 rounded-xl outline-none resize-none"
-                          />
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase mb-1">
-                            <span>Task Completion Progress</span>
-                            <span className="text-indigo-600 dark:text-indigo-400">{checkoutProgress}%</span>
-                          </div>
-                          <input
-                            type="range"
-                            min="0"
-                            max="100"
-                            step="5"
-                            value={checkoutProgress}
-                            onChange={e => setCheckoutProgress(parseInt(e.target.value))}
-                            className="w-full h-2 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-                          />
-                        </div>
-                      </div>
-
-                      {/* Actions */}
-                      <div className="flex gap-3 pt-3 border-t">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setCheckoutSelfieImage(null);
-                            setCheckoutWorkPhoto(null);
-                            setCheckoutCaptureStep("selfie");
-                            startCamera();
-                          }}
-                          className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-850 dark:hover:bg-slate-750 text-slate-750 font-bold rounded-2xl transition-colors"
-                        >
-                          Reset Capture
-                        </button>
-                        <button
-                          onClick={handleSubmitSelfieAttendance}
-                          disabled={attActionLoading}
-                          className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-250/20 disabled:opacity-50"
-                        >
-                          {attActionLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle2 className="w-5 h-5" />}
-                          Submit Check-Out
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-
+              {/* Footer actions */}
+              <div className="px-4 pb-6 pt-3 flex-shrink-0 border-t border-slate-100 dark:border-slate-800 flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setCheckoutStep("selfie")}
+                  className="flex-1 py-3.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold rounded-2xl transition-colors text-sm min-h-[52px]"
+                >
+                  ← Retake
+                </button>
+                <button
+                  onClick={() => {
+                    if (!checkoutProject) { showToast("Please select a project", "warning"); return; }
+                    if (!checkoutTask) { showToast("Please enter task details", "warning"); return; }
+                    if (!checkoutSelfieImage) { showToast("Selfie missing. Please retake.", "warning"); return; }
+                    handleSubmitSelfieAttendance(
+                      checkoutSelfieImage,
+                      checkoutWorkPhoto,
+                      checkoutProject,
+                      checkoutTask,
+                      checkoutRemarks,
+                      checkoutProgress
+                    );
+                  }}
+                  disabled={attActionLoading}
+                  className="flex-1 py-3.5 bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-700 hover:to-emerald-800 text-white font-bold rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 disabled:opacity-50 text-sm min-h-[52px]"
+                >
+                  {attActionLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle2 className="w-5 h-5" />}
+                  Submit Check-Out
+                </button>
+              </div>
             </div>
-            <canvas ref={canvasRef} className="hidden" />
           </div>
         )}
       </div>
@@ -2067,92 +1566,19 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
         })}
       </div>
       )}
-      {/* Attendance Camera Modal */}
-      {showCameraModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-300">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-6">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
-              <h3 className="text-lg font-bold flex items-center gap-2">
-                <Camera className="w-5 h-5 text-indigo-500" />
-                Verify {cameraMode === "in" ? "Check-In" : "Check-Out"} Selfie
-              </h3>
-              <button 
-                onClick={() => {
-                  stopCamera();
-                  setShowCameraModal(false);
-                }} 
-                className="text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded-xl transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {cameraError ? (
-              <div className="bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 p-4 rounded-2xl text-sm flex items-start gap-2">
-                <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
-                <span>{cameraError}</span>
-              </div>
-            ) : (
-              <div className="relative aspect-video rounded-2xl overflow-hidden bg-slate-950 border border-slate-250/20 shadow-inner flex items-center justify-center">
-                {!capturedImage ? (
-                  <>
-                    <video 
-                      ref={videoRef} 
-                      autoPlay 
-                      playsInline 
-                      muted 
-                      className="w-full h-full object-cover scale-x-[-1]"
-                    />
-                    <div className="absolute inset-0 border-[3px] border-dashed border-indigo-500/50 rounded-2xl pointer-events-none m-4 flex items-center justify-center">
-                      <div className="w-40 h-40 border border-dashed border-indigo-400/40 rounded-full opacity-50" />
-                    </div>
-                  </>
-                ) : (
-                  <img 
-                    src={capturedImage} 
-                    alt="Captured selfie" 
-                    className="w-full h-full object-cover scale-x-[-1]"
-                  />
-                )}
-              </div>
-            )}
-
-            <div className="flex gap-3">
-              {!capturedImage ? (
-                <button
-                  onClick={captureSnapshot}
-                  disabled={!!cameraError}
-                  className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 dark:shadow-none disabled:opacity-50"
-                >
-                  <Camera className="w-5 h-5" />
-                  Capture Photo
-                </button>
-              ) : (
-                <>
-                  <button
-                    onClick={() => {
-                      setCapturedImage(null);
-                      startCamera();
-                    }}
-                    className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-250 font-bold rounded-2xl transition-all"
-                  >
-                    Retake
-                  </button>
-                  <button
-                    onClick={handleSubmitSelfieAttendance}
-                    disabled={attActionLoading}
-                    className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-2xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-250/20 disabled:opacity-50"
-                  >
-                    {attActionLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle2 className="w-5 h-5" />}
-                    Submit {cameraMode === "in" ? "Check-In" : "Check-Out"}
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-          <canvas ref={canvasRef} className="hidden" />
-        </div>
-      )}
+      {/* Check-In Camera Modal - Manager/Admin View */}
+      <CameraModal
+        open={showCameraModal && cameraMode === "in"}
+        title="Check-In Selfie"
+        mode="selfie"
+        hint="Look directly at the camera."
+        captureLabel="Capture Check-In Selfie"
+        onCapture={(dataUrl) => {
+          setShowCameraModal(false);
+          handleSubmitSelfieAttendance(dataUrl, null, "", "", "", 0);
+        }}
+        onClose={() => setShowCameraModal(false)}
+      />
     </div>
   );
 }

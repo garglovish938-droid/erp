@@ -24,4 +24,47 @@ body {
   .glass {
     @apply bg-white/70 dark:bg-slate-900/70 backdrop-blur-md border border-white/20 dark:border-slate-800/50 shadow-xl;
   }
+
+  /* Safe area padding for notched Android/iOS devices */
+  .pb-safe {
+    padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+  }
+  .pt-safe {
+    padding-top: max(0px, env(safe-area-inset-top));
+  }
 }
+
+/* ── Camera countdown number animation ─────────────────────────── */
+@keyframes countdownPop {
+  0% {
+    transform: scale(1.4);
+    opacity: 0.3;
+  }
+  30% {
+    opacity: 1;
+  }
+  80% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.85);
+    opacity: 0;
+  }
+}
+
+.camera-countdown-number {
+  animation: countdownPop 0.9s ease-out forwards;
+}
+
+/* ── Camera flash animation ─────────────────────────────────────── */
+@keyframes cameraFlash {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.camera-flash {
+  animation: cameraFlash 0.2s ease-out forwards;
+  pointer-events: none;
+}
+
