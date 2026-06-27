@@ -24,6 +24,7 @@ from reportlab.lib import colors
 from reportlab.graphics.barcode.code128 import Code128
 
 from config import settings
+from storage import storage_provider
 from database import get_db, engine, Base
 from models import (
     User, Category, InventoryItem, Supplier, Client, Project, ProjectBOM,
@@ -146,8 +147,51 @@ UPLOAD_DIR = settings.UPLOAD_DIR
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(os.path.join(UPLOAD_DIR, "selfies"), exist_ok=True)
 
-# Serve uploaded documents statically
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+# Serve uploaded documents dynamically or redirect to Supabase
+@app.get("/uploads/{path:path}")
+async def serve_uploaded_file(path: str, db: Session = Depends(get_db)):
+    if settings.STORAGE_PROVIDER != "supabase":
+        local_path = os.path.join(UPLOAD_DIR, path)
+        if not os.path.exists(local_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        return FileResponse(local_path)
+    
+    subpath = path.replace("\\", "/")
+    if subpath.startswith("selfies/"):
+        bucket = "attendance"
+        inner_path = subpath[len("selfies/"):]
+    elif subpath.startswith("work_photos/"):
+        bucket = "projects"
+        inner_path = subpath
+    elif subpath.startswith("expense_bills/"):
+        bucket = "documents"
+        inner_path = subpath
+    else:
+        from models import Document
+        doc = db.query(Document).filter(Document.file_path == f"/uploads/{subpath}", Document.is_deleted == False).first()
+        if doc:
+            if doc.entity_type == "Project":
+                bucket = "projects"
+            elif doc.entity_type == "InventoryItem":
+                bucket = "inventory"
+            elif doc.entity_type in ["Staff", "Employee"]:
+                bucket = "employees"
+            elif doc.entity_type == "Report":
+                bucket = "reports"
+            else:
+                bucket = "documents"
+        else:
+            bucket = "documents"
+        inner_path = subpath
+
+    if bucket in ["inventory", "public-assets"]:
+        url = storage_provider.get_public_url(bucket, inner_path)
+    else:
+        url = storage_provider.get_signed_url(bucket, inner_path, expires_in=60)
+        
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=url, status_code=307)
+
 
 
 class ConnectionManager:
@@ -2040,8 +2084,14 @@ async def selfie_check_in(
     dest_path = os.path.join(UPLOAD_DIR, "selfies", safe_filename)
     
     try:
-        with open(dest_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
+        contents = await file.read()
+        db_path = storage_provider.upload_file(
+            file_data=contents,
+            filename=safe_filename,
+            bucket="attendance",
+            mime_type=file.content_type,
+            subpath="selfies"
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save check-in selfie: {str(e)}")
         
@@ -2055,7 +2105,7 @@ async def selfie_check_in(
             ip_address = request.client.host if request.client else "unknown"
     if not browser_details:
         browser_details = request.headers.get("user-agent")
-
+ 
     try:
         attendance = crud.attendance_check_in(
             db=db,
@@ -2067,7 +2117,7 @@ async def selfie_check_in(
             device_fingerprint=device_fingerprint,
             browser_details=browser_details
         )
-        attendance.check_in_selfie = f"/uploads/selfies/{safe_filename}"
+        attendance.check_in_selfie = db_path
         db.commit()
         db.refresh(attendance)
         broadcast_sync({"event": "attendance_change"})
@@ -2127,8 +2177,14 @@ async def selfie_check_out(
     dest_path = os.path.join(UPLOAD_DIR, "selfies", safe_filename)
     
     try:
-        with open(dest_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
+        contents = await file.read()
+        db_path = storage_provider.upload_file(
+            file_data=contents,
+            filename=safe_filename,
+            bucket="attendance",
+            mime_type=file.content_type,
+            subpath="selfies"
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save check-out selfie: {str(e)}")
         
@@ -2140,9 +2196,14 @@ async def selfie_check_out(
         w_filename = f"work_{uuid.uuid4()}{w_ext}"
         w_dest_path = os.path.join(UPLOAD_DIR, "selfies", w_filename)
         try:
-            with open(w_dest_path, "wb") as f:
-                shutil.copyfileobj(work_photo.file, f)
-            work_photo_url = f"/uploads/selfies/{w_filename}"
+            w_contents = await work_photo.read()
+            work_photo_url = storage_provider.upload_file(
+                file_data=w_contents,
+                filename=w_filename,
+                bucket="attendance",
+                mime_type=work_photo.content_type,
+                subpath="selfies"
+            )
         except Exception as e:
             if os.path.exists(dest_path):
                 os.remove(dest_path)
@@ -2158,7 +2219,7 @@ async def selfie_check_out(
             ip_address = request.client.host if request.client else "unknown"
     if not browser_details:
         browser_details = request.headers.get("user-agent")
-
+ 
     try:
         attendance = crud.attendance_check_out(
             db=db,
@@ -2175,7 +2236,7 @@ async def selfie_check_out(
             remarks=remarks,
             progress_percentage=progress_percentage
         )
-        attendance.check_out_selfie = f"/uploads/selfies/{safe_filename}"
+        attendance.check_out_selfie = db_path
         db.commit()
         db.refresh(attendance)
         broadcast_sync({"event": "attendance_change"})
@@ -2231,11 +2292,17 @@ async def create_work_log_form(
         w_filename = f"work_{uuid.uuid4()}{file_ext}"
         w_dest_path = os.path.join(UPLOAD_DIR, "selfies", w_filename)
         try:
-            with open(w_dest_path, "wb") as f:
-                shutil.copyfileobj(work_photo.file, f)
-            work_photo_url = f"/uploads/selfies/{w_filename}"
+            contents = await work_photo.read()
+            work_photo_url = storage_provider.upload_file(
+                file_data=contents,
+                filename=w_filename,
+                bucket="attendance",
+                mime_type=work_photo.content_type,
+                subpath="selfies"
+            )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to save work photo: {str(e)}")
+
             
     log = crud.create_daily_work_log(
         db=db,
@@ -2427,12 +2494,32 @@ async def upload_document(
 ):
     file_ext = os.path.splitext(file.filename)[1]
     safe_filename = f"{uuid.uuid4()}{file_ext}"
-    dest_path = os.path.join(UPLOAD_DIR, safe_filename)
-    with open(dest_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    
+    bucket = "documents"
+    if entity_type == "Project":
+        bucket = "projects"
+    elif entity_type == "InventoryItem":
+        bucket = "inventory"
+    elif entity_type in ["Staff", "Employee"]:
+        bucket = "employees"
+    elif entity_type == "Report":
+        bucket = "reports"
+        
+    try:
+        contents = await file.read()
+        db_path = storage_provider.upload_file(
+            file_data=contents,
+            filename=safe_filename,
+            bucket=bucket,
+            mime_type=file.content_type,
+            subpath=""
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload document: {str(e)}")
+        
     doc_in = schemas.DocumentCreate(
         name=name,
-        file_path=f"/uploads/{safe_filename}",
+        file_path=db_path,
         category=category,
         entity_type=entity_type,
         entity_id=entity_id
@@ -4754,12 +4841,18 @@ async def create_expense(
     if file and file.filename:
         ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
         filename = f"expense_{uuid.uuid4().hex[:8]}.{ext}"
-        save_path = os.path.join(UPLOAD_DIR, "expense_bills", filename)
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        contents = await file.read()
-        with open(save_path, "wb") as f:
-            f.write(contents)
-        attachment_url = f"/uploads/expense_bills/{filename}"
+        try:
+            contents = await file.read()
+            attachment_url = storage_provider.upload_file(
+                file_data=contents,
+                filename=filename,
+                bucket="documents",
+                mime_type=file.content_type or "application/octet-stream",
+                subpath="expense_bills"
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save expense attachment: {str(e)}")
+
 
     exp_in = schemas.DailyExpenseCreate(
         expense_date=expense_date,
@@ -4964,12 +5057,19 @@ async def create_project_daily_log(
         if photo and photo.filename:
             ext = photo.filename.rsplit(".", 1)[-1].lower() if "." in photo.filename else "jpg"
             filename = f"workphoto_{project_id}_{uuid.uuid4().hex[:8]}.{ext}"
-            save_path = os.path.join(UPLOAD_DIR, "work_photos", filename)
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            contents = await photo.read()
-            with open(save_path, "wb") as f:
-                f.write(contents)
-            saved_photos.append(f"/uploads/work_photos/{filename}")
+            try:
+                contents = await photo.read()
+                db_path = storage_provider.upload_file(
+                    file_data=contents,
+                    filename=filename,
+                    bucket="projects",
+                    mime_type=photo.content_type or "image/jpeg",
+                    subpath="work_photos"
+                )
+                saved_photos.append(db_path)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to save work photo: {str(e)}")
+
 
     # Get staff linked to current user
     staff_member = db.query(Staff).filter(Staff.user_id == current_user.id, Staff.is_deleted == False).first()

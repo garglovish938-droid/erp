@@ -30,4 +30,10 @@ class Settings:
     BACKUP_DIR: str = os.getenv("BACKUP_DIR", "./backups")
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "./uploads")
 
+    # Supabase Storage settings
+    STORAGE_PROVIDER: str = os.getenv("STORAGE_PROVIDER", "local").lower()
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY") or ""
+
 settings = Settings()
+
