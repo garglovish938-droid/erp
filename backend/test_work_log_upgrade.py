@@ -289,6 +289,94 @@ def test_workflow():
     assert_test("Audit trail contains Edit Work Log", "Edit Work Log" in actions)
     assert_test("Audit trail contains Approve Work Log", "Approve Work Log" in actions)
 
+    # Test 6: Material Consumption & Project Costing
+    print("\n--- Running Test: Material Consumption & Costing Ledger ---")
+    # Seed a project BOM item and warehouse inventory item first
+    db_session = TestingSessionLocal()
+    # Create inventory item
+    inv_item = models.InventoryItem(
+        id="test-inv-id-1",
+        category_id="test-cat",
+        name="Laminate Wood Sheet",
+        sku="LAM-WD-SH",
+        barcode="999000111",
+        brand="Century",
+        quantity=100.0,
+        unit="Sheets",
+        unit_cost=50.0
+    )
+    db_session.add(inv_item)
+    # Create Project BOM item
+    bom_item = models.ProjectBOM(
+        id="test-bom-id-1",
+        project_id=project_id,
+        inventory_id="test-inv-id-1",
+        required_quantity=10.0,
+        used_quantity=5.0, # issued quantity
+        consumed_quantity=0.0
+    )
+    db_session.add(bom_item)
+    db_session.commit()
+    db_session.close()
+
+    # Worker submits progress log consuming 2 sheets of laminate
+    log_cons_payload = {
+        "task": "Laminated the kitchen drawers",
+        "hours_worked": 5.0,
+        "progress_percentage": 50,
+        "remarks": "Used oak finish sheets",
+        "device_time": "2026-06-29 18:30:00",
+        "inventory_id": "test-inv-id-1",
+        "quantity_used": 2.0
+    }
+    res_cons = client.post(
+        f"/api/projects/{project_id}/daily-log",
+        data={k: str(v) for k, v in log_cons_payload.items()},
+        headers=headers_w1
+    )
+    assert_test("Submit log with consumption returns 200", res_cons.status_code == 200, f"Status: {res_cons.status_code}")
+
+    # Verify BOM consumed quantity was increased
+    db_session = TestingSessionLocal()
+    updated_bom = db_session.query(models.ProjectBOM).filter_by(id="test-bom-id-1").first()
+    assert_test("ProjectBOM consumed quantity updated", updated_bom.consumed_quantity == 2.0, f"Consumed: {updated_bom.consumed_quantity}")
+    
+    # Verify warehouse stock was adjusted (reduced from 100 to 98)
+    updated_inv = db_session.query(models.InventoryItem).filter_by(id="test-inv-id-1").first()
+    assert_test("Warehouse inventory stock updated", updated_inv.quantity == 98.0, f"Stock: {updated_inv.quantity}")
+    db_session.close()
+
+    # Verify dynamic project costing calculation
+    res_cost = client.get(
+        f"/api/projects/{project_id}/costing",
+        headers=headers_w1
+    )
+    assert_test("Fetch project costing returns 200", res_cost.status_code == 200, f"Status: {res_cost.status_code}")
+    cost_data = res_cost.json()
+    # Material Cost = 2 sheets * $50 = $100
+    assert_test("Material cost calculation matches", cost_data["material_cost"] == 100.0, f"Material cost: {cost_data['material_cost']}")
+
+    # Test 7: Enforce project department access limits
+    print("\n--- Running Test: Department Access Limits ---")
+    # Change project department to "Design"
+    db_session = TestingSessionLocal()
+    proj = db_session.query(models.Project).filter_by(id=project_id).first()
+    proj.department = "Design"
+    # Set Worker 1 department to "Production"
+    w1_user = db_session.query(models.User).filter_by(email="worker1@allure.com").first()
+    w1_user.department = "Production"
+    db_session.commit()
+    db_session.close()
+
+    # Worker 1 tries to fetch projects list
+    res_w1_proj = client.get(
+        "/api/projects",
+        headers=headers_w1
+    )
+    w1_proj_list = res_w1_proj.json()
+    # Since Worker 1 is in department "Production" but the project is in "Design", they should not see the project!
+    assert_test("Employee cannot view projects of other departments", len(w1_proj_list) == 0, f"Projects returned: {len(w1_proj_list)}")
+
     print(f"\nUpgrade Workflow Test completed successfully: {tests_passed}/{tests_run} assertions passed!")
 
 if __name__ == "__main__":

@@ -35,6 +35,8 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
     hours_worked: "",
     progress_percentage: "",
     remarks: "",
+    inventory_id: "",
+    quantity_used: "0",
   });
   const [workPhotos, setWorkPhotos] = useState<File[]>([]);
   const [photoPreview, setPhotoPreview] = useState<string[]>([]);
@@ -147,6 +149,10 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
       fd.append("hours_worked", form.hours_worked);
       fd.append("progress_percentage", form.progress_percentage);
       if (form.remarks) fd.append("remarks", form.remarks);
+      if (form.inventory_id) {
+        fd.append("inventory_id", form.inventory_id);
+        fd.append("quantity_used", form.quantity_used || "0");
+      }
       fd.append("device_time", new Date().toLocaleString());
       workPhotos.forEach(photo => fd.append("work_photos", photo));
 
@@ -159,7 +165,7 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
       const result = await res.json();
       if (res.ok) {
         setSuccess("Daily progress log submitted successfully!");
-        setForm({ task: "", hours_worked: "", progress_percentage: "", remarks: "" });
+        setForm({ task: "", hours_worked: "", progress_percentage: "", remarks: "", inventory_id: "", quantity_used: "0" });
         setWorkPhotos([]);
         setPhotoPreview([]);
         await loadReport();
@@ -350,6 +356,39 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
                       className="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm bg-white dark:bg-slate-900 focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
                   </div>
                 </div>
+
+                {/* Material Consumption Linkage */}
+                {projectReport?.materials && projectReport.materials.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-slate-100 dark:border-slate-800 pt-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-400 mb-1.5">Link Material Consumed</label>
+                      <select
+                        value={form.inventory_id}
+                        onChange={e => setForm(f => ({ ...f, inventory_id: e.target.value }))}
+                        className="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm bg-white dark:bg-slate-900 focus:ring-2 focus:ring-violet-500 focus:border-transparent"
+                      >
+                        <option value="">No Material Consumed</option>
+                        {projectReport.materials.map((mat: any) => (
+                          <option key={mat.inventory_id} value={mat.inventory_id}>
+                            {mat.item} ({mat.sku}) - Site Bal: {mat.used - (mat.consumed || 0)} {mat.unit}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-400 mb-1.5">Quantity Consumed</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        value={form.quantity_used}
+                        onChange={e => setForm(f => ({ ...f, quantity_used: e.target.value }))}
+                        placeholder="e.g. 1"
+                        className="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm bg-white dark:bg-slate-900 focus:ring-2 focus:ring-violet-500 focus:border-transparent"
+                      />
+                    </div>
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5">Remarks</label>

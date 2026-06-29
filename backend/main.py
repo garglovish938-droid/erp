@@ -1535,7 +1535,12 @@ def read_projects(include_deleted: bool = False, db: Session = Depends(get_db), 
     projects = crud.get_projects(db, include_deleted)
     if current_user.role != "admin":
         assigned_ids = crud.get_user_project_ids(db, current_user.id)
-        projects = [p for p in projects if p.id in assigned_ids]
+        projects = [
+            p for p in projects 
+            if p.id in assigned_ids and (
+                not p.department or not current_user.department or p.department == current_user.department
+            )
+        ]
     return projects
 
 @app.post("/api/projects", response_model=schemas.ProjectResponse)
@@ -4735,6 +4740,53 @@ def get_project_cost_report(
     return {"projects": result}
 
 
+@app.get("/api/projects/{project_id}/costing")
+def get_project_costing(
+    project_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Calculate and return project costing breakdown dynamically."""
+    project = db.query(Project).filter(Project.id == project_id, Project.is_deleted == False).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Calculate material cost (from BOM consumed quantities)
+    material_cost = 0.0
+    for bom in project.bom_items:
+        inv = db.query(InventoryItem).filter(InventoryItem.id == bom.inventory_id).first()
+        if inv:
+            material_cost += (bom.consumed_quantity or 0.0) * (inv.unit_cost or 0.0)
+
+    # Calculate labour cost (from daily logs)
+    daily_logs = db.query(ProjectDailyLog).filter(ProjectDailyLog.project_id == project_id).all()
+    labour_cost = 0.0
+    for log in daily_logs:
+        hourly_rate = 20.0  # default rate
+        if log.staff and log.staff.salary:
+            # simple calculation: monthly salary / 160
+            hourly_rate = log.staff.salary / 160.0
+        labour_cost += log.hours_worked * hourly_rate
+
+    # Calculate expenses (from daily_expenses table)
+    expenses_list = db.query(DailyExpense).filter(DailyExpense.project_id == project_id).all()
+    expenses_total = sum(exp.amount for exp in expenses_list)
+
+    total_spent = material_cost + labour_cost + expenses_total
+    remaining_budget = project.budget - total_spent
+    profit_loss = project.budget - total_spent
+
+    return {
+        "estimated_cost": project.budget,
+        "material_cost": round(material_cost, 2),
+        "labour_cost": round(labour_cost, 2),
+        "purchase_cost": 0.0,
+        "expenses": round(expenses_total, 2),
+        "remaining_budget": round(remaining_budget, 2),
+        "profit_loss": round(profit_loss, 2)
+    }
+
+
 @app.get("/api/purchases/trends")
 def get_purchase_trends(
     months: int = Query(6, ge=1, le=24),
@@ -5027,7 +5079,19 @@ async def create_expense(
         project_id=project_id,
         attachment_url=attachment_url
     )
-    return crud.create_daily_expense(db, exp_in, current_user.id)
+    db_exp = crud.create_daily_expense(db, exp_in, current_user.id)
+    broadcast_sync({"event": "expense_change"})
+    if project_id:
+        log_and_broadcast_activity_sync(
+            db,
+            current_user,
+            project_id,
+            "Expense Added",
+            f"Expense of ${amount} added for category: {expense_category}",
+            None,
+            f"${amount}"
+        )
+    return db_exp
 
 
 @app.delete("/api/expenses/{expense_id}")
@@ -5040,6 +5104,7 @@ def delete_expense(
     deleted = crud.delete_daily_expense(db, expense_id, current_user.id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Expense not found")
+    broadcast_sync({"event": "expense_change"})
     return {"status": "success", "message": "Expense soft-deleted"}
 
 
@@ -5208,6 +5273,8 @@ async def create_project_daily_log(
     remarks: str = Form(None),
     device_time: str = Form(None),
     work_photos: List[UploadFile] = File(default=[]),
+    inventory_id: str = Form(None),
+    quantity_used: float = Form(0.0),
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_any_authenticated)
 ):
@@ -5258,11 +5325,37 @@ async def create_project_daily_log(
         progress_percentage=max(0, min(100, progress_percentage)),
         remarks=remarks,
         work_photos=_json.dumps(saved_photos) if saved_photos else None,
-        approval_status="pending"
+        approval_status="pending",
+        inventory_id=inventory_id,
+        quantity_used=quantity_used
     )
     db.add(log)
     db.commit()
     db.refresh(log)
+
+    # Process material consumption if provided
+    if inventory_id and quantity_used > 0:
+        bom_item = db.query(ProjectBOM).filter(
+            ProjectBOM.project_id == project_id,
+            ProjectBOM.inventory_id == inventory_id
+        ).first()
+        if bom_item:
+            bom_item.consumed_quantity += quantity_used
+            db.commit()
+            db.refresh(bom_item)
+            
+        try:
+            crud.adjust_stock(
+                db=db,
+                inventory_id=inventory_id,
+                quantity=quantity_used,
+                transaction_type="out",
+                user_id=current_user.id,
+                project_id=project_id,
+                notes=f"Consumed in daily work log: {task}"
+            )
+        except Exception as e:
+            print(f"Warning: could not adjust warehouse stock for consumption: {e}")
 
     crud.log_detailed_activity(db, current_user.id, "Project", "daily_log", project_id,
                                f"Daily progress log submitted for project: {project.name}")
@@ -5634,10 +5727,12 @@ def get_project_report(
         InventoryItem, ProjectBOM.inventory_id == InventoryItem.id
     ).filter(ProjectBOM.project_id == project_id).all()
     materials = [{
+        "inventory_id": bom.inventory_id,
         "item": inv.name,
         "sku": inv.sku,
         "required": bom.required_quantity,
         "used": bom.used_quantity,
+        "consumed": bom.consumed_quantity,
         "unit": inv.unit,
         "status": bom.status
     } for bom, inv in bom_items]

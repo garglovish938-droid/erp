@@ -27,6 +27,7 @@ export default function Projects({ token, role }: { token: string; role: string 
   
   // Assignments management
   const [assignments, setAssignments] = useState<Record<string, any[]>>({});
+  const [projectCosts, setProjectCosts] = useState<Record<string, any>>({});
   const [auditTrails, setAuditTrails] = useState<Record<string, any[]>>({});
   const [staffList, setStaffList] = useState<any[]>([]);
 
@@ -85,20 +86,31 @@ export default function Projects({ token, role }: { token: string; role: string 
   const [sortField, setSortField] = useState("name");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
 
-  const isManagerOrHigher = ["admin", "manager"].includes(role);
+  const isManagerOrHigher = ["admin", "manager", "project_manager", "factory_manager", "hr_manager"].includes(role);
   const isAdmin = role === "admin";
 
   const fetchData = async () => {
     try {
       const includeDeleted = statusFilter === "archived";
       const headers = { Authorization: `Bearer ${token}` };
-      const [projData, clientData, invData, fieldsData, staffData] = await Promise.all([
-        projectService.getProjects(includeDeleted),
-        clientService.getClients(),
-        inventoryService.getInventory(),
-        inventoryService.getCustomFields("Project"),
-        fetch(`${API_BASE_URL}/api/staff`, { headers }).then(r => r.json())
-      ]);
+      
+      let projData = [];
+      let clientData = [];
+      let invData = [];
+      let fieldsData = [];
+      let staffData = [];
+
+      if (isManagerOrHigher) {
+        [projData, clientData, invData, fieldsData, staffData] = await Promise.all([
+          projectService.getProjects(includeDeleted),
+          clientService.getClients(),
+          inventoryService.getInventory(),
+          inventoryService.getCustomFields("Project"),
+          fetch(`${API_BASE_URL}/api/staff`, { headers }).then(r => r.json())
+        ]);
+      } else {
+        projData = await projectService.getProjects(includeDeleted);
+      }
 
       setProjects(projData);
       setClients(clientData);
@@ -130,6 +142,8 @@ export default function Projects({ token, role }: { token: string; role: string 
         if (expandedProj) {
           fetchAuditTrail(expandedProj);
           fetchProjectDocs(expandedProj);
+          fetchCosting(expandedProj);
+          fetchData();
         }
       }
     };
@@ -156,8 +170,22 @@ export default function Projects({ token, role }: { token: string; role: string 
       fetchProjectDocs(expandedProj);
       fetchAssignments(expandedProj);
       fetchAuditTrail(expandedProj);
+      fetchCosting(expandedProj);
     }
   }, [expandedProj]);
+
+  const fetchCosting = async (projId: string) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await fetch(`${API_BASE_URL}/api/projects/${projId}/costing`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setProjectCosts(prev => ({ ...prev, [projId]: data }));
+      }
+    } catch (e) {
+      console.error("Error fetching costing", e);
+    }
+  };
 
   const fetchAuditTrail = async (projId: string) => {
     try {
@@ -224,6 +252,29 @@ export default function Projects({ token, role }: { token: string; role: string 
       fetchAssignments(projId);
     } catch (e: any) {
       showToast(e.message || "Failed to unassign worker", "error");
+    }
+  };
+
+  const handleUpdateCompletion = async (projId: string, pct: number) => {
+    try {
+      const headers = { 
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json"
+      };
+      const res = await fetch(`${API_BASE_URL}/api/projects/${projId}/completion`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ completion_percentage: pct })
+      });
+      if (res.ok) {
+        showToast("Project completion percentage updated!", "success");
+        fetchData();
+      } else {
+        const err = await res.json();
+        showToast(err.detail || "Failed to update completion percentage", "error");
+      }
+    } catch (e: any) {
+      showToast(e.message || "Failed to update completion percentage", "error");
     }
   };
 
@@ -627,12 +678,12 @@ export default function Projects({ token, role }: { token: string; role: string 
                   <div className="border-t border-slate-100 dark:border-slate-800/80 p-6 bg-slate-50/20 dark:bg-slate-900/20 space-y-6 animate-in slide-in-from-top-4 duration-300">
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                       
-                      {/* BOM Requirements panel */}
-                      <div className="lg:col-span-2 glass rounded-2xl p-5 border border-slate-200/50">
-                        <div className="flex items-center justify-between mb-4">
+                      {/* BOM Requirements & Inventory Used Ledger panel */}
+                      <div className="lg:col-span-3 glass rounded-2xl p-5 border border-slate-200/50">
+                        <div className="flex items-center justify-between mb-4 border-b border-slate-100 dark:border-slate-800 pb-2">
                           <h4 className="text-xs font-black uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
                             <Layers className="w-4 h-4 text-indigo-500" />
-                            Bill of Materials (BOM) Usage
+                            Inventory & BOM Resource Ledger
                           </h4>
                           {isManagerOrHigher && statusFilter === "active" && (
                             <button
@@ -645,59 +696,76 @@ export default function Projects({ token, role }: { token: string; role: string 
                           )}
                         </div>
 
-                        <div className="overflow-x-auto max-h-[40vh] overflow-y-auto scrollbar-thin">
+                        <div className="overflow-x-auto scrollbar-thin">
                           <table className="w-full text-left text-xs font-medium border-collapse">
-                            <thead className="sticky top-0 z-10 bg-slate-55 dark:bg-slate-900">
-                              <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-450 pb-2">
-                                <th className="pb-2 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Material / Brand</th>
-                                <th className="pb-2 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Required</th>
-                                <th className="pb-2 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Issued</th>
-                                <th className="pb-2 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Status</th>
-                                {isManagerOrHigher && statusFilter === "active" && <th className="pb-2 text-right sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Action</th>}
+                            <thead>
+                              <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 pb-2 text-[10px] uppercase font-bold">
+                                <th className="pb-2">Material / SKU</th>
+                                <th className="pb-2">Supplier</th>
+                                <th className="pb-2">Required</th>
+                                <th className="pb-2">Issued</th>
+                                <th className="pb-2">Used</th>
+                                <th className="pb-2">Remaining</th>
+                                <th className="pb-2">WH Stock</th>
+                                <th className="pb-2">Balance</th>
+                                <th className="pb-2">Status</th>
+                                {isManagerOrHigher && statusFilter === "active" && <th className="pb-2 text-right">Action</th>}
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50 text-[11px]">
                               {proj.bom_items.length > 0 ? (
-                                proj.bom_items.map((bom: any) => (
-                                  <tr key={bom.id} className="hover:bg-slate-50/30">
-                                    <td className="py-2">
-                                      <div className="font-semibold text-slate-800 dark:text-slate-250">{bom.inventory?.name}</div>
-                                      <div className="text-[10px] text-slate-400">{bom.inventory?.brand || "Brand N/A"} • {bom.inventory?.sku}</div>
-                                    </td>
-                                    <td className="py-2">{bom.required_quantity} {bom.inventory?.unit}</td>
-                                    <td className="py-2 font-semibold text-slate-700 dark:text-slate-350">{bom.used_quantity} {bom.inventory?.unit}</td>
-                                    <td className="py-2">
-                                      <span className={cn(
-                                        "px-2 py-0.5 text-[9px] font-bold uppercase rounded",
-                                        bom.status === "fulfilled" ? "bg-emerald-50 text-emerald-600 border border-emerald-100" :
-                                        bom.status === "partial" ? "bg-amber-50 text-amber-600 border border-amber-100" :
-                                        "bg-slate-100 text-slate-500"
-                                      )}>
-                                        {bom.status}
-                                      </span>
-                                    </td>
-                                    {isManagerOrHigher && statusFilter === "active" && (
-                                      <td className="py-2 text-right">
-                                        <button
-                                          onClick={(e) => { e.stopPropagation(); setSelectedProject(proj); setNewRequest({ ...newRequest, inventory_id: bom.inventory_id }); setSubmitError(""); setShowRequestModal(true); }}
-                                          className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 font-bold rounded-lg border border-indigo-100/30"
-                                        >
-                                          Request Issue
-                                        </button>
+                                proj.bom_items.map((bom: any) => {
+                                  const consumed = bom.consumed_quantity || 0;
+                                  const balance = bom.used_quantity - consumed;
+                                  const remaining = bom.required_quantity - consumed;
+                                  return (
+                                    <tr key={bom.id} className="hover:bg-slate-50/30">
+                                      <td className="py-3">
+                                        <div className="font-semibold text-slate-850 dark:text-slate-200">{bom.inventory?.name}</div>
+                                        <div className="text-[9px] text-slate-400 font-mono">{bom.inventory?.sku}</div>
                                       </td>
-                                    )}
-                                  </tr>
-                                ))
+                                      <td className="py-3 text-slate-505 dark:text-slate-400">{bom.inventory?.supplier?.name || "N/A"}</td>
+                                      <td className="py-3 font-semibold">{bom.required_quantity} {bom.inventory?.unit}</td>
+                                      <td className="py-3 text-indigo-650 dark:text-indigo-400 font-semibold">{bom.used_quantity} {bom.inventory?.unit}</td>
+                                      <td className="py-3 text-amber-600 dark:text-amber-400 font-semibold">{consumed} {bom.inventory?.unit}</td>
+                                      <td className="py-3 text-slate-500 font-semibold">{remaining > 0 ? remaining : 0} {bom.inventory?.unit}</td>
+                                      <td className="py-3 text-slate-550 dark:text-slate-400 font-semibold">{bom.inventory?.quantity || 0} {bom.inventory?.unit}</td>
+                                      <td className="py-3 text-emerald-600 dark:text-emerald-400 font-black">{balance} {bom.inventory?.unit}</td>
+                                      <td className="py-3">
+                                        <span className={cn(
+                                          "px-2 py-0.5 text-[9px] font-bold uppercase rounded",
+                                          bom.status === "fulfilled" ? "bg-emerald-50 text-emerald-600 border border-emerald-100" :
+                                          bom.status === "partial" ? "bg-amber-50 text-amber-600 border border-amber-100" :
+                                          "bg-slate-100 text-slate-500"
+                                        )}>
+                                          {bom.status}
+                                        </span>
+                                      </td>
+                                      {isManagerOrHigher && statusFilter === "active" && (
+                                        <td className="py-3 text-right">
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); setSelectedProject(proj); setNewRequest({ ...newRequest, inventory_id: bom.inventory_id }); setSubmitError(""); setShowRequestModal(true); }}
+                                            className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 font-bold rounded-lg border border-indigo-100/30"
+                                          >
+                                            Request Issue
+                                          </button>
+                                        </td>
+                                      )}
+                                    </tr>
+                                  );
+                                })
                               ) : (
                                 <tr>
-                                  <td colSpan={5} className="py-4 text-center text-slate-400">No BOM specified for design blueprints yet.</td>
+                                  <td colSpan={10} className="py-4 text-center text-slate-400">No BOM specified for design blueprints yet.</td>
                                 </tr>
                               )}
                             </tbody>
                           </table>
                         </div>
-                      </div>                      {/* Documents panel */}
-                      <div className="glass rounded-2xl p-5 border border-slate-200/50 flex flex-col justify-between">
+                      </div>
+
+                      {/* Documents panel */}
+                      <div className="lg:col-span-2 glass rounded-2xl p-5 border border-slate-200/50 flex flex-col justify-between">
                         <div>
                           <div className="flex items-center justify-between mb-4">
                             <h4 className="text-xs font-black uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
@@ -780,6 +848,139 @@ export default function Projects({ token, role }: { token: string; role: string 
                             </div>
                           </div>
                         )}
+                      </div>
+
+                      {/* Project Costing Ledger */}
+                      <div className="glass rounded-2xl p-5 border border-slate-200/50 flex flex-col justify-between">
+                        <div>
+                          <h4 className="text-xs font-black uppercase tracking-wider text-slate-400 flex items-center gap-1.5 mb-4 border-b border-slate-100 dark:border-slate-800 pb-2">
+                            <DollarSign className="w-4 h-4 text-indigo-500" />
+                            Financial Costing Ledger
+                          </h4>
+
+                          {projectCosts[proj.id] ? (
+                            <div className="space-y-3 text-xs font-semibold">
+                              <div className="flex justify-between">
+                                <span className="text-slate-400">Estimated Budget</span>
+                                <span className="text-slate-850 dark:text-slate-200">${projectCosts[proj.id].estimated_cost?.toLocaleString()}</span>
+                              </div>
+                              <div className="flex justify-between border-t border-slate-100 dark:border-slate-850/30 pt-2">
+                                <span className="text-slate-400">Material Cost</span>
+                                <span className="text-indigo-600 dark:text-indigo-400">${projectCosts[proj.id].material_cost?.toLocaleString()}</span>
+                              </div>
+                              <div className="flex justify-between border-t border-slate-100 dark:border-slate-850/30 pt-2">
+                                <span className="text-slate-400">Labour Cost</span>
+                                <span className="text-amber-600 dark:text-amber-400">${projectCosts[proj.id].labour_cost?.toLocaleString()}</span>
+                              </div>
+                              <div className="flex justify-between border-t border-slate-100 dark:border-slate-850/30 pt-2">
+                                <span className="text-slate-400">Expenses</span>
+                                <span className="text-rose-600 dark:text-rose-400">${projectCosts[proj.id].expenses?.toLocaleString()}</span>
+                              </div>
+                              <div className="flex justify-between border-t border-slate-200 dark:border-slate-800 pt-2 font-black text-[12px]">
+                                <span className="text-slate-500">Remaining Budget</span>
+                                <span className={cn(projectCosts[proj.id].remaining_budget >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                                  ${projectCosts[proj.id].remaining_budget?.toLocaleString()}
+                                </span>
+                              </div>
+                              <div className="flex justify-between border-t border-slate-200 dark:border-slate-800 pt-2 font-black text-[12px]">
+                                <span className="text-slate-500">Project P&L</span>
+                                <span className={cn(projectCosts[proj.id].profit_loss >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                                  {projectCosts[proj.id].profit_loss >= 0 ? "Profit" : "Loss"}: ${Math.abs(projectCosts[proj.id].profit_loss)?.toLocaleString()}
+                                </span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-center py-8 text-slate-400 text-xs">Loading costing data...</div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Project Resource Ledger */}
+                      <div className="lg:col-span-3 glass rounded-2xl p-5 border border-slate-200/50 space-y-4">
+                        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
+                          <h4 className="text-xs font-black uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                            <Layers className="w-4 h-4 text-indigo-500" />
+                            Project Resource Ledger
+                          </h4>
+                          <span className={cn("px-2.5 py-0.5 border rounded-full text-[10px] uppercase font-bold", getStatusBadgeClass(proj.status))}>
+                            {proj.status.replace("_", " ")}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs font-semibold text-slate-600 dark:text-slate-400">
+                          <div>
+                            <span className="text-[10px] text-slate-400 uppercase block font-bold">Project Name</span>
+                            <span className="text-slate-800 dark:text-slate-200 text-sm font-bold block mt-1">{proj.name}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 uppercase block font-bold">Client</span>
+                            <span className="text-indigo-600 dark:text-indigo-400 text-sm font-bold block mt-1">{proj.client?.name || "N/A"}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 uppercase block font-bold">Start Date</span>
+                            <span className="text-slate-850 dark:text-slate-250 mt-1 block">{proj.start_date ? new Date(proj.start_date).toLocaleDateString() : "N/A"}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 uppercase block font-bold">Due Date</span>
+                            <span className="text-slate-850 dark:text-slate-250 mt-1 block">{proj.end_date ? new Date(proj.end_date).toLocaleDateString() : "N/A"}</span>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-t border-slate-100 dark:border-slate-800 pt-4 text-xs font-semibold text-slate-600 dark:text-slate-400">
+                          <div>
+                            <span className="text-[10px] text-slate-400 uppercase block font-bold">Managers</span>
+                            <span className="text-slate-800 dark:text-slate-200 block mt-1 space-y-1">
+                              {(assignments[proj.id] || [])
+                                .filter((a: any) => ["manager", "project_manager", "factory_manager", "admin"].includes(a.user?.role))
+                                .map((a: any) => a.user?.full_name)
+                                .join(", ") || "None Assigned"}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 uppercase block font-bold">Supervisors</span>
+                            <span className="text-slate-800 dark:text-slate-200 block mt-1">
+                              {(assignments[proj.id] || [])
+                                .filter((a: any) => ["supervisor", "store", "store_manager"].includes(a.user?.role))
+                                .map((a: any) => a.user?.full_name)
+                                .join(", ") || "None Assigned"}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 uppercase block font-bold">Assigned Employees</span>
+                            <span className="text-slate-800 dark:text-slate-200 block mt-1">
+                              {(assignments[proj.id] || [])
+                                .filter((a: any) => !["manager", "project_manager", "factory_manager", "admin", "supervisor", "store", "store_manager"].includes(a.user?.role))
+                                .map((a: any) => a.user?.full_name)
+                                .join(", ") || "None Assigned"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="border-t border-slate-100 dark:border-slate-800 pt-4">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[10px] text-slate-400 uppercase font-bold block">Completion Percentage ({proj.completion_percentage || 0}%)</span>
+                            <span className="text-[10px] text-indigo-500 font-bold">Current Progress</span>
+                          </div>
+                          <div className="flex items-center gap-4">
+                            <div className="flex-1 bg-slate-200 dark:bg-slate-800 h-3 rounded-full overflow-hidden">
+                              <div 
+                                className="bg-gradient-to-r from-indigo-500 to-purple-600 h-full rounded-full transition-all duration-300"
+                                style={{ width: `${proj.completion_percentage || 0}%` }}
+                              ></div>
+                            </div>
+                            {isManagerOrHigher && statusFilter === "active" && (
+                              <input 
+                                type="range" 
+                                min="0" 
+                                max="100" 
+                                value={proj.completion_percentage || 0} 
+                                onChange={(e) => handleUpdateCompletion(proj.id, parseInt(e.target.value))}
+                                className="w-32 cursor-pointer accent-indigo-600"
+                                title="Slide to adjust progress"
+                              />
+                            )}
+                          </div>
+                        </div>
                       </div>
 
                       {/* Worker Assignments panel */}

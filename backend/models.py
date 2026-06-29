@@ -164,6 +164,7 @@ class ProjectBOM(Base):
     inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False)
     required_quantity = Column(Float, nullable=False)
     used_quantity = Column(Float, default=0.0, nullable=False)
+    consumed_quantity = Column(Float, default=0.0, nullable=False)
     status = Column(String(20), default="pending", nullable=False)  # pending, partial, fulfilled
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -547,6 +548,8 @@ class ProjectDailyLog(Base):
     supervisor_comment = Column(Text, nullable=True)
     approved_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     approved_at = Column(DateTime, nullable=True)
+    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="SET NULL"), nullable=True)
+    quantity_used = Column(Float, default=0.0, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     version_id = Column(Integer, default=1, nullable=False)
 
@@ -557,6 +560,7 @@ class ProjectDailyLog(Base):
     staff = relationship("Staff")
     user = relationship("User", foreign_keys=[user_id])
     approver_user = relationship("User", foreign_keys=[approved_by])
+    inventory = relationship("InventoryItem")
 
 
 class DailyExpense(Base):

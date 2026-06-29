@@ -283,6 +283,7 @@ class ProjectBOMResponse(BaseSchema):
     inventory_id: str
     required_quantity: float
     used_quantity: float
+    consumed_quantity: float
     status: str
     created_at: datetime
     inventory: Optional[InventoryItemResponse] = None
