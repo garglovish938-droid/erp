@@ -428,44 +428,6 @@ crud.register_notification_callback(broadcast_sync)
 def read_root():
     return {"message": "Welcome to Allure Living ERP API System", "status": "running"}
 
-
-@app.get("/api/diagnose-db")
-def diagnose_db(db: Session = Depends(get_db)):
-    from sqlalchemy import text
-    result = {}
-    try:
-        result["dialect"] = engine.dialect.name
-        result["database_url_masked"] = str(engine.url).split("@")[-1]
-        
-        # Test project query
-        try:
-            db.query(Project).all()
-            result["project_query"] = "success"
-        except Exception as e:
-            import traceback
-            result["project_query"] = f"failed: {str(e)}"
-            result["project_query_trace"] = traceback.format_exc()
-            
-        # Inspect columns of relevant tables
-        for table in ["projects", "project_bom", "project_daily_logs", "audit_logs"]:
-            try:
-                if engine.dialect.name == "sqlite":
-                    columns = db.execute(text(f"PRAGMA table_info({table})")).fetchall()
-                    result[table] = [c[1] for c in columns]
-                else:
-                    columns = db.execute(text(f"""
-                        SELECT column_name 
-                        FROM information_schema.columns 
-                        WHERE table_name = '{table}'
-                    """)).fetchall()
-                    result[table] = [c[0] for c in columns]
-            except Exception as e:
-                result[table] = f"error: {str(e)}"
-    except Exception as e:
-        result["error"] = str(e)
-    return result
-
-
 # --- AUTH & USER MANAGEMENT ---
 @app.post("/api/auth/register", response_model=schemas.UserResponse)
 def register_user(user_in: schemas.UserCreate, request: Request, db: Session = Depends(get_db)):
