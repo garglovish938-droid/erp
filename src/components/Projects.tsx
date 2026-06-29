@@ -5,8 +5,9 @@ import {
   Plus, Folder, Calendar, DollarSign, MapPin, Layers, ChevronDown, ChevronUp, 
   Loader2, ArrowRight, X, Trash2, Edit, CheckSquare, Square, RotateCcw, 
   AlertTriangle, ChevronLeft, ChevronRight, FileText, Upload, Download, Eye, Search,
-  Users 
+  Users, Clock
 } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 import { useToast } from "./Toast";
 import { projectService } from "@/services/projectService";
@@ -26,7 +27,9 @@ export default function Projects({ token, role }: { token: string; role: string 
   
   // Assignments management
   const [assignments, setAssignments] = useState<Record<string, any[]>>({});
+  const [auditTrails, setAuditTrails] = useState<Record<string, any[]>>({});
   const [staffList, setStaffList] = useState<any[]>([]);
+
 
   const [loading, setLoading] = useState(true);
   const [expandedProj, setExpandedProj] = useState<string | null>(null);
@@ -115,12 +118,18 @@ export default function Projects({ token, role }: { token: string; role: string 
 
     const handleWebsocketEvent = (e: Event) => {
       const customEvent = e as CustomEvent;
-      if (customEvent.detail?.event === "project_change") {
+      const msg = customEvent.detail;
+      if (msg?.event === "project_change") {
         fetchData();
-        // If a project is expanded, refetch its documents and assignments as well
         if (expandedProj) {
           fetchProjectDocs(expandedProj);
           fetchAssignments(expandedProj);
+          fetchAuditTrail(expandedProj);
+        }
+      } else if (msg?.event === "project_activity" && msg.data?.project_id === expandedProj) {
+        if (expandedProj) {
+          fetchAuditTrail(expandedProj);
+          fetchProjectDocs(expandedProj);
         }
       }
     };
@@ -130,6 +139,9 @@ export default function Projects({ token, role }: { token: string; role: string 
     // Fallback polling (every 30 seconds)
     const pollInterval = setInterval(() => {
       fetchData();
+      if (expandedProj) {
+        fetchAuditTrail(expandedProj);
+      }
     }, 30000);
 
     return () => {
@@ -143,8 +155,21 @@ export default function Projects({ token, role }: { token: string; role: string 
     if (expandedProj) {
       fetchProjectDocs(expandedProj);
       fetchAssignments(expandedProj);
+      fetchAuditTrail(expandedProj);
     }
   }, [expandedProj]);
+
+  const fetchAuditTrail = async (projId: string) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await fetch(`${API_BASE_URL}/api/projects/${projId}/audit-trail`, { headers });
+      if (!res.ok) throw new Error("Failed to fetch audit trail");
+      const data = await res.json();
+      setAuditTrails(prev => ({ ...prev, [projId]: data }));
+    } catch (e) {
+      console.error("Error fetching audit trail for project", projId, e);
+    }
+  };
 
   const fetchProjectDocs = async (projId: string) => {
     try {
@@ -165,6 +190,7 @@ export default function Projects({ token, role }: { token: string; role: string 
       console.error("Error fetching assignments", e);
     }
   };
+
 
   const handleAssignWorker = async (projId: string, userId: string) => {
     if (!userId) return;
@@ -805,6 +831,101 @@ export default function Projects({ token, role }: { token: string; role: string 
                             ))
                           ) : (
                             <div className="text-slate-400 text-xs py-2">No workers or staff assigned to this project yet.</div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Project Activity Timeline */}
+                      <div className="lg:col-span-3 glass rounded-2xl p-5 border border-slate-200/50 mt-4 bg-slate-50/50 dark:bg-slate-900/10">
+                        <div className="flex items-center justify-between mb-4 border-b border-slate-100 dark:border-slate-800 pb-3">
+                          <h4 className="text-xs font-black uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                            <Clock className="w-4 h-4 text-indigo-500 animate-spin-slow" />
+                            Project Activity Timeline (Real-Time Timeline)
+                          </h4>
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 dark:bg-indigo-950 text-indigo-650 dark:text-indigo-400">
+                            <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-ping"></span>
+                            Live Updates Enable
+                          </span>
+                        </div>
+
+                        <div className="space-y-4 max-h-[300px] overflow-y-auto scrollbar-thin pr-2 text-left">
+                          {(auditTrails[proj.id] || []).length > 0 ? (
+                            (auditTrails[proj.id] || []).map((audit: any) => {
+                              const dt = new Date(audit.created_at);
+                              const serverTimeStr = dt.toLocaleTimeString("en-IN", { hour: '2-digit', minute: '2-digit', hour12: true });
+                              const serverDateStr = dt.toLocaleDateString("en-IN", { day: '2-digit', month: 'short' });
+                              
+                              let imagesList: string[] = [];
+                              if (audit.images) {
+                                try {
+                                  imagesList = JSON.parse(audit.images);
+                                } catch(e) {
+                                  imagesList = [];
+                                }
+                              }
+                              
+                              return (
+                                <div key={audit.id} className="flex gap-4 items-start p-3 bg-white dark:bg-slate-900 border border-slate-200/30 rounded-2xl shadow-sm hover:shadow transition-shadow">
+                                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white font-extrabold text-xs flex items-center justify-center flex-shrink-0 shadow-sm">
+                                    {(audit.user?.full_name || "Employee").split(" ").map((n: string) => n[0]).join("").substring(0, 2).toUpperCase()}
+                                  </div>
+                                  
+                                  <div className="flex-1 space-y-1">
+                                    <div className="flex items-center justify-between flex-wrap gap-2 text-xs">
+                                      <span className="font-bold text-slate-800 dark:text-slate-200">
+                                        {audit.user?.full_name || "Unknown User"} 
+                                        <span className="text-[10px] text-slate-400 font-normal ml-1.5">
+                                          ({audit.user?.department || "Production"})
+                                        </span>
+                                      </span>
+                                      <span className="text-[10px] text-slate-400 font-mono">
+                                        {serverDateStr} • {serverTimeStr}
+                                      </span>
+                                    </div>
+                                    
+                                    <div className="text-xs text-slate-655 dark:text-slate-300 font-medium">
+                                      <span className="text-indigo-650 dark:text-indigo-400 font-semibold">{audit.action}</span>: {audit.details}
+                                    </div>
+
+                                    {(audit.old_value || audit.new_value) && (
+                                      <div className="flex items-center gap-2 text-[10px] font-semibold bg-slate-50 dark:bg-slate-800/40 p-1.5 rounded-lg w-max max-w-full">
+                                        {audit.old_value && (
+                                          <span className="text-slate-400 line-through truncate max-w-[150px]">{audit.old_value}</span>
+                                        )}
+                                        {audit.old_value && audit.new_value && <span>→</span>}
+                                        {audit.new_value && (
+                                          <span className="text-indigo-600 dark:text-indigo-400 truncate max-w-[200px]">{audit.new_value}</span>
+                                        )}
+                                      </div>
+                                    )}
+
+                                    {audit.action === "Upload Document" && audit.new_value && (
+                                      <a href={`${API_BASE_URL}${audit.new_value}`} target="_blank" rel="noreferrer" 
+                                        className="inline-flex items-center gap-1 text-[10px] text-indigo-600 hover:underline bg-indigo-50/50 p-1.5 rounded-lg mt-1 font-bold">
+                                        <FileText className="w-3.5 h-3.5" /> View Uploaded Document
+                                      </a>
+                                    )}
+
+                                    {imagesList.length > 0 && (
+                                      <div className="flex gap-2 flex-wrap mt-2">
+                                        {imagesList.map((img: string, i: number) => (
+                                          <a key={i} href={`${API_BASE_URL}${img}`} target="_blank" rel="noreferrer">
+                                            <img src={`${API_BASE_URL}${img}`} alt="activity-work" className="w-16 h-16 object-cover rounded-lg border border-slate-200" />
+                                          </a>
+                                        ))}
+                                      </div>
+                                    )}
+
+                                    <div className="flex items-center justify-between text-[9px] text-slate-400 pt-1.5 border-t border-slate-100 dark:border-slate-800/40 mt-2">
+                                      <span>Device Time: {audit.device_time || "N/A"}</span>
+                                      <span>Server Time: {serverTimeStr}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })
+                          ) : (
+                            <div className="text-slate-400 text-xs py-4 text-center">No real-time activities recorded on this project yet.</div>
                           )}
                         </div>
                       </div>

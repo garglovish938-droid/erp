@@ -1,4 +1,5 @@
 import os
+os.environ["DATABASE_URL"] = "sqlite:///test.db"
 import sys
 import shutil
 from datetime import datetime, date, timedelta

@@ -215,8 +215,16 @@ class ConnectionManager:
 
 ws_manager = ConnectionManager()
 
+@app.websocket("/api/ws")
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
+    if token:
+        try:
+            jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        except Exception:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+            
     await ws_manager.connect(websocket)
     try:
         while True:
@@ -230,6 +238,146 @@ async def websocket_endpoint(websocket: WebSocket):
         ws_manager.disconnect(websocket)
     except Exception:
         ws_manager.disconnect(websocket)
+
+# Helper to log audit trail and broadcast WebSocket event
+async def log_and_broadcast_activity(
+    db: Session,
+    user: User,
+    project_id: Optional[str],
+    action: str,
+    details: str,
+    old_value: Optional[str] = None,
+    new_value: Optional[str] = None,
+    images: List[str] = [],
+    documents: List[str] = [],
+    device_time: Optional[str] = None,
+    request: Optional[Request] = None
+):
+    from models import AuditLog
+    import datetime
+    
+    ip_address = None
+    device = None
+    browser = None
+    if request:
+        ip_address = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent", "")
+        if "Mobi" in user_agent:
+            device = "Mobile"
+        elif "Tablet" in user_agent:
+            device = "Tablet"
+        else:
+            device = "Desktop"
+        
+        if "Chrome" in user_agent:
+            browser = "Chrome"
+        elif "Safari" in user_agent and "Chrome" not in user_agent:
+            browser = "Safari"
+        elif "Firefox" in user_agent:
+            browser = "Firefox"
+        elif "Edge" in user_agent:
+            browser = "Edge"
+        else:
+            browser = user_agent.split(" ")[0] if user_agent else "Unknown"
+            
+    server_time = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    
+    import json as _json
+    audit_record = AuditLog(
+        id=str(uuid.uuid4()),
+        user_id=user.id,
+        project_id=project_id,
+        action=action,
+        details=details,
+        old_value=old_value,
+        new_value=new_value,
+        ip_address=ip_address,
+        device=device,
+        browser=browser,
+        device_time=device_time,
+        images=_json.dumps(images) if images else None,
+        documents=_json.dumps(documents) if documents else None
+    )
+
+    db.add(audit_record)
+    db.commit()
+    db.refresh(audit_record)
+    
+    from models import Staff
+    staff_member = db.query(Staff).filter(Staff.user_id == user.id, Staff.is_deleted == False).first()
+    department = user.department or (staff_member.department if staff_member else "Production")
+    
+    payload = {
+        "event": "project_activity",
+        "data": {
+            "id": audit_record.id,
+            "project_id": project_id,
+            "employee_name": user.full_name,
+            "employee_photo": None,
+            "department": department,
+            "date": datetime.date.today().strftime("%Y-%m-%d"),
+            "time": datetime.datetime.now().strftime("%I:%M %p"),
+            "action": action,
+            "old_status": old_value,
+            "new_status": new_value,
+            "work_description": details,
+            "progress_percentage": new_value if "progress" in action.lower() else None,
+            "images": images,
+            "documents": documents,
+            "device_time": device_time or server_time,
+            "server_time": server_time,
+            "status": "active"
+        }
+    }
+    await ws_manager.broadcast(payload)
+
+def log_and_broadcast_activity_sync(*args, **kwargs):
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(log_and_broadcast_activity(*args, **kwargs))
+    except RuntimeError:
+        asyncio.run(log_and_broadcast_activity(*args, **kwargs))
+
+# Helper to create notification and broadcast
+async def log_and_broadcast_notification(
+    db: Session,
+    title: str,
+    description: str,
+    notif_type: str
+):
+    from models import Notification
+    notification = Notification(
+        id=str(uuid.uuid4()),
+        title=title,
+        description=description,
+        type=notif_type,
+        is_read=False
+    )
+    db.add(notification)
+    db.commit()
+    db.refresh(notification)
+    
+    await ws_manager.broadcast({
+        "event": "notification",
+        "data": {
+            "id": notification.id,
+            "title": notification.title,
+            "description": notification.description,
+            "type": notification.type,
+            "is_read": False,
+            "created_at": str(notification.created_at)
+        }
+    })
+
+def log_and_broadcast_notification_sync(*args, **kwargs):
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(log_and_broadcast_notification(*args, **kwargs))
+    except RuntimeError:
+        asyncio.run(log_and_broadcast_notification(*args, **kwargs))
+
 def broadcast_sync(message: dict):
     import asyncio
     try:
@@ -2484,6 +2632,7 @@ def get_documents(entity_type: Optional[str] = None, entity_id: Optional[str] = 
 
 @app.post("/api/documents", response_model=schemas.DocumentResponse)
 async def upload_document(
+    request: Request,
     name: str = Query(...),
     category: Optional[str] = Query(None),
     entity_type: Optional[str] = Query(None),
@@ -2524,7 +2673,22 @@ async def upload_document(
         entity_type=entity_type,
         entity_id=entity_id
     )
-    return crud.create_document(db, doc_in, current_user.id)
+    doc = crud.create_document(db, doc_in, current_user.id)
+    
+    if entity_type == "Project" and entity_id:
+        await log_and_broadcast_activity(
+            db=db,
+            user=current_user,
+            project_id=entity_id,
+            action="Upload Document",
+            details=f"Uploaded document '{name}' ({category or 'General'})",
+            old_value=None,
+            new_value=doc.file_path,
+            documents=[doc.file_path],
+            request=request
+        )
+    return doc
+
 
 @app.delete("/api/documents/{doc_id}")
 def delete_document(doc_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
@@ -5037,10 +5201,12 @@ def update_purchase_order_fields(
 @app.post("/api/projects/{project_id}/daily-log")
 async def create_project_daily_log(
     project_id: str,
+    request: Request,
     task: str = Form(...),
     hours_worked: float = Form(...),
     progress_percentage: int = Form(...),
     remarks: str = Form(None),
+    device_time: str = Form(None),
     work_photos: List[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_any_authenticated)
@@ -5050,6 +5216,15 @@ async def create_project_daily_log(
     project = db.query(Project).filter(Project.id == project_id, Project.is_deleted == False).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # Check project assignments for worker/employee roles
+    if current_user.role not in ["admin", "manager", "project_manager", "factory_manager"]:
+        assigned = db.query(ProjectAssignment).filter(
+            ProjectAssignment.project_id == project_id,
+            ProjectAssignment.user_id == current_user.id
+        ).first()
+        if not assigned:
+            raise HTTPException(status_code=403, detail="You are not assigned to this project")
 
     # Save uploaded work photos
     saved_photos = []
@@ -5070,7 +5245,6 @@ async def create_project_daily_log(
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to save work photo: {str(e)}")
 
-
     # Get staff linked to current user
     staff_member = db.query(Staff).filter(Staff.user_id == current_user.id, Staff.is_deleted == False).first()
 
@@ -5083,7 +5257,8 @@ async def create_project_daily_log(
         hours_worked=hours_worked,
         progress_percentage=max(0, min(100, progress_percentage)),
         remarks=remarks,
-        work_photos=_json.dumps(saved_photos) if saved_photos else None
+        work_photos=_json.dumps(saved_photos) if saved_photos else None,
+        approval_status="pending"
     )
     db.add(log)
     db.commit()
@@ -5092,12 +5267,235 @@ async def create_project_daily_log(
     crud.log_detailed_activity(db, current_user.id, "Project", "daily_log", project_id,
                                f"Daily progress log submitted for project: {project.name}")
 
+    # Log and broadcast activity
+    await log_and_broadcast_activity(
+        db=db,
+        user=current_user,
+        project_id=project_id,
+        action="Submit Work Log",
+        details=task,
+        old_value=None,
+        new_value=f"{progress_percentage}%",
+        images=saved_photos,
+        device_time=device_time,
+        request=request
+    )
+
+    # Notify Supervisor / PM / Admin
+    await log_and_broadcast_notification(
+        db=db,
+        title=f"New Work Log – {project.name}",
+        description=f"{current_user.full_name} submitted work log: '{task[:40]}...' ({progress_percentage}%)",
+        notif_type="work_log_submitted"
+    )
+
     return {
         "status": "success",
         "message": "Daily log saved",
         "log_id": log.id,
         "work_photos": saved_photos
     }
+
+
+@app.put("/api/projects/{project_id}/daily-logs/{log_id}")
+async def update_project_daily_log(
+    project_id: str,
+    log_id: str,
+    request: Request,
+    task: str = Form(None),
+    hours_worked: float = Form(None),
+    progress_percentage: int = Form(None),
+    remarks: str = Form(None),
+    device_time: str = Form(None),
+    work_photos: List[UploadFile] = File(default=[]),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    import json as _json
+    log = db.query(ProjectDailyLog).filter(ProjectDailyLog.id == log_id, ProjectDailyLog.project_id == project_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Daily log not found")
+
+    # Check editing rules: Employees can edit ONLY their own logs. Admin has full access.
+    # Supervisor cannot edit.
+    if current_user.role != "admin" and log.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You can only edit your own work logs")
+
+    old_task = log.task
+    old_progress = log.progress_percentage
+
+    # Save photos if any
+    saved_photos = []
+    if log.work_photos:
+        try:
+            saved_photos = _json.loads(log.work_photos)
+        except Exception:
+            saved_photos = []
+
+    for photo in work_photos:
+        if photo and photo.filename:
+            ext = photo.filename.rsplit(".", 1)[-1].lower() if "." in photo.filename else "jpg"
+            filename = f"workphoto_{project_id}_{uuid.uuid4().hex[:8]}.{ext}"
+            try:
+                contents = await photo.read()
+                db_path = storage_provider.upload_file(
+                    file_data=contents,
+                    filename=filename,
+                    bucket="projects",
+                    mime_type=photo.content_type or "image/jpeg",
+                    subpath="work_photos"
+                )
+                saved_photos.append(db_path)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to save work photo: {str(e)}")
+
+    if task is not None:
+        log.task = task
+    if hours_worked is not None:
+        log.hours_worked = hours_worked
+    if progress_percentage is not None:
+        log.progress_percentage = max(0, min(100, progress_percentage))
+    if remarks is not None:
+        log.remarks = remarks
+    if saved_photos:
+        log.work_photos = _json.dumps(saved_photos)
+
+    # Perform update with optimistic locking
+    from sqlalchemy.orm.exc import StaleDataError
+    try:
+        db.commit()
+        db.refresh(log)
+    except StaleDataError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Conflict detected: This work log was modified by another request. Please try again.")
+
+    # Log and broadcast activity
+    await log_and_broadcast_activity(
+        db=db,
+        user=current_user,
+        project_id=project_id,
+        action="Edit Work Log",
+        details=f"Updated work log: {log.task}",
+        old_value=f"{old_task} ({old_progress}%)",
+        new_value=f"{log.task} ({log.progress_percentage}%)",
+        images=saved_photos,
+        device_time=device_time,
+        request=request
+    )
+
+    return {
+        "status": "success",
+        "message": "Daily log updated",
+        "log_id": log.id,
+        "work_photos": saved_photos
+    }
+
+
+@app.delete("/api/projects/{project_id}/daily-logs/{log_id}")
+async def delete_project_daily_log(
+    project_id: str,
+    log_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    log = db.query(ProjectDailyLog).filter(ProjectDailyLog.id == log_id, ProjectDailyLog.project_id == project_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Daily log not found")
+
+    # Check deleting rules: Employees can delete ONLY their own logs. Admin has full access.
+    # Supervisor cannot delete.
+    if current_user.role != "admin" and log.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You can only delete your own work logs")
+
+    old_task = log.task
+    old_progress = log.progress_percentage
+
+    db.delete(log)
+    db.commit()
+
+    # Log and broadcast activity
+    await log_and_broadcast_activity(
+        db=db,
+        user=current_user,
+        project_id=project_id,
+        action="Delete Work Log",
+        details=f"Deleted work log: {old_task}",
+        old_value=f"{old_task} ({old_progress}%)",
+        new_value="N/A (Deleted)",
+        request=request
+    )
+
+    return {"status": "success", "message": "Daily log deleted"}
+
+
+@app.put("/api/projects/{project_id}/daily-logs/{log_id}/approve")
+async def approve_project_daily_log(
+    project_id: str,
+    log_id: str,
+    request: Request,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    import datetime
+    log = db.query(ProjectDailyLog).filter(ProjectDailyLog.id == log_id, ProjectDailyLog.project_id == project_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Daily log not found")
+
+    status_val = payload.get("status")
+    comment = payload.get("comment")
+
+    if status_val not in ["approved", "rejected"]:
+        raise HTTPException(status_code=400, detail="status must be 'approved' or 'rejected'")
+
+    old_status = log.approval_status
+    log.approval_status = status_val
+    log.supervisor_comment = comment
+    log.approved_by = current_user.id
+    log.approved_at = datetime.datetime.utcnow()
+
+    # Perform update with optimistic locking
+    from sqlalchemy.orm.exc import StaleDataError
+    try:
+        db.commit()
+        db.refresh(log)
+    except StaleDataError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Conflict detected: This work log was modified by another request. Please try again.")
+
+    # Log and broadcast activity
+    await log_and_broadcast_activity(
+        db=db,
+        user=current_user,
+        project_id=project_id,
+        action="Approve Work Log" if status_val == "approved" else "Reject Work Log",
+        details=f"Supervisor reviewed work log by user {log.user_id if log.user_id else 'unknown'}. Comment: {comment or 'None'}",
+        old_value=old_status,
+        new_value=status_val,
+        request=request
+    )
+
+    return {
+        "status": "success",
+        "message": f"Daily log {status_val}",
+        "log_id": log.id,
+        "approval_status": log.approval_status
+    }
+
+
+@app.get("/api/projects/{project_id}/audit-trail", response_model=List[schemas.AuditLogResponse])
+def get_project_audit_trail(
+    project_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    from models import AuditLog
+    project = db.query(Project).filter(Project.id == project_id, Project.is_deleted == False).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return db.query(AuditLog).filter(AuditLog.project_id == project_id).order_by(AuditLog.created_at.desc()).all()
 
 
 @app.get("/api/projects/{project_id}/daily-logs")
@@ -5144,9 +5542,14 @@ def get_project_daily_logs(
             "progress_percentage": log.progress_percentage,
             "remarks": log.remarks,
             "work_photos": photos,
+            "approval_status": log.approval_status,
+            "supervisor_comment": log.supervisor_comment,
+            "approved_by": log.approved_by,
             "created_at": str(log.created_at),
+            "user_id": log.user_id
         })
     return {"project_id": project_id, "project_name": project.name, "logs": logs}
+
 
 
 @app.put("/api/projects/{project_id}/completion")
@@ -5166,15 +5569,35 @@ def update_project_completion(
     if pct is None or not (0 <= int(pct) <= 100):
         raise HTTPException(status_code=400, detail="completion_percentage must be 0-100")
 
+    old_pct = project.completion_percentage
     project.completion_percentage = int(pct)
-    db.commit()
+    
+    from sqlalchemy.orm.exc import StaleDataError
+    try:
+        db.commit()
+        db.refresh(project)
+    except StaleDataError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Conflict detected: This project was updated by another request. Please try again.")
 
     ip_addr = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
     crud.log_detailed_activity(db, current_user.id, "Project", "update_completion", project_id,
                                f"Project '{project.name}' completion set to {pct}%",
                                ip_address=ip_addr, device=user_agent)
+                               
+    log_and_broadcast_activity_sync(
+        db=db,
+        user=current_user,
+        project_id=project_id,
+        action="Change Project Progress",
+        details=f"Updated project completion to {pct}%",
+        old_value=f"{old_pct}%",
+        new_value=f"{pct}%",
+        request=request
+    )
     return {"status": "success", "project_id": project_id, "completion_percentage": int(pct)}
+
 
 
 @app.get("/api/projects/{project_id}/report")

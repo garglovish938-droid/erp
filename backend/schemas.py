@@ -900,4 +900,19 @@ class DailyExpenseResponse(BaseSchema):
     project: Optional[ProjectResponse] = None
     creator: Optional[UserResponse] = None
 
-
+class AuditLogResponse(BaseSchema):
+    id: str
+    user_id: Optional[str]
+    project_id: Optional[str]
+    action: str
+    details: Optional[str]
+    old_value: Optional[str]
+    new_value: Optional[str]
+    ip_address: Optional[str]
+    device: Optional[str]
+    browser: Optional[str]
+    device_time: Optional[str]
+    images: Optional[str] = None
+    documents: Optional[str] = None
+    created_at: datetime
+    user: Optional[UserResponse] = None

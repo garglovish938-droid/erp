@@ -139,6 +139,11 @@ class Project(Base):
     completion_percentage = Column(Integer, default=0, nullable=False)  # NEW: 0-100
     department = Column(String(100), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    version_id = Column(Integer, default=1, nullable=False)
+    
+    __mapper_args__ = {
+        "version_id_col": version_id
+    }
     
     # Soft delete
     is_deleted = Column(Boolean, default=False, nullable=False)
@@ -538,11 +543,20 @@ class ProjectDailyLog(Base):
     progress_percentage = Column(Integer, nullable=False, default=0)  # 0-100
     remarks = Column(Text, nullable=True)
     work_photos = Column(Text, nullable=True)  # JSON array of file paths
+    approval_status = Column(String(20), default="pending", nullable=False) # pending, approved, rejected
+    supervisor_comment = Column(Text, nullable=True)
+    approved_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    version_id = Column(Integer, default=1, nullable=False)
 
+    __mapper_args__ = {
+        "version_id_col": version_id
+    }
     project = relationship("Project")
     staff = relationship("Staff")
-    user = relationship("User")
+    user = relationship("User", foreign_keys=[user_id])
+    approver_user = relationship("User", foreign_keys=[approved_by])
 
 
 class DailyExpense(Base):
@@ -577,3 +591,26 @@ class LoginHistory(Base):
     ip_address = Column(String(50), nullable=True)
     user_agent = Column(Text, nullable=True)
     success = Column(Integer, default=1, nullable=False)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    action = Column(String(100), nullable=False)
+    details = Column(Text, nullable=True)
+    old_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=True)
+    ip_address = Column(String(50), nullable=True)
+    device = Column(String(255), nullable=True)
+    browser = Column(Text, nullable=True)
+    device_time = Column(String(50), nullable=True)
+    images = Column(Text, nullable=True)
+    documents = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User")
+    project = relationship("Project")
+

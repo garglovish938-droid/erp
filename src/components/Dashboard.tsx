@@ -269,14 +269,25 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
 
     const handleWebsocketEvent = (e: Event) => {
       const customEvent = e as CustomEvent;
-      const eventType = customEvent.detail?.event;
-      if (isWorker) {
-        if (["attendance_change", "project_change"].includes(eventType)) {
-          fetchWorkerData();
+      const msg = customEvent.detail;
+      const eventType = msg?.event;
+
+      if (eventType === "notification") {
+        showToast(`[LIVE NOTIFICATION] ${msg.data.title}: ${msg.data.description}`, "info");
+        setNotifications(prev => [msg.data, ...prev].slice(0, 5));
+      } else if (eventType === "project_activity") {
+        showToast(`[LIVE ACTIVITY] ${msg.data.employee_name}: ${msg.data.action}`, "success");
+        if (!isWorker) {
+          fetchData();
         }
       } else {
-        // Refresh dashboard overview upon notifications, stock changes, etc.
-        fetchData();
+        if (isWorker) {
+          if (["attendance_change", "project_change"].includes(eventType)) {
+            fetchWorkerData();
+          }
+        } else {
+          fetchData();
+        }
       }
     };
 

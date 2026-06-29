@@ -13,7 +13,7 @@ interface ProjectProgressProps {
   role: string;
 }
 
-const isManager = (role: string) => ["admin", "manager"].includes(role);
+const isManager = (role: string) => ["admin", "manager", "project_manager", "factory_manager"].includes(role);
 
 export default function ProjectProgress({ token, role }: ProjectProgressProps) {
   const [projects, setProjects] = useState<any[]>([]);
@@ -27,6 +27,9 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
   const [error, setError] = useState("");
   const [expandedLog, setExpandedLog] = useState<string | null>(null);
 
+  // Current user details
+  const [currentUserId, setCurrentUserId] = useState<string>("");
+
   const [form, setForm] = useState({
     task: "",
     hours_worked: "",
@@ -35,6 +38,35 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
   });
   const [workPhotos, setWorkPhotos] = useState<File[]>([]);
   const [photoPreview, setPhotoPreview] = useState<string[]>([]);
+
+  // Editing state for logs
+  const [editingLogId, setEditingLogId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({
+    task: "",
+    hours_worked: "",
+    progress_percentage: "",
+    remarks: "",
+  });
+  const [editPhotos, setEditPhotos] = useState<File[]>([]);
+  const [editPhotoPreview, setEditPhotoPreview] = useState<string[]>([]);
+
+  // Supervisor review state
+  const [reviewComment, setReviewComment] = useState("");
+
+  // Load current user profile on mount
+  useEffect(() => {
+    const fetchMe = async () => {
+      try {
+        const me = await apiRequest("/api/auth/me");
+        if (me && me.id) {
+          setCurrentUserId(me.id);
+        }
+      } catch (e) {
+        console.error("Error fetching current user profile", e);
+      }
+    };
+    fetchMe();
+  }, []);
 
   // Load projects
   useEffect(() => {
@@ -63,6 +95,18 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
 
   useEffect(() => { loadReport(); }, [loadReport]);
 
+  // Listen to WebSocket events from parent
+  useEffect(() => {
+    const handleWsEvent = (e: Event) => {
+      const message = (e as CustomEvent).detail;
+      if (message.event === "project_activity" && message.data.project_id === selectedProject) {
+        loadReport();
+      }
+    };
+    window.addEventListener("erp_websocket_event", handleWsEvent);
+    return () => window.removeEventListener("erp_websocket_event", handleWsEvent);
+  }, [selectedProject, loadReport]);
+
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     setWorkPhotos(prev => [...prev, ...files].slice(0, 5));
@@ -73,6 +117,18 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
   const removePhoto = (index: number) => {
     setWorkPhotos(prev => prev.filter((_, i) => i !== index));
     setPhotoPreview(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleEditPhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    setEditPhotos(prev => [...prev, ...files].slice(0, 5));
+    const previews = files.map(f => URL.createObjectURL(f));
+    setEditPhotoPreview(prev => [...prev, ...previews].slice(0, 5));
+  };
+
+  const removeEditPhoto = (index: number) => {
+    setEditPhotos(prev => prev.filter((_, i) => i !== index));
+    setEditPhotoPreview(prev => prev.filter((_, i) => i !== index));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -91,6 +147,7 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
       fd.append("hours_worked", form.hours_worked);
       fd.append("progress_percentage", form.progress_percentage);
       if (form.remarks) fd.append("remarks", form.remarks);
+      fd.append("device_time", new Date().toLocaleString());
       workPhotos.forEach(photo => fd.append("work_photos", photo));
 
       const userData = JSON.parse(localStorage.getItem("allure_erp_user") || "{}");
@@ -116,6 +173,78 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
     setSubmitting(false);
   };
 
+  const handleEditSubmit = async (e: React.FormEvent, logId: string) => {
+    e.preventDefault();
+    if (!editForm.task.trim()) { setError("Task description is required"); return; }
+    if (!editForm.hours_worked || parseFloat(editForm.hours_worked) <= 0) { setError("Hours worked must be greater than 0"); return; }
+    const pct = parseInt(editForm.progress_percentage);
+    if (isNaN(pct) || pct < 0 || pct > 100) { setError("Progress must be between 0 and 100"); return; }
+
+    setSubmitting(true);
+    setError("");
+    try {
+      const fd = new FormData();
+      fd.append("task", editForm.task);
+      fd.append("hours_worked", editForm.hours_worked);
+      fd.append("progress_percentage", editForm.progress_percentage);
+      if (editForm.remarks) fd.append("remarks", editForm.remarks);
+      fd.append("device_time", new Date().toLocaleString());
+      editPhotos.forEach(photo => fd.append("work_photos", photo));
+
+      const userData = JSON.parse(localStorage.getItem("allure_erp_user") || "{}");
+      const res = await fetch(`${API_BASE_URL}/api/projects/${selectedProject}/daily-logs/${logId}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${userData.token || token}` },
+        body: fd
+      });
+      const result = await res.json();
+      if (res.ok) {
+        setSuccess("Daily progress log updated successfully!");
+        setEditingLogId(null);
+        setEditPhotos([]);
+        setEditPhotoPreview([]);
+        await loadReport();
+        setTimeout(() => setSuccess(""), 4000);
+      } else {
+        setError(result.detail || "Failed to update log");
+      }
+    } catch (e: any) {
+      setError(e.message || "Failed to update");
+    }
+    setSubmitting(false);
+  };
+
+  const handleDeleteLog = async (logId: string) => {
+    if (!confirm("Are you sure you want to delete this work log? This action is immutable and will be logged.")) return;
+    setError("");
+    try {
+      await apiRequest(`/api/projects/${selectedProject}/daily-logs/${logId}`, {
+        method: "DELETE"
+      });
+      setSuccess("Daily work log deleted");
+      await loadReport();
+      setTimeout(() => setSuccess(""), 3000);
+    } catch (e: any) {
+      setError(e.message || "Failed to delete log");
+    }
+  };
+
+  const handleReviewSubmit = async (logId: string, status: "approved" | "rejected") => {
+    setError("");
+    try {
+      await apiRequest(`/api/projects/${selectedProject}/daily-logs/${logId}/approve`, {
+        method: "PUT",
+        body: JSON.stringify({ status, comment: reviewComment })
+      });
+      setSuccess(`Work log ${status} successfully!`);
+      setReviewComment("");
+      await loadReport();
+      setTimeout(() => setSuccess(""), 3000);
+    } catch (e: any) {
+      setError(e.message || "Failed to submit review");
+    }
+  };
+
   const updateCompletion = async (pct: number) => {
     if (!selectedProject) return;
     try {
@@ -138,6 +267,7 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
     on_hold: "bg-slate-100 text-slate-600",
     delayed: "bg-red-100 text-red-700",
   }[s] || "bg-slate-100 text-slate-600");
+
 
   return (
     <div className="space-y-6">
@@ -360,8 +490,9 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
 
                   {/* Daily Logs Timeline */}
                   <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700 overflow-hidden">
-                    <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-700">
+                    <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center">
                       <h3 className="font-semibold text-slate-800 dark:text-slate-100">Progress Timeline</h3>
+                      <span className="text-xs text-slate-400 italic">Auto-syncs in real-time</span>
                     </div>
                     <div className="divide-y divide-slate-100 dark:divide-slate-700">
                       {logs.length === 0 ? (
@@ -370,9 +501,20 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
                         <div key={log.id} className="px-6 py-4">
                           <div className="flex items-start justify-between cursor-pointer" onClick={() => setExpandedLog(expandedLog === log.id ? null : log.id)}>
                             <div className="flex items-start gap-3">
-                              <div className="w-2 h-2 rounded-full bg-violet-500 mt-2 flex-shrink-0" />
+                              <div className={`w-2 h-2 rounded-full mt-2 flex-shrink-0 ${
+                                log.approval_status === "approved" ? "bg-emerald-500" :
+                                log.approval_status === "rejected" ? "bg-red-500" : "bg-amber-400"
+                              }`} />
                               <div>
-                                <div className="font-medium text-slate-800 dark:text-slate-100 text-sm">{log.task}</div>
+                                <div className="font-medium text-slate-800 dark:text-slate-100 text-sm flex items-center gap-2 flex-wrap">
+                                  <span>{log.task}</span>
+                                  <span className={`inline-flex px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide ${
+                                    log.approval_status === "approved" ? "bg-emerald-100 text-emerald-700" :
+                                    log.approval_status === "rejected" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
+                                  }`}>
+                                    {log.approval_status || "pending"}
+                                  </span>
+                                </div>
                                 <div className="flex items-center gap-3 mt-1 text-xs text-slate-400">
                                   <span>{log.log_date}</span>
                                   <span>•</span>
@@ -389,19 +531,139 @@ export default function ProjectProgress({ token, role }: ProjectProgressProps) {
                             </button>
                           </div>
                           {expandedLog === log.id && (
-                            <div className="mt-3 ml-5 space-y-2">
-                              {log.remarks && (
-                                <p className="text-sm text-slate-500 bg-slate-50 dark:bg-slate-700/50 rounded-xl p-3">{log.remarks}</p>
-                              )}
-                              {log.work_photos?.length > 0 && (
-                                <div className="flex gap-3 flex-wrap mt-2">
-                                  {log.work_photos.map((p: string, idx: number) => (
-                                    <a key={idx} href={`${API_BASE_URL}${p}`} target="_blank" rel="noreferrer">
-                                      <img src={`${API_BASE_URL}${p}`} alt={`work-${idx}`}
-                                        className="w-24 h-24 object-cover rounded-xl border border-slate-200 hover:opacity-80 transition-opacity" />
-                                    </a>
-                                  ))}
-                                </div>
+                            <div className="mt-3 ml-5 space-y-3 p-4 bg-slate-50 dark:bg-slate-700/30 rounded-2xl border border-slate-100 dark:border-slate-700">
+                              {/* Display approval badge */}
+                              <div className="flex items-center justify-between pb-2 border-b border-slate-150 dark:border-slate-700/50">
+                                <span className="text-xs text-slate-500 font-medium">Approval Status</span>
+                                <span className={`px-2 py-0.5 rounded-full text-xs font-semibold uppercase ${
+                                  log.approval_status === "approved" ? "bg-emerald-100 text-emerald-700" :
+                                  log.approval_status === "rejected" ? "bg-red-100 text-red-700" :
+                                  "bg-amber-100 text-amber-700"
+                                }`}>
+                                  {log.approval_status || "pending"}
+                                </span>
+                              </div>
+
+                              {/* Edit Mode Inline Form */}
+                              {editingLogId === log.id ? (
+                                <form onSubmit={(e) => handleEditSubmit(e, log.id)} className="space-y-3 mt-2">
+                                  <div>
+                                    <label className="block text-xs font-semibold text-slate-500 mb-1">Task description *</label>
+                                    <input type="text" value={editForm.task} onChange={e => setEditForm(f => ({ ...f, task: e.target.value }))}
+                                      className="w-full border border-slate-200 dark:border-slate-650 rounded-xl px-3 py-2 text-xs bg-white dark:bg-slate-900 focus:ring-1 focus:ring-violet-500 focus:outline-none" />
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                      <label className="block text-xs font-semibold text-slate-500 mb-1">Hours worked *</label>
+                                      <input type="number" step="0.5" value={editForm.hours_worked} onChange={e => setEditForm(f => ({ ...f, hours_worked: e.target.value }))}
+                                        className="w-full border border-slate-200 dark:border-slate-650 rounded-xl px-3 py-2 text-xs bg-white dark:bg-slate-900 focus:ring-1 focus:ring-violet-500 focus:outline-none" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs font-semibold text-slate-500 mb-1">Progress % (0-100) *</label>
+                                      <input type="number" min="0" max="100" value={editForm.progress_percentage} onChange={e => setEditForm(f => ({ ...f, progress_percentage: e.target.value }))}
+                                        className="w-full border border-slate-200 dark:border-slate-650 rounded-xl px-3 py-2 text-xs bg-white dark:bg-slate-900 focus:ring-1 focus:ring-violet-500 focus:outline-none" />
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <label className="block text-xs font-semibold text-slate-500 mb-1">Remarks</label>
+                                    <textarea value={editForm.remarks || ""} onChange={e => setEditForm(f => ({ ...f, remarks: e.target.value }))}
+                                      rows={2} className="w-full border border-slate-200 dark:border-slate-650 rounded-xl px-3 py-2 text-xs bg-white dark:bg-slate-900 focus:ring-1 focus:ring-violet-500 focus:outline-none resize-none" />
+                                  </div>
+                                  
+                                  {/* Add photos */}
+                                  <div>
+                                    <label className="block text-xs font-semibold text-slate-500 mb-1">Add Work Photos (Optional)</label>
+                                    <input type="file" accept="image/*" multiple onChange={handleEditPhotoChange} className="text-xs mt-1 block" />
+                                    {editPhotoPreview.length > 0 && (
+                                      <div className="flex gap-2 mt-2 flex-wrap">
+                                        {editPhotoPreview.map((src, idx) => (
+                                          <div key={idx} className="relative group">
+                                            <img src={src} alt="preview" className="w-12 h-12 object-cover rounded border" />
+                                            <button type="button" onClick={() => removeEditPhoto(idx)}
+                                              className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white rounded-full text-[9px] flex items-center justify-center">✕</button>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="flex gap-2 justify-end pt-1">
+                                    <button type="button" onClick={() => setEditingLogId(null)}
+                                      className="px-3 py-1.5 bg-slate-200 text-slate-700 rounded-xl text-xs hover:bg-slate-300 transition-colors">Cancel</button>
+                                    <button type="submit" disabled={submitting}
+                                      className="px-3 py-1.5 bg-violet-600 text-white rounded-xl text-xs hover:bg-violet-700 disabled:opacity-50 transition-colors">Save Changes</button>
+                                  </div>
+                                </form>
+                              ) : (
+                                <>
+                                  {/* Remarks display */}
+                                  {log.remarks && (
+                                    <div>
+                                      <span className="text-[10px] uppercase font-bold text-slate-400">Worker Remarks</span>
+                                      <p className="text-sm text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800 rounded-xl p-3 border border-slate-100 dark:border-slate-700 mt-1">{log.remarks}</p>
+                                    </div>
+                                  )}
+
+                                  {/* Photos display */}
+                                  {log.work_photos?.length > 0 && (
+                                    <div>
+                                      <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Uploaded work photos</span>
+                                      <div className="flex gap-3 flex-wrap">
+                                        {log.work_photos.map((p: string, idx: number) => (
+                                          <a key={idx} href={`${API_BASE_URL}${p}`} target="_blank" rel="noreferrer">
+                                            <img src={`${API_BASE_URL}${p}`} alt={`work-${idx}`}
+                                              className="w-20 h-20 object-cover rounded-xl border border-slate-200 hover:opacity-80 transition-opacity" />
+                                          </a>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Supervisor Comments display */}
+                                  {log.supervisor_comment && (
+                                    <div className="p-3 bg-amber-50/50 dark:bg-amber-900/10 border border-amber-200/40 rounded-xl mt-2">
+                                      <span className="text-[10px] uppercase font-bold text-amber-700 dark:text-amber-500 block">Supervisor Comment</span>
+                                      <p className="text-xs text-slate-700 dark:text-slate-300 mt-1 italic">"{log.supervisor_comment}"</p>
+                                    </div>
+                                  )}
+
+                                  {/* Action Buttons for Employees (Edit / Delete own) */}
+                                  {(log.user_id === currentUserId || role === "admin") && (
+                                    <div className="flex gap-2 justify-end pt-2 border-t border-slate-150 dark:border-slate-700/40">
+                                      <button onClick={() => {
+                                        setEditingLogId(log.id);
+                                        setEditForm({
+                                          task: log.task,
+                                          hours_worked: String(log.hours_worked),
+                                          progress_percentage: String(log.progress_percentage),
+                                          remarks: log.remarks || "",
+                                        });
+                                      }} className="px-3.5 py-1.5 bg-slate-150 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-650 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-semibold border border-slate-200/40 transition-colors">
+                                        Edit Log
+                                      </button>
+                                      <button onClick={() => handleDeleteLog(log.id)} className="px-3.5 py-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-950/20 dark:hover:bg-red-950/40 text-red-600 rounded-xl text-xs font-semibold border border-red-200/30 transition-colors">
+                                        Delete
+                                      </button>
+                                    </div>
+                                  )}
+
+                                  {/* Supervisor Review Action Panel */}
+                                  {isManager(role) && log.approval_status === "pending" && (
+                                    <div className="pt-3 border-t border-slate-150 dark:border-slate-700 mt-3 space-y-2">
+                                      <span className="text-[10px] uppercase font-bold text-slate-400 block">Supervisor Review Action</span>
+                                      <textarea placeholder="Write review feedback or comment..." value={reviewComment} onChange={e => setReviewComment(e.target.value)}
+                                        rows={2} className="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs bg-white dark:bg-slate-900 focus:ring-1 focus:ring-violet-500 focus:outline-none resize-none" />
+                                      <div className="flex gap-2 justify-end">
+                                        <button onClick={() => handleReviewSubmit(log.id, "rejected")} className="px-3 py-1.5 bg-red-600 hover:bg-red-750 text-white rounded-xl text-xs font-semibold transition-colors">
+                                          Reject Work Log
+                                        </button>
+                                        <button onClick={() => handleReviewSubmit(log.id, "approved")} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold transition-colors">
+                                          Approve
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
+                                </>
                               )}
                             </div>
                           )}
