@@ -109,19 +109,47 @@ try:
     with engine.connect() as conn:
         dialect_name = engine.dialect.name
         if dialect_name == "sqlite":
-            try:
-                conn.execute(text("ALTER TABLE projects ADD COLUMN department TEXT"))
-                conn.commit()
-            except Exception:
-                pass
+            alters = [
+                "ALTER TABLE projects ADD COLUMN department TEXT",
+                "ALTER TABLE projects ADD COLUMN completion_percentage INTEGER DEFAULT 0",
+                "ALTER TABLE projects ADD COLUMN version_id INTEGER DEFAULT 1",
+                "ALTER TABLE project_bom ADD COLUMN consumed_quantity FLOAT DEFAULT 0.0",
+                "ALTER TABLE project_daily_logs ADD COLUMN inventory_id VARCHAR(36)",
+                "ALTER TABLE project_daily_logs ADD COLUMN quantity_used FLOAT DEFAULT 0.0",
+                "ALTER TABLE project_daily_logs ADD COLUMN approval_status VARCHAR(20) DEFAULT 'pending'",
+                "ALTER TABLE project_daily_logs ADD COLUMN supervisor_comment TEXT",
+                "ALTER TABLE project_daily_logs ADD COLUMN approved_by VARCHAR(36)",
+                "ALTER TABLE project_daily_logs ADD COLUMN approved_at TIMESTAMP",
+                "ALTER TABLE project_daily_logs ADD COLUMN version_id INTEGER DEFAULT 1",
+                "ALTER TABLE audit_logs ADD COLUMN images TEXT",
+                "ALTER TABLE audit_logs ADD COLUMN documents TEXT"
+            ]
         else:
+            alters = [
+                "ALTER TABLE projects ADD COLUMN IF NOT EXISTS department VARCHAR(100)",
+                "ALTER TABLE projects ADD COLUMN IF NOT EXISTS completion_percentage INTEGER DEFAULT 0",
+                "ALTER TABLE projects ADD COLUMN IF NOT EXISTS version_id INTEGER DEFAULT 1",
+                "ALTER TABLE project_bom ADD COLUMN IF NOT EXISTS consumed_quantity FLOAT DEFAULT 0.0",
+                "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS inventory_id VARCHAR(36)",
+                "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS quantity_used FLOAT DEFAULT 0.0",
+                "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) DEFAULT 'pending'",
+                "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS supervisor_comment TEXT",
+                "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS approved_by VARCHAR(36)",
+                "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP",
+                "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS version_id INTEGER DEFAULT 1",
+                "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS images TEXT",
+                "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS documents TEXT"
+            ]
+            
+        for statement in alters:
             try:
-                conn.execute(text("ALTER TABLE projects ADD COLUMN IF NOT EXISTS department VARCHAR(100)"))
+                conn.execute(text(statement))
                 conn.commit()
+                print(f"[Migration] Executed: {statement}")
             except Exception:
                 pass
-except Exception:
-    pass
+except Exception as e:
+    print(f"Error applying migrations on startup: {e}")
 
 # Auto-seed database if no users exist (useful for first-time deploy or empty SQLite DB)
 from database import SessionLocal
