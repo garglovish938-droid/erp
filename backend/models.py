@@ -603,6 +603,7 @@ class AuditLog(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="SET NULL"), nullable=True)
     action = Column(String(100), nullable=False)
     details = Column(Text, nullable=True)
     old_value = Column(Text, nullable=True)
@@ -613,8 +614,29 @@ class AuditLog(Base):
     device_time = Column(String(50), nullable=True)
     images = Column(Text, nullable=True)
     documents = Column(Text, nullable=True)
+    reason = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     user = relationship("User")
     project = relationship("Project")
+    inventory = relationship("InventoryItem")
+
+
+class ProjectMaterialHistory(Base):
+    __tablename__ = "project_material_history"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    username = Column(String(100), nullable=True)
+    action = Column(String(50), nullable=False)  # used, returned, transferred_in, transferred_out
+    quantity = Column(Float, nullable=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    project = relationship("Project")
+    inventory = relationship("InventoryItem")
+    user = relationship("User")
+
 

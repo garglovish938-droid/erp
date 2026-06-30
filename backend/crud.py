@@ -1806,3 +1806,580 @@ def delete_daily_expense(db: Session, expense_id: str, user_id: str) -> Optional
     db.commit()
     log_detailed_activity(db, user_id, "DailyExpense", "delete", expense_id, f"Soft-deleted expense {db_exp.expense_id}")
     return db_exp
+
+
+# --- PROJECT MATERIALS & TRANSFERS CRUD (NEW) ---
+
+from models import ProjectMaterialHistory, AuditLog, ProjectBOM, StockTransaction
+
+def log_audit(
+    db: Session,
+    user_id: Optional[str],
+    project_id: Optional[str],
+    inventory_id: Optional[str],
+    action: str,
+    details: Optional[str],
+    old_value: Optional[str] = None,
+    new_value: Optional[str] = None,
+    reason: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    device: Optional[str] = None,
+    browser: Optional[str] = None,
+    device_time: Optional[str] = None
+) -> AuditLog:
+    db_log = AuditLog(
+        user_id=user_id,
+        project_id=project_id,
+        inventory_id=inventory_id,
+        action=action,
+        details=details,
+        old_value=old_value,
+        new_value=new_value,
+        reason=reason,
+        ip_address=ip_address,
+        device=device,
+        browser=browser,
+        device_time=device_time
+    )
+    db.add(db_log)
+    db.commit()
+    db.refresh(db_log)
+    return db_log
+
+def get_project_material_history(db: Session, project_id: str) -> List[ProjectMaterialHistory]:
+    return db.query(ProjectMaterialHistory).filter(ProjectMaterialHistory.project_id == project_id).order_by(ProjectMaterialHistory.created_at.desc()).all()
+
+def record_material_usage(
+    db: Session,
+    project_id: str,
+    inventory_id: str,
+    user_id: str,
+    action: str,
+    quantity: float,
+    notes: Optional[str] = None,
+    reason: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    device: Optional[str] = None,
+    browser: Optional[str] = None
+) -> ProjectMaterialHistory:
+    inventory = db.query(InventoryItem).filter(InventoryItem.id == inventory_id, InventoryItem.is_deleted == False).first()
+    if not inventory:
+        raise ValueError("Inventory item not found")
+
+    project = db.query(Project).filter(Project.id == project_id, Project.is_deleted == False).first()
+    if not project:
+        raise ValueError("Project not found")
+
+    bom = db.query(ProjectBOM).filter(ProjectBOM.project_id == project_id, ProjectBOM.inventory_id == inventory_id).first()
+    if not bom:
+        bom = ProjectBOM(
+            project_id=project_id,
+            inventory_id=inventory_id,
+            required_quantity=0.0,
+            used_quantity=0.0,
+            consumed_quantity=0.0,
+            status="pending"
+        )
+        db.add(bom)
+        db.flush()
+
+    old_inv_qty = inventory.quantity
+    old_bom_qty = bom.used_quantity
+
+    user = db.query(User).filter(User.id == user_id).first()
+    username = user.full_name if user else "Employee"
+
+    if action == "used":
+        if inventory.quantity < quantity:
+            raise ValueError(f"Insufficient inventory stock. Available: {inventory.quantity} {inventory.unit}")
+        
+        inventory.quantity -= quantity
+        bom.used_quantity += quantity
+        bom.consumed_quantity += quantity # Keep consumed in sync for standard cost engine compatibility
+        
+        # Log stock transaction
+        tx = StockTransaction(
+            inventory_id=inventory_id,
+            transaction_type="out",
+            quantity=-quantity,
+            project_id=project_id,
+            user_id=user_id,
+            notes=f"Used in Project: {project.name}. Notes: {notes or ''}"
+        )
+        db.add(tx)
+        
+    elif action == "returned":
+        if bom.used_quantity < quantity:
+            raise ValueError(f"Cannot return more than used quantity. Assigned used: {bom.used_quantity} {inventory.unit}")
+        
+        inventory.quantity += quantity
+        bom.used_quantity -= quantity
+        bom.consumed_quantity = max(0.0, bom.consumed_quantity - quantity)
+        
+        # Log stock transaction
+        tx = StockTransaction(
+            inventory_id=inventory_id,
+            transaction_type="return",
+            quantity=quantity,
+            project_id=project_id,
+            user_id=user_id,
+            notes=f"Returned from Project: {project.name}. Notes: {notes or ''}"
+        )
+        db.add(tx)
+        
+    else:
+        raise ValueError("Invalid action. Must be 'used' or 'returned'")
+
+    # Update BOM status
+    if bom.required_quantity > 0:
+        if bom.used_quantity >= bom.required_quantity:
+            bom.status = "fulfilled"
+        elif bom.used_quantity > 0:
+            bom.status = "partial"
+        else:
+            bom.status = "pending"
+    else:
+        bom.status = "fulfilled" if bom.used_quantity > 0 else "pending"
+
+    # Create Material History Log
+    history = ProjectMaterialHistory(
+        project_id=project_id,
+        inventory_id=inventory_id,
+        user_id=user_id,
+        username=username,
+        action=action,
+        quantity=quantity,
+        notes=notes
+    )
+    db.add(history)
+    db.flush()
+
+    # Log in Audit Log
+    log_audit(
+        db=db,
+        user_id=user_id,
+        project_id=project_id,
+        inventory_id=inventory_id,
+        action=f"material_{action}",
+        details=f"Project: {project.name} | Material: {inventory.name} | Quantity: {quantity} {inventory.unit}",
+        old_value=f"Inventory Qty: {old_inv_qty} | BOM Used: {old_bom_qty}",
+        new_value=f"Inventory Qty: {inventory.quantity} | BOM Used: {bom.used_quantity}",
+        reason=reason or notes,
+        ip_address=ip_address,
+        device=device,
+        browser=browser
+    )
+
+    db.commit()
+    db.refresh(history)
+    return history
+
+def update_project_material_history(
+    db: Session,
+    project_id: str,
+    history_id: str,
+    quantity: float,
+    action: str,
+    notes: Optional[str] = None,
+    reason: Optional[str] = None,
+    user_id: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    device: Optional[str] = None,
+    browser: Optional[str] = None
+) -> Optional[ProjectMaterialHistory]:
+    history = db.query(ProjectMaterialHistory).filter(ProjectMaterialHistory.id == history_id, ProjectMaterialHistory.project_id == project_id).first()
+    if not history:
+        return None
+
+    inventory = db.query(InventoryItem).filter(InventoryItem.id == history.inventory_id).first()
+    bom = db.query(ProjectBOM).filter(ProjectBOM.project_id == project_id, ProjectBOM.inventory_id == history.inventory_id).first()
+    if not inventory or not bom:
+        raise ValueError("Linked material or BOM not found")
+
+    old_hist_qty = history.quantity
+    old_hist_action = history.action
+
+    # 1. Revert the old action
+    if old_hist_action == "used":
+        inventory.quantity += old_hist_qty
+        bom.used_quantity -= old_hist_qty
+        bom.consumed_quantity = max(0.0, bom.consumed_quantity - old_hist_qty)
+    elif old_hist_action == "returned":
+        inventory.quantity -= old_hist_qty
+        bom.used_quantity += old_hist_qty
+        bom.consumed_quantity += old_hist_qty
+
+    # 2. Apply the new action
+    if action == "used":
+        if inventory.quantity < quantity:
+            # Revert the rollback to prevent database drift
+            if old_hist_action == "used":
+                inventory.quantity -= old_hist_qty
+                bom.used_quantity += old_hist_qty
+                bom.consumed_quantity += old_hist_qty
+            elif old_hist_action == "returned":
+                inventory.quantity += old_hist_qty
+                bom.used_quantity -= old_hist_qty
+                bom.consumed_quantity = max(0.0, bom.consumed_quantity - old_hist_qty)
+            raise ValueError(f"Insufficient inventory stock to update. Available: {inventory.quantity} {inventory.unit}")
+        
+        inventory.quantity -= quantity
+        bom.used_quantity += quantity
+        bom.consumed_quantity += quantity
+    elif action == "returned":
+        if bom.used_quantity < quantity:
+            # Revert the rollback
+            if old_hist_action == "used":
+                inventory.quantity -= old_hist_qty
+                bom.used_quantity += old_hist_qty
+                bom.consumed_quantity += old_hist_qty
+            elif old_hist_action == "returned":
+                inventory.quantity += old_hist_qty
+                bom.used_quantity -= old_hist_qty
+                bom.consumed_quantity = max(0.0, bom.consumed_quantity - old_hist_qty)
+            raise ValueError(f"Cannot update return. Project used quantity is only: {bom.used_quantity} {inventory.unit}")
+        
+        inventory.quantity += quantity
+        bom.used_quantity -= quantity
+        bom.consumed_quantity = max(0.0, bom.consumed_quantity - quantity)
+    else:
+        raise ValueError("Action must be 'used' or 'returned'")
+
+    # Update BOM status
+    if bom.required_quantity > 0:
+        if bom.used_quantity >= bom.required_quantity:
+            bom.status = "fulfilled"
+        elif bom.used_quantity > 0:
+            bom.status = "partial"
+        else:
+            bom.status = "pending"
+    else:
+        bom.status = "fulfilled" if bom.used_quantity > 0 else "pending"
+
+    # Update log details
+    history.quantity = quantity
+    history.action = action
+    history.notes = notes
+
+    # Log in Audit Log
+    log_audit(
+        db=db,
+        user_id=user_id,
+        project_id=project_id,
+        inventory_id=history.inventory_id,
+        action="update_material_history",
+        details=f"Admin updated history log. Action: {old_hist_action}->{action} | Qty: {old_hist_qty}->{quantity}",
+        old_value=f"Action: {old_hist_action} | Qty: {old_hist_qty}",
+        new_value=f"Action: {action} | Qty: {quantity}",
+        reason=reason or notes,
+        ip_address=ip_address,
+        device=device,
+        browser=browser
+    )
+
+    db.commit()
+    db.refresh(history)
+    return history
+
+def delete_project_material_history(
+    db: Session,
+    project_id: str,
+    history_id: str,
+    reason: Optional[str] = None,
+    user_id: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    device: Optional[str] = None,
+    browser: Optional[str] = None
+) -> bool:
+    history = db.query(ProjectMaterialHistory).filter(ProjectMaterialHistory.id == history_id, ProjectMaterialHistory.project_id == project_id).first()
+    if not history:
+        return False
+
+    inventory = db.query(InventoryItem).filter(InventoryItem.id == history.inventory_id).first()
+    bom = db.query(ProjectBOM).filter(ProjectBOM.project_id == project_id, ProjectBOM.inventory_id == history.inventory_id).first()
+    if not inventory or not bom:
+        raise ValueError("Linked material or BOM not found")
+
+    old_hist_qty = history.quantity
+    old_hist_action = history.action
+
+    # Revert the old action
+    if old_hist_action == "used":
+        inventory.quantity += old_hist_qty
+        bom.used_quantity -= old_hist_qty
+        bom.consumed_quantity = max(0.0, bom.consumed_quantity - old_hist_qty)
+    elif old_hist_action == "returned":
+        if inventory.quantity < old_hist_qty:
+            raise ValueError(f"Cannot delete return. Deleting this return would deduct {old_hist_qty} from inventory, but current stock is only {inventory.quantity}.")
+        inventory.quantity -= old_hist_qty
+        bom.used_quantity += old_hist_qty
+        bom.consumed_quantity += old_hist_qty
+
+    # Update BOM status
+    if bom.required_quantity > 0:
+        if bom.used_quantity >= bom.required_quantity:
+            bom.status = "fulfilled"
+        elif bom.used_quantity > 0:
+            bom.status = "partial"
+        else:
+            bom.status = "pending"
+    else:
+        bom.status = "fulfilled" if bom.used_quantity > 0 else "pending"
+
+    # Delete history record
+    db.delete(history)
+
+    # Log in Audit Log
+    log_audit(
+        db=db,
+        user_id=user_id,
+        project_id=project_id,
+        inventory_id=history.inventory_id,
+        action="delete_material_history",
+        details=f"Admin deleted history log. Action: {old_hist_action} | Qty: {old_hist_qty}",
+        old_value=f"Action: {old_hist_action} | Qty: {old_hist_qty}",
+        new_value="Deleted",
+        reason=reason,
+        ip_address=ip_address,
+        device=device,
+        browser=browser
+    )
+
+    db.commit()
+    return True
+
+def transfer_project_material(
+    db: Session,
+    from_project_id: str,
+    to_project_id: str,
+    inventory_id: str,
+    quantity: float,
+    user_id: str,
+    notes: Optional[str] = None,
+    reason: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    device: Optional[str] = None,
+    browser: Optional[str] = None
+) -> bool:
+    if from_project_id == to_project_id:
+        raise ValueError("Cannot transfer within the same project")
+
+    from_project = db.query(Project).filter(Project.id == from_project_id, Project.is_deleted == False).first()
+    to_project = db.query(Project).filter(Project.id == to_project_id, Project.is_deleted == False).first()
+    if not from_project or not to_project:
+        raise ValueError("Source or destination project not found")
+
+    inventory = db.query(InventoryItem).filter(InventoryItem.id == inventory_id, InventoryItem.is_deleted == False).first()
+    if not inventory:
+        raise ValueError("Inventory item not found")
+
+    bom_from = db.query(ProjectBOM).filter(ProjectBOM.project_id == from_project_id, ProjectBOM.inventory_id == inventory_id).first()
+    if not bom_from or bom_from.used_quantity < quantity:
+        raise ValueError(f"Insufficient allocated quantity in source project. Available: {bom_from.used_quantity if bom_from else 0} {inventory.unit}")
+
+    bom_to = db.query(ProjectBOM).filter(ProjectBOM.project_id == to_project_id, ProjectBOM.inventory_id == inventory_id).first()
+    if not bom_to:
+        bom_to = ProjectBOM(
+            project_id=to_project_id,
+            inventory_id=inventory_id,
+            required_quantity=0.0,
+            used_quantity=0.0,
+            consumed_quantity=0.0,
+            status="pending"
+        )
+        db.add(bom_to)
+        db.flush()
+
+    old_from_qty = bom_from.used_quantity
+    old_to_qty = bom_to.used_quantity
+
+    # Perform transfer
+    bom_from.used_quantity -= quantity
+    bom_from.consumed_quantity = max(0.0, bom_from.consumed_quantity - quantity)
+    
+    bom_to.used_quantity += quantity
+    bom_to.consumed_quantity += quantity
+
+    # Update status for source project BOM
+    if bom_from.required_quantity > 0:
+        if bom_from.used_quantity >= bom_from.required_quantity:
+            bom_from.status = "fulfilled"
+        elif bom_from.used_quantity > 0:
+            bom_from.status = "partial"
+        else:
+            bom_from.status = "pending"
+    else:
+        bom_from.status = "fulfilled" if bom_from.used_quantity > 0 else "pending"
+
+    # Update status for destination project BOM
+    if bom_to.required_quantity > 0:
+        if bom_to.used_quantity >= bom_to.required_quantity:
+            bom_to.status = "fulfilled"
+        elif bom_to.used_quantity > 0:
+            bom_to.status = "partial"
+        else:
+            bom_to.status = "pending"
+    else:
+        bom_to.status = "fulfilled" if bom_to.used_quantity > 0 else "pending"
+
+    user = db.query(User).filter(User.id == user_id).first()
+    username = user.full_name if user else "Employee"
+
+    # Add material history log in source project
+    history_from = ProjectMaterialHistory(
+        project_id=from_project_id,
+        inventory_id=inventory_id,
+        user_id=user_id,
+        username=username,
+        action="transferred_out",
+        quantity=quantity,
+        notes=f"Transferred to Project: {to_project.name}. Notes: {notes or ''}"
+    )
+    db.add(history_from)
+
+    # Add material history log in destination project
+    history_to = ProjectMaterialHistory(
+        project_id=to_project_id,
+        inventory_id=inventory_id,
+        user_id=user_id,
+        username=username,
+        action="transferred_in",
+        quantity=quantity,
+        notes=f"Transferred from Project: {from_project.name}. Notes: {notes or ''}"
+    )
+    db.add(history_to)
+
+    # Log in Audit Log
+    log_audit(
+        db=db,
+        user_id=user_id,
+        project_id=from_project_id,
+        inventory_id=inventory_id,
+        action="material_transfer",
+        details=f"Transferred {quantity} {inventory.unit} of {inventory.name} from Project {from_project.name} to {to_project.name}",
+        old_value=f"From BOM: {old_from_qty} | To BOM: {old_to_qty}",
+        new_value=f"From BOM: {bom_from.used_quantity} | To BOM: {bom_to.used_quantity}",
+        reason=reason or notes,
+        ip_address=ip_address,
+        device=device,
+        browser=browser
+    )
+
+    db.commit()
+    return True
+
+def add_new_material_to_project(
+    db: Session,
+    project_id: str,
+    item_in: NewMaterialAndProjectUsageRequest,
+    user_id: str,
+    ip_address: Optional[str] = None,
+    device: Optional[str] = None,
+    browser: Optional[str] = None
+) -> InventoryItem:
+    # 1. Create a new Inventory Item
+    # Ensure SKU and Barcode are unique
+    existing_sku = db.query(InventoryItem).filter(InventoryItem.sku == item_in.sku).first()
+    if existing_sku:
+        raise ValueError(f"Material with SKU '{item_in.sku}' already exists.")
+
+    barcode_val = item_in.barcode
+    if not barcode_val:
+        # Generate sequence barcode
+        import random
+        barcode_val = f"BC{random.randint(100000, 999999)}"
+
+    existing_barcode = db.query(InventoryItem).filter(InventoryItem.barcode == barcode_val).first()
+    if existing_barcode:
+        barcode_val = f"BC{random.randint(100000, 999999)}"
+
+    # We set initial quantity to 0 because we will record restock then deduct
+    db_item = InventoryItem(
+        name=item_in.name,
+        category_id=item_in.category_id,
+        sku=item_in.sku,
+        barcode=barcode_val,
+        brand=item_in.brand,
+        size_variant=item_in.size_variant,
+        quantity=item_in.quantity,  # set initial quantity
+        unit=item_in.unit,
+        minimum_stock_level=item_in.minimum_stock_level,
+        unit_cost=item_in.unit_cost
+    )
+    db.add(db_item)
+    db.flush()
+
+    project = db.query(Project).filter(Project.id == project_id, Project.is_deleted == False).first()
+    if not project:
+        raise ValueError("Project not found")
+
+    # Add Stock Restock transaction
+    tx_in = StockTransaction(
+        inventory_id=db_item.id,
+        transaction_type="in",
+        quantity=item_in.quantity,
+        user_id=user_id,
+        notes=f"Initial stock creation for manual project assignment."
+    )
+    db.add(tx_in)
+
+    # Deduced for project BOM
+    bom = ProjectBOM(
+        project_id=project_id,
+        inventory_id=db_item.id,
+        required_quantity=0.0,
+        used_quantity=item_in.quantity,
+        consumed_quantity=item_in.quantity,
+        status="fulfilled"
+    )
+    db.add(bom)
+
+    # Deduct stock
+    db_item.quantity = 0.0
+
+    # Add stock out transaction
+    tx_out = StockTransaction(
+        inventory_id=db_item.id,
+        transaction_type="out",
+        quantity=-item_in.quantity,
+        project_id=project_id,
+        user_id=user_id,
+        notes=f"Allocated to Project: {project.name}"
+    )
+    db.add(tx_out)
+
+    user = db.query(User).filter(User.id == user_id).first()
+    username = user.full_name if user else "Employee"
+
+    # Add material history log
+    history = ProjectMaterialHistory(
+        project_id=project_id,
+        inventory_id=db_item.id,
+        user_id=user_id,
+        username=username,
+        action="used",
+        quantity=item_in.quantity,
+        notes=f"Created new material and assigned to project. Notes: {item_in.notes or ''}"
+    )
+    db.add(history)
+
+    # Log in Audit Log
+    log_audit(
+        db=db,
+        user_id=user_id,
+        project_id=project_id,
+        inventory_id=db_item.id,
+        action="create_and_use_material",
+        details=f"Created new inventory item {db_item.name} ({db_item.sku}) and assigned {item_in.quantity} {db_item.unit} to project {project.name}",
+        old_value="None",
+        new_value=f"Inventory Qty: 0.0 | Project BOM Used: {item_in.quantity}",
+        reason=item_in.notes,
+        ip_address=ip_address,
+        device=device,
+        browser=browser
+    )
+
+    db.commit()
+    db.refresh(db_item)
+    return db_item
+

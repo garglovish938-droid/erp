@@ -905,6 +905,7 @@ class AuditLogResponse(BaseSchema):
     id: str
     user_id: Optional[str]
     project_id: Optional[str]
+    inventory_id: Optional[str] = None
     action: str
     details: Optional[str]
     old_value: Optional[str]
@@ -915,5 +916,78 @@ class AuditLogResponse(BaseSchema):
     device_time: Optional[str]
     images: Optional[str] = None
     documents: Optional[str] = None
+    reason: Optional[str] = None
     created_at: datetime
     user: Optional[UserResponse] = None
+    inventory: Optional[InventoryItemResponse] = None
+
+
+class ProjectMaterialHistoryResponse(BaseSchema):
+    id: str
+    project_id: str
+    inventory_id: str
+    user_id: Optional[str]
+    username: Optional[str]
+    action: str
+    quantity: float
+    notes: Optional[str]
+    created_at: datetime
+    inventory: Optional[InventoryItemResponse] = None
+
+
+class MaterialUseRequest(BaseModel):
+    inventory_id: str
+    quantity: float
+    action: str  # 'used' or 'returned'
+    notes: Optional[str] = None
+
+    @field_validator('quantity')
+    @classmethod
+    def validate_positive_quantity(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("Quantity must be greater than 0")
+        return v
+
+    @field_validator('action')
+    @classmethod
+    def validate_action(cls, v: str) -> str:
+        if v not in ['used', 'returned']:
+            raise ValueError("Action must be 'used' or 'returned'")
+        return v
+
+
+class MaterialTransferRequest(BaseModel):
+    from_project_id: str
+    to_project_id: str
+    inventory_id: str
+    quantity: float
+    notes: Optional[str] = None
+
+    @field_validator('quantity')
+    @classmethod
+    def validate_positive_quantity(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("Quantity must be greater than 0")
+        return v
+
+
+class NewMaterialAndProjectUsageRequest(BaseModel):
+    name: str
+    category_id: Optional[str] = None
+    sku: str
+    barcode: Optional[str] = None
+    brand: Optional[str] = None
+    size_variant: Optional[str] = None
+    unit: str
+    minimum_stock_level: float = 5.0
+    unit_cost: float = 0.0
+    quantity: float  # Quantity to allocate and use
+    notes: Optional[str] = None
+
+    @field_validator('quantity')
+    @classmethod
+    def validate_positive_quantity(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("Quantity must be greater than 0")
+        return v
+

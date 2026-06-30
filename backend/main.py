@@ -1823,6 +1823,139 @@ def unassign_user_from_project(
     return {"status": "success", "message": "User unassigned from project"}
 
 
+# --- PROJECT MATERIALS & TRANSFERS ENDPOINTS ---
+
+@app.post("/api/projects/{project_id}/materials/use", response_model=schemas.ProjectMaterialHistoryResponse)
+def use_or_return_project_material(
+    project_id: str,
+    req_in: schemas.MaterialUseRequest,
+    reason: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    try:
+        history = crud.record_material_usage(
+            db=db,
+            project_id=project_id,
+            inventory_id=req_in.inventory_id,
+            user_id=current_user.id,
+            action=req_in.action,
+            quantity=req_in.quantity,
+            notes=req_in.notes,
+            reason=reason
+        )
+        broadcast_sync({"event": "inventory_change"})
+        broadcast_sync({"event": "project_materials_change"})
+        return history
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/projects/materials/transfer")
+def transfer_material_between_projects(
+    req_in: schemas.MaterialTransferRequest,
+    reason: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    try:
+        success = crud.transfer_project_material(
+            db=db,
+            from_project_id=req_in.from_project_id,
+            to_project_id=req_in.to_project_id,
+            inventory_id=req_in.inventory_id,
+            quantity=req_in.quantity,
+            user_id=current_user.id,
+            notes=req_in.notes,
+            reason=reason
+        )
+        broadcast_sync({"event": "inventory_change"})
+        broadcast_sync({"event": "project_materials_change"})
+        return {"status": "success", "message": "Material transferred successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/projects/{project_id}/materials/add-new", response_model=schemas.InventoryItemResponse)
+def add_new_material_and_use_in_project(
+    project_id: str,
+    req_in: schemas.NewMaterialAndProjectUsageRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_store_or_higher)
+):
+    try:
+        item = crud.add_new_material_to_project(
+            db=db,
+            project_id=project_id,
+            item_in=req_in,
+            user_id=current_user.id
+        )
+        broadcast_sync({"event": "inventory_change"})
+        broadcast_sync({"event": "project_materials_change"})
+        return item
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/projects/{project_id}/materials/history", response_model=List[schemas.ProjectMaterialHistoryResponse])
+def get_project_material_logs(
+    project_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    return crud.get_project_material_history(db=db, project_id=project_id)
+
+@app.put("/api/projects/{project_id}/materials/history/{history_id}", response_model=schemas.ProjectMaterialHistoryResponse)
+def edit_project_material_log(
+    project_id: str,
+    history_id: str,
+    req_in: schemas.MaterialUseRequest,
+    reason: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    try:
+        history = crud.update_project_material_history(
+            db=db,
+            project_id=project_id,
+            history_id=history_id,
+            quantity=req_in.quantity,
+            action=req_in.action,
+            notes=req_in.notes,
+            reason=reason,
+            user_id=current_user.id
+        )
+        if not history:
+            raise HTTPException(status_code=404, detail="Material history record not found")
+        broadcast_sync({"event": "inventory_change"})
+        broadcast_sync({"event": "project_materials_change"})
+        return history
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/api/projects/{project_id}/materials/history/{history_id}")
+def delete_project_material_log(
+    project_id: str,
+    history_id: str,
+    reason: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    try:
+        success = crud.delete_project_material_history(
+            db=db,
+            project_id=project_id,
+            history_id=history_id,
+            reason=reason,
+            user_id=current_user.id
+        )
+        if not success:
+            raise HTTPException(status_code=404, detail="Material history record not found")
+        broadcast_sync({"event": "inventory_change"})
+        broadcast_sync({"event": "project_materials_change"})
+        return {"status": "success", "message": "Material history record deleted"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+
 # --- MATERIAL REQUESTS ---
 @app.get("/api/requests", response_model=List[schemas.MaterialRequestResponse])
 def read_requests(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
@@ -4778,12 +4911,12 @@ def get_project_costing(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Calculate material cost (from BOM consumed quantities)
+    # Calculate material cost (from BOM used quantities)
     material_cost = 0.0
     for bom in project.bom_items:
         inv = db.query(InventoryItem).filter(InventoryItem.id == bom.inventory_id).first()
         if inv:
-            material_cost += (bom.consumed_quantity or 0.0) * (inv.unit_cost or 0.0)
+            material_cost += (bom.used_quantity or 0.0) * (inv.unit_cost or 0.0)
 
     # Calculate labour cost (from daily logs)
     daily_logs = db.query(ProjectDailyLog).filter(ProjectDailyLog.project_id == project_id).all()
@@ -4795,11 +4928,22 @@ def get_project_costing(
             hourly_rate = log.staff.salary / 160.0
         labour_cost += log.hours_worked * hourly_rate
 
-    # Calculate expenses (from daily_expenses table)
-    expenses_list = db.query(DailyExpense).filter(DailyExpense.project_id == project_id).all()
-    expenses_total = sum(exp.amount for exp in expenses_list)
+    # Calculate expenses breakdown (from daily_expenses table)
+    expenses_list = db.query(DailyExpense).filter(DailyExpense.project_id == project_id, DailyExpense.is_deleted == False).all()
+    
+    transport_cost = 0.0
+    misc_cost = 0.0
+    expense_cost = 0.0
+    
+    for exp in expenses_list:
+        if exp.expense_category in ["Transportation Expense", "Shipping Expense", "Fuel Expense"]:
+            transport_cost += exp.amount
+        elif exp.expense_category in ["Miscellaneous Expense"]:
+            misc_cost += exp.amount
+        else:
+            expense_cost += exp.amount
 
-    total_spent = material_cost + labour_cost + expenses_total
+    total_spent = material_cost + labour_cost + expense_cost + misc_cost + transport_cost
     remaining_budget = project.budget - total_spent
     profit_loss = project.budget - total_spent
 
@@ -4808,10 +4952,14 @@ def get_project_costing(
         "material_cost": round(material_cost, 2),
         "labour_cost": round(labour_cost, 2),
         "purchase_cost": 0.0,
-        "expenses": round(expenses_total, 2),
+        "expenses": round(expense_cost, 2),
+        "transport_cost": round(transport_cost, 2),
+        "misc_cost": round(misc_cost, 2),
+        "total_cost": round(total_spent, 2),
         "remaining_budget": round(remaining_budget, 2),
         "profit_loss": round(profit_loss, 2)
     }
+
 
 
 @app.get("/api/purchases/trends")

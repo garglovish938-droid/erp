@@ -10,6 +10,7 @@ import { useToast } from "./Toast";
 import { inventoryService } from "@/services/inventoryService";
 import { supplierService } from "@/services/supplierService";
 import { API_BASE_URL } from "@/lib/api";
+import { formatCurrency } from "@/lib/currency";
 
 export default function Inventory({ token, role }: { token: string; role: string }) {
   const { showToast } = useToast();
@@ -511,7 +512,7 @@ export default function Inventory({ token, role }: { token: string; role: string
                         {isOut && <span className="text-[10px] text-rose-500 font-bold block mt-0.5">Out of stock</span>}
                         {isLow && <span className="text-[10px] text-amber-500 font-bold block mt-0.5">Low level alert</span>}
                       </td>
-                      <td className="p-5 text-slate-700 dark:text-slate-350 font-bold">${item.unit_cost.toLocaleString()}</td>
+                      <td className="p-5 text-slate-700 dark:text-slate-350 font-bold">{formatCurrency(item.unit_cost)}</td>
                       <td className="p-5 text-right">
                         <div className="flex gap-1.5 justify-end items-center">
                           {statusFilter === "active" ? (
@@ -632,12 +633,12 @@ export default function Inventory({ token, role }: { token: string; role: string
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Unit Cost ($)*</label>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Unit Cost (₹)*</label>
                   <input type="number" required min="0" step="any" value={formData.unit_cost || ""} onChange={e=>setFormData({...formData, unit_cost: parseFloat(e.target.value) || 0})} placeholder="45" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-955 border border-slate-200 dark:border-slate-800 rounded-xl" />
                 </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Supplier mapping*</label>
-                  <select required value={formData.supplier_id} onChange={e=>setFormData({...formData, supplier_id: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl">
+                <div className="hidden">
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Supplier mapping</label>
+                  <select value={formData.supplier_id} onChange={e=>setFormData({...formData, supplier_id: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-955 border border-slate-200 dark:border-slate-800 rounded-xl">
                     <option value="">Select Supplier</option>
                     {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>

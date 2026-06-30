@@ -295,7 +295,6 @@ export default function Home() {
           {activeTab === "daily-expenses" && <DailyExpenses token={user.token} role={user.role} />}
           {activeTab === "expense-analytics" && <ExpenseAnalytics token={user.token} role={user.role} />}
           {activeTab === "crm" && <CRM token={user.token} role={user.role} />}
-          {activeTab === "suppliers" && <Suppliers token={user.token} role={user.role} />}
           {activeTab === "team" && <Team token={user.token} role={user.role} />}
           {activeTab === "reports" && <Reports token={user.token} role={user.role} />}
           {activeTab === "settings" && <Settings token={user.token} role={user.role} />}

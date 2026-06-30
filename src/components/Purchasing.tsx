@@ -108,7 +108,16 @@ export default function Purchasing({ token, role }: PurchasingProps) {
       ]);
 
       if (poRes.ok) setPurchaseOrders(await poRes.ok ? await poRes.json() : []);
-      if (supRes.ok) setSuppliers(await supRes.json());
+      if (supRes.ok) {
+        const supsData = await supRes.json();
+        setSuppliers(supsData);
+        const defaultSup = supsData.find((s: any) => s.name.toLowerCase().includes("general") || s.name.toLowerCase().includes("cash"));
+        if (defaultSup) {
+          setForm(prev => ({ ...prev, supplier_id: defaultSup.id }));
+        } else if (supsData.length > 0) {
+          setForm(prev => ({ ...prev, supplier_id: supsData[0].id }));
+        }
+      }
       if (invRes.ok) setInventory(await invRes.json());
       if (dashRes.ok) setDashboardStats(await dashRes.json());
     } catch (e) {
@@ -1043,7 +1052,7 @@ export default function Purchasing({ token, role }: PurchasingProps) {
               
               {/* Core selection items */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-1">
+                <div className="space-y-1 hidden">
                   <label className="text-slate-400 uppercase">Select Supplier</label>
                   <select 
                     required 

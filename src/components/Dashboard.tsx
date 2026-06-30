@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { 
-  TrendingUp, AlertCircle, PackageCheck, CheckCircle2, DollarSign, 
+  TrendingUp, AlertCircle, PackageCheck, CheckCircle2, IndianRupee, 
   ShieldAlert, Layers, Bell, LayoutGrid, Settings, Plus, Trash2, 
   ChevronLeft, ChevronRight, Maximize2, Minimize2, Save, Loader2,
   Clock, ClipboardList, CheckSquare, Sparkles, MapPin, Laptop, Calendar,
@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import { cn } from "@/lib/utils";
 import { useToast } from "./Toast";
+import { formatCurrency } from "@/lib/currency";
 import { inventoryService } from "@/services/inventoryService";
 import { API_BASE_URL } from "@/lib/api";
 import CameraModal from "./CameraModal";
@@ -1145,7 +1146,6 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
               { type: "chart_movement", label: "Chart: Stock Flows" },
               { type: "chart_purchases", label: "Chart: Expenses Trend" },
               { type: "chart_categories", label: "Chart: Categories Share" },
-              { type: "chart_suppliers", label: "Chart: Supplier Orders" },
               { type: "recent_activity", label: "Alerts List" }
             ].map(item => (
               <button
@@ -1425,9 +1425,9 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
               {widget.widget_type === "kpi_stock" && (
                 <StatCard 
                   title={widget.title} 
-                  value={`$${stats?.inventory_total_value.toLocaleString(undefined, {minimumFractionDigits: 2})}`} 
+                  value={formatCurrency(stats?.inventory_total_value)} 
                   subtitle={`${stats?.inventory_total_items} Total Material Codes`}
-                  icon={DollarSign} 
+                  icon={IndianRupee} 
                   color="bg-emerald-500" 
                 />
               )}
@@ -1484,8 +1484,8 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={charts?.monthlyPurchaseCost} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
                         <XAxis dataKey="name" stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} />
-                        <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} tickFormatter={(val) => `$${val}`} />
-                        <Tooltip formatter={(val) => [`$${val}`, "Cost"]} contentStyle={{ borderRadius: '16px', border: 'none', background: 'rgba(15, 23, 42, 0.9)', color: '#fff' }} />
+                        <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} tickFormatter={(val) => `₹${val}`} />
+                        <Tooltip formatter={(val) => [`₹${val}`, "Cost"]} contentStyle={{ borderRadius: '16px', border: 'none', background: 'rgba(15, 23, 42, 0.9)', color: '#fff' }} />
                         <Bar name="Purchase Costs" dataKey="cost" fill="#4f46e5" radius={[10, 10, 0, 0]} maxBarSize={40} />
                       </BarChart>
                     </ResponsiveContainer>
@@ -1531,7 +1531,7 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
               )}
 
               {widget.widget_type === "chart_suppliers" && (
-                <div className="glass rounded-3xl p-6">
+                <div className="glass rounded-3xl p-6 hidden">
                   <h3 className="text-sm font-extrabold text-slate-850 dark:text-slate-200 mb-6">{widget.title}</h3>
                   <div className="h-[250px] w-full">
                     <ResponsiveContainer width="100%" height="100%">
