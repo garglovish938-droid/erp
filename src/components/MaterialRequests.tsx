@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { ArrowLeftRight, CheckCircle2, XCircle, Package, Calendar, User, FileText, Loader2, Plus, X } from "lucide-react";
+import { ArrowLeftRight, CheckCircle2, XCircle, Package, Calendar, User, FileText, Loader2, Plus, X, Sliders } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import { API_BASE_URL } from "@/lib/api";
@@ -72,6 +72,29 @@ export default function MaterialRequests({ token, role }: { token: string; role:
       if (!response.ok) {
         const data = await response.json();
         throw new Error(data.detail || "Failed to update status");
+      }
+      fetchRequests();
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handlePartialApprove = async (reqId: string, approvedQty: number) => {
+    setActionLoading(reqId);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/requests/${reqId}/partial`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ approved_quantity: approvedQty })
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || "Failed to partially approve request");
       }
       fetchRequests();
     } catch (err: any) {
@@ -213,6 +236,9 @@ export default function MaterialRequests({ token, role }: { token: string; role:
                     {req.quantity}
                   </span>
                   <span className="text-[10px] text-slate-400 uppercase font-bold block">{req.inventory?.unit} needed</span>
+                  <span className="text-[10px] text-indigo-650 dark:text-indigo-400 font-bold block mt-1">
+                    Stock: {req.inventory ? `${req.inventory.quantity} ${req.inventory.unit}` : "0"}
+                  </span>
                 </div>
 
                 {/* Actions */}
@@ -230,6 +256,23 @@ export default function MaterialRequests({ token, role }: { token: string; role:
                             title="Reject Request"
                           >
                             <XCircle className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => {
+                              const qtyStr = prompt(`Enter quantity to approve partially (Max: ${req.quantity}):`, String(req.quantity));
+                              if (qtyStr) {
+                                const approvedQty = parseFloat(qtyStr);
+                                if (isNaN(approvedQty) || approvedQty <= 0 || approvedQty > req.quantity) {
+                                  alert(`Invalid quantity. Must be a number between 0 and ${req.quantity}.`);
+                                  return;
+                                }
+                                handlePartialApprove(req.id, approvedQty);
+                              }
+                            }}
+                            className="p-2 bg-amber-50 hover:bg-amber-100 text-amber-600 dark:bg-amber-955/20 dark:text-amber-400 rounded-xl transition-all border border-amber-200/30 dark:border-amber-900/30 cursor-pointer"
+                            title="Partial Approval"
+                          >
+                            <Sliders className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => handleUpdateStatus(req.id, "approved")}

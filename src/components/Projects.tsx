@@ -47,6 +47,9 @@ export default function Projects({ token, role }: { token: string; role: string 
   const [showEditHistoryModal, setShowEditHistoryModal] = useState(false);
   const [selectedHistoryItem, setSelectedHistoryItem] = useState<any>(null);
   
+  const [categories, setCategories] = useState<any[]>([]);
+  const [tempCompletion, setTempCompletion] = useState<Record<string, number>>({});
+  
   // Add Material form states
   const [addMaterialTab, setAddMaterialTab] = useState<"existing" | "new">("existing");
   const [existingMaterialForm, setExistingMaterialForm] = useState({ inventory_id: "", quantity: 1, action: "used", notes: "", reason: "" });
@@ -122,14 +125,16 @@ export default function Projects({ token, role }: { token: string; role: string 
       let invData = [];
       let fieldsData = [];
       let staffData = [];
+      let catData = [];
 
       if (isManagerOrHigher) {
-        [projData, clientData, invData, fieldsData, staffData] = await Promise.all([
+        [projData, clientData, invData, fieldsData, staffData, catData] = await Promise.all([
           projectService.getProjects(includeDeleted),
           clientService.getClients(),
           inventoryService.getInventory(),
           inventoryService.getCustomFields("Project"),
-          fetch(`${API_BASE_URL}/api/staff`, { headers }).then(r => r.json())
+          fetch(`${API_BASE_URL}/api/staff`, { headers }).then(r => r.json()),
+          fetch(`${API_BASE_URL}/api/categories`, { headers }).then(r => r.json())
         ]);
       } else {
         projData = await projectService.getProjects(includeDeleted);
@@ -140,6 +145,7 @@ export default function Projects({ token, role }: { token: string; role: string 
       setInventory(invData);
       setCustomFields(fieldsData);
       setStaffList(Array.isArray(staffData) ? staffData : []);
+      setCategories(Array.isArray(catData) ? catData : []);
     } catch (e) {
       console.error(e);
       showToast("Failed to fetch projects database", "error");
@@ -979,18 +985,22 @@ export default function Projects({ token, role }: { token: string; role: string 
                         </div>
 
                         <div className="overflow-x-auto scrollbar-thin">
-                          <table className="w-full text-left text-xs font-medium border-collapse min-w-[900px]">
+                          <table className="w-full text-left text-xs font-medium border-collapse min-w-[1100px]">
                             <thead>
                               <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 pb-2 text-[10px] uppercase font-bold">
-                                <th className="pb-2">Material / SKU</th>
+                                <th className="pb-2">Material Name</th>
                                 <th className="pb-2">Category</th>
-                                <th className="pb-2">Current/Avail Stock</th>
-                                <th className="pb-2">Reserved Stock</th>
-                                <th className="pb-2">Required Qty</th>
+                                <th className="pb-2">SKU</th>
+                                <th className="pb-2">Unit</th>
+                                <th className="pb-2">Allocated Qty</th>
                                 <th className="pb-2">Used Qty</th>
                                 <th className="pb-2">Returned Qty</th>
-                                <th className="pb-2">Pending Qty</th>
-                                <th className="pb-2">Material Cost</th>
+                                <th className="pb-2">Remaining Qty</th>
+                                <th className="pb-2">Current Inventory Qty</th>
+                                <th className="pb-2">Reserved Qty</th>
+                                <th className="pb-2">Cost</th>
+                                <th className="pb-2">Last Updated</th>
+                                <th className="pb-2">Updated By</th>
                                 <th className="pb-2">Location</th>
                                 <th className="pb-2">Warning</th>
                                 <th className="pb-2">Status</th>
@@ -1007,21 +1017,28 @@ export default function Projects({ token, role }: { token: string; role: string 
                                   const materialCostVal = bom.used_quantity * (bom.inventory?.unit_cost || 0);
                                   const isLowStock = bom.inventory ? bom.inventory.quantity < bom.inventory.minimum_stock_level : false;
                                   const reservedQty = getReservedStock(bom.inventory_id);
+                                  
+                                  const materialLogs = (materialHistory[proj.id] || [])
+                                    .filter((h: any) => h.inventory_id === bom.inventory_id);
+                                  const lastLog = materialLogs.length > 0 ? materialLogs[0] : null;
+                                  const lastUpdated = lastLog ? new Date(lastLog.created_at).toLocaleDateString("en-IN") : "—";
+                                  const updatedBy = lastLog ? lastLog.username : "—";
 
                                   return (
                                     <tr key={bom.id} className="hover:bg-slate-50/30">
-                                      <td className="py-3">
-                                        <div className="font-semibold text-slate-850 dark:text-slate-200">{bom.inventory?.name}</div>
-                                        <div className="text-[9px] text-slate-400 font-mono">{bom.inventory?.sku}</div>
-                                      </td>
+                                      <td className="py-3 font-semibold text-slate-850 dark:text-slate-200">{bom.inventory?.name || "—"}</td>
                                       <td className="py-3 text-slate-500">{bom.inventory?.category?.name || "General"}</td>
-                                      <td className="py-3 font-semibold">{bom.inventory?.quantity || 0} {bom.inventory?.unit}</td>
-                                      <td className="py-3 font-semibold text-slate-500">{reservedQty} {bom.inventory?.unit}</td>
-                                      <td className="py-3 font-semibold text-slate-500">{bom.required_quantity} {bom.inventory?.unit}</td>
-                                      <td className="py-3 text-indigo-650 dark:text-indigo-400 font-semibold">{bom.used_quantity} {bom.inventory?.unit}</td>
-                                      <td className="py-3 text-orange-600 font-semibold">{returnedQty} {bom.inventory?.unit}</td>
-                                      <td className="py-3 text-amber-600 font-semibold">{pendingQty} {bom.inventory?.unit}</td>
+                                      <td className="py-3 text-slate-400 font-mono text-[10px]">{bom.inventory?.sku || "—"}</td>
+                                      <td className="py-3 text-slate-500">{bom.inventory?.unit || "—"}</td>
+                                      <td className="py-3 font-semibold text-slate-500">{bom.required_quantity}</td>
+                                      <td className="py-3 text-indigo-650 dark:text-indigo-400 font-semibold">{bom.used_quantity}</td>
+                                      <td className="py-3 text-orange-600 font-semibold">{returnedQty}</td>
+                                      <td className="py-3 text-amber-600 font-semibold">{pendingQty}</td>
+                                      <td className="py-3 font-semibold text-slate-500">{bom.inventory?.quantity || 0}</td>
+                                      <td className="py-3 font-semibold text-slate-500">{reservedQty}</td>
                                       <td className="py-3 font-bold text-slate-800 dark:text-slate-200">{formatCurrency(materialCostVal)}</td>
+                                      <td className="py-3 text-slate-500 font-medium">{lastUpdated}</td>
+                                      <td className="py-3 text-slate-600 font-semibold">{updatedBy}</td>
                                       <td className="py-3 text-slate-500 font-mono text-[10px]">{bom.inventory?.location || "Warehouse"}</td>
                                       <td className="py-3">
                                         {isLowStock ? (
@@ -1058,7 +1075,7 @@ export default function Projects({ token, role }: { token: string; role: string 
                                 })
                               ) : (
                                 <tr>
-                                  <td colSpan={13} className="py-4 text-center text-slate-400">No project materials registered yet.</td>
+                                  <td colSpan={17} className="py-4 text-center text-slate-400">No project materials registered yet.</td>
                                 </tr>
                               )}
                             </tbody>
@@ -1380,7 +1397,7 @@ export default function Projects({ token, role }: { token: string; role: string 
                             <div className="flex-1 bg-slate-200 dark:bg-slate-800 h-3 rounded-full overflow-hidden">
                               <div 
                                 className="bg-gradient-to-r from-indigo-500 to-purple-600 h-full rounded-full transition-all duration-300"
-                                style={{ width: `${proj.completion_percentage || 0}%` }}
+                                style={{ width: `${tempCompletion[proj.id] !== undefined ? tempCompletion[proj.id] : (proj.completion_percentage || 0)}%` }}
                               ></div>
                             </div>
                             {isManagerOrHigher && statusFilter === "active" && (
@@ -1388,8 +1405,10 @@ export default function Projects({ token, role }: { token: string; role: string 
                                 type="range" 
                                 min="0" 
                                 max="100" 
-                                value={proj.completion_percentage || 0} 
-                                onChange={(e) => handleUpdateCompletion(proj.id, parseInt(e.target.value))}
+                                value={tempCompletion[proj.id] !== undefined ? tempCompletion[proj.id] : (proj.completion_percentage || 0)} 
+                                onChange={(e) => setTempCompletion({ ...tempCompletion, [proj.id]: parseInt(e.target.value) })}
+                                onMouseUp={(e) => handleUpdateCompletion(proj.id, parseInt((e.target as HTMLInputElement).value))}
+                                onTouchEnd={(e) => handleUpdateCompletion(proj.id, parseInt((e.target as HTMLInputElement).value))}
                                 className="w-32 cursor-pointer accent-indigo-600"
                                 title="Slide to adjust progress"
                               />
@@ -2051,6 +2070,21 @@ export default function Projects({ token, role }: { token: string; role: string 
                     placeholder="e.g. Teak Wood Panel"
                     className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl"
                   />
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-0.5">Category*</label>
+                  <select
+                    required
+                    value={newMaterialForm.category_id}
+                    onChange={e => setNewMaterialForm({ ...newMaterialForm, category_id: e.target.value })}
+                    className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl"
+                  >
+                    <option value="">Select Category</option>
+                    {categories.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">

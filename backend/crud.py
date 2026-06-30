@@ -2271,8 +2271,13 @@ def transfer_project_material(
     bom_from.used_quantity -= quantity
     bom_from.consumed_quantity = max(0.0, bom_from.consumed_quantity - quantity)
     
+    # Also update allocation (required_quantity)
+    deduct_required = min(bom_from.required_quantity, quantity)
+    bom_from.required_quantity -= deduct_required
+    
     bom_to.used_quantity += quantity
     bom_to.consumed_quantity += quantity
+    bom_to.required_quantity += deduct_required
 
     # Update status for source project BOM
     if bom_from.required_quantity > 0:

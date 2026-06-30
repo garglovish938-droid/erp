@@ -2119,6 +2119,45 @@ def update_request_status(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.put("/api/requests/{request_id}/partial", response_model=schemas.MaterialRequestResponse)
+def partial_approve_request(
+    request_id: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    req = db.query(MaterialRequest).filter(MaterialRequest.id == request_id, MaterialRequest.is_deleted == False).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if req.status == "issued":
+        raise HTTPException(status_code=400, detail="Cannot partially approve an already issued request")
+        
+    approved_qty = payload.get("approved_quantity")
+    if approved_qty is None:
+        raise HTTPException(status_code=400, detail="approved_quantity is required")
+    try:
+        approved_qty = float(approved_qty)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="approved_quantity must be a valid number")
+        
+    if approved_qty <= 0 or approved_qty > req.quantity:
+        raise HTTPException(status_code=400, detail=f"Invalid approved quantity. Must be between 0 and {req.quantity}")
+        
+    old_qty = req.quantity
+    req.quantity = approved_qty
+    req.status = "approved"
+    req.approved_by = current_user.id
+    req.updated_at = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(req)
+    
+    crud.log_activity(db, current_user.id, "material_request_partial_approval", 
+                      f"Material request ID {request_id} partially approved: quantity changed from {old_qty} to {approved_qty}")
+    broadcast_sync({"event": "request_change"})
+    return req
+
+
 # --- PURCHASING MODULE ---
 @app.get("/api/purchasing", response_model=List[schemas.PurchaseOrderResponse])
 def read_purchase_orders(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
@@ -6011,6 +6050,10 @@ def update_project_completion(
 
     old_pct = project.completion_percentage
     project.completion_percentage = int(pct)
+    status_changed = False
+    if int(pct) == 100 and project.status != "completed":
+        project.status = "completed"
+        status_changed = True
     
     from sqlalchemy.orm.exc import StaleDataError
     try:
@@ -6031,11 +6074,28 @@ def update_project_completion(
         user=current_user,
         project_id=project_id,
         action="Change Project Progress",
-        details=f"Updated project completion to {pct}%",
+        details=f"Updated project completion to {pct}%" + (" and marked as Completed" if status_changed else ""),
         old_value=f"{old_pct}%",
         new_value=f"{pct}%",
         request=request
     )
+    
+    # Notify employees of progress/completion changes
+    if status_changed:
+        log_and_broadcast_notification_sync(
+            db=db,
+            title="Project Completed",
+            description=f"Project '{project.name}' is now 100% complete and marked as Completed.",
+            notif_type="project_completed"
+        )
+    else:
+        log_and_broadcast_notification_sync(
+            db=db,
+            title="Project Progress Updated",
+            description=f"Project '{project.name}' progress updated to {pct}%.",
+            notif_type="project_progress"
+        )
+        
     return {"status": "success", "project_id": project_id, "completion_percentage": int(pct)}
 
 
