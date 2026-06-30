@@ -15,6 +15,7 @@ import { clientService } from "@/services/clientService";
 import { inventoryService } from "@/services/inventoryService";
 import { API_BASE_URL } from "@/lib/api";
 import { formatCurrency } from "@/lib/currency";
+import { apiRequest } from "@/services/apiClient";
 
 export default function Projects({ token, role }: { token: string; role: string }) {
   const { showToast } = useToast();
@@ -327,14 +328,8 @@ export default function Projects({ token, role }: { token: string; role: string 
     setSubmitLoading(true);
     setSubmitError("");
     try {
-      const headers = {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`
-      };
-      const url = `${API_BASE_URL}/api/projects/materials/transfer?reason=${encodeURIComponent(transferForm.reason || transferForm.notes)}`;
-      const res = await fetch(url, {
+      const data = await apiRequest(`/api/projects/materials/transfer?reason=${encodeURIComponent(transferForm.reason || transferForm.notes)}`, {
         method: "POST",
-        headers,
         body: JSON.stringify({
           from_project_id: selectedProject.id,
           to_project_id: transferForm.to_project_id,
@@ -343,11 +338,7 @@ export default function Projects({ token, role }: { token: string; role: string 
           notes: transferForm.notes
         })
       });
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.detail || "Failed to transfer material");
-      }
-      showToast("Material transferred successfully", "success");
+      showToast(data.message || "Material transfer request processed", "success");
       setShowTransferModal(false);
       setTransferForm({ to_project_id: "", inventory_id: "", quantity: 1, notes: "", reason: "" });
       
@@ -428,6 +419,38 @@ export default function Projects({ token, role }: { token: string; role: string 
       fetchData();
     } catch (err: any) {
       showToast(err.message || "Failed to delete log", "error");
+    }
+  };
+
+  const handleApproveTransfer = async (projId: string, historyId: string) => {
+    if (!window.confirm("Are you sure you want to approve this material transfer?")) return;
+    try {
+      const data = await apiRequest(`/api/projects/materials/transfers/${historyId}/approve`, {
+        method: "POST"
+      });
+      showToast(data.message || "Transfer approved successfully", "success");
+      fetchMaterialHistory(projId);
+      fetchCosting(projId);
+      fetchData();
+    } catch (err: any) {
+      showToast(err.message || "Failed to approve transfer", "error");
+    }
+  };
+
+  const handleRejectTransfer = async (projId: string, historyId: string) => {
+    const reason = window.prompt("Please enter rejection reason:");
+    if (reason === null) return;
+    try {
+      const data = await apiRequest(`/api/projects/materials/transfers/${historyId}/reject`, {
+        method: "POST",
+        body: JSON.stringify({ reason: reason || "Rejected by manager" })
+      });
+      showToast(data.message || "Transfer rejected successfully", "success");
+      fetchMaterialHistory(projId);
+      fetchCosting(projId);
+      fetchData();
+    } catch (err: any) {
+      showToast(err.message || "Failed to reject transfer", "error");
     }
   };
 
@@ -1075,40 +1098,67 @@ export default function Projects({ token, role }: { token: string; role: string 
                                       </span>
                                       <span className="font-semibold text-indigo-650 dark:text-indigo-400">{log.quantity} {log.inventory?.unit || ""}</span>
                                       <span className="text-slate-500 font-bold">{log.inventory?.name}</span>
+                                      {log.status === "pending" && (
+                                        <span className="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase bg-amber-50 text-amber-600 border border-amber-100 animate-pulse">
+                                          Pending Approval
+                                        </span>
+                                      )}
+                                      {log.status === "rejected" && (
+                                        <span className="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase bg-rose-100 text-rose-705 border border-rose-200">
+                                          Rejected
+                                        </span>
+                                      )}
                                       {log.notes && <span className="text-slate-400 italic text-[11px]">— "{log.notes}"</span>}
                                     </div>
 
-                                    {isSuperAdmin && (
+                                    {log.status === "pending" && isManagerOrHigher ? (
                                       <div className="flex gap-1.5 self-end sm:self-center">
                                         <button
-                                          onClick={() => {
-                                            setSelectedProject(proj);
-                                            setSelectedHistoryItem(log);
-                                            setEditHistoryForm({
-                                              quantity: log.quantity,
-                                              action: log.action,
-                                              notes: log.notes || "",
-                                              reason: ""
-                                            });
-                                            setSubmitError("");
-                                            setShowEditHistoryModal(true);
-                                          }}
-                                          className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 hover:text-indigo-600"
-                                          title="Edit Log"
+                                          onClick={() => handleApproveTransfer(proj.id, log.id)}
+                                          className="px-2.5 py-1 bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg text-[10px] font-bold shadow-sm transition-all cursor-pointer"
                                         >
-                                          <Edit className="w-3.5 h-3.5" />
+                                          Approve
                                         </button>
                                         <button
-                                          onClick={() => {
-                                            setSelectedProject(proj);
-                                            handleDeleteHistory(log.id);
-                                          }}
-                                          className="p-1.5 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-lg text-slate-400 hover:text-rose-600"
-                                          title="Delete Log"
+                                          onClick={() => handleRejectTransfer(proj.id, log.id)}
+                                          className="px-2.5 py-1 bg-rose-600 text-white hover:bg-rose-700 rounded-lg text-[10px] font-bold shadow-sm transition-all cursor-pointer"
                                         >
-                                          <Trash2 className="w-3.5 h-3.5" />
+                                          Reject
                                         </button>
                                       </div>
+                                    ) : (
+                                      isSuperAdmin && log.status !== "rejected" && (
+                                        <div className="flex gap-1.5 self-end sm:self-center">
+                                          <button
+                                            onClick={() => {
+                                              setSelectedProject(proj);
+                                              setSelectedHistoryItem(log);
+                                              setEditHistoryForm({
+                                                quantity: log.quantity,
+                                                action: log.action,
+                                                notes: log.notes || "",
+                                                reason: ""
+                                              });
+                                              setSubmitError("");
+                                              setShowEditHistoryModal(true);
+                                            }}
+                                            className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 hover:text-indigo-600"
+                                            title="Edit Log"
+                                          >
+                                            <Edit className="w-3.5 h-3.5" />
+                                          </button>
+                                          <button
+                                            onClick={() => {
+                                              setSelectedProject(proj);
+                                              handleDeleteHistory(log.id);
+                                            }}
+                                            className="p-1.5 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-lg text-slate-400 hover:text-rose-600"
+                                            title="Delete Log"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
+                                      )
                                     )}
                                   </div>
                                 );

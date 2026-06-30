@@ -634,9 +634,13 @@ class ProjectMaterialHistory(Base):
     quantity = Column(Float, nullable=False)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    status = Column(String(50), default="approved", nullable=False)
+    approved_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
 
     project = relationship("Project")
     inventory = relationship("InventoryItem")
-    user = relationship("User")
+    user = relationship("User", foreign_keys=[user_id])
+    approved_by_user = relationship("User", foreign_keys=[approved_by])
 
 

@@ -3,7 +3,7 @@
 import { 
   LayoutDashboard, PackageSearch, FolderKanban, ShoppingCart, Users, 
   Settings, LogOut, ArrowLeftRight, Smile, Truck, FileText, BarChart3,
-  ClipboardCheck, Receipt, ChevronLeft, ChevronRight, X
+  ClipboardCheck, Receipt, ChevronLeft, ChevronRight, X, Archive
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -48,6 +48,7 @@ export default function Sidebar({
     { id: "team", label: "Employees", icon: Users, roles: workerRoles },
     { id: "crm", label: "Clients", icon: Smile, roles: [...managerRoles, ...accountantRoles] },
     { id: "reports", label: "Reports", icon: FileText, roles: [...managerRoles, ...accountantRoles] },
+    { id: "archive", label: "Archive Registry", icon: Archive, roles: managerRoles },
     { id: "settings", label: "Settings", icon: Settings, roles: adminRoles },
   ];
 

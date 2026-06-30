@@ -18,6 +18,7 @@ import AttendanceDashboard from "@/components/AttendanceDashboard";
 import ExpenseAnalytics from "@/components/ExpenseAnalytics";
 import ProjectProgress from "@/components/ProjectProgress";
 import DailyExpenses from "@/components/DailyExpenses";
+import Archive from "@/components/Archive";
 
 import { apiRequest } from "@/services/apiClient";
 import { API_BASE_URL } from "@/lib/api";
@@ -51,9 +52,28 @@ export default function Home() {
         const response = await originalFetch(...args);
         const url = args[0];
         const isLoginRequest = typeof url === 'string' && url.includes('/api/auth/login');
+        const isRefreshRequest = typeof url === 'string' && url.includes('/api/auth/refresh');
+        
         if (response.status === 401 && !isLoginRequest) {
-          localStorage.removeItem("allure_erp_user");
-          window.location.reload();
+          if (isRefreshRequest) {
+            localStorage.removeItem("allure_erp_user");
+            window.location.reload();
+          } else {
+            const savedUser = localStorage.getItem("allure_erp_user");
+            let hasRefreshToken = false;
+            if (savedUser) {
+              try {
+                const parsed = JSON.parse(savedUser);
+                if (parsed.refresh_token || parsed.refreshToken) {
+                  hasRefreshToken = true;
+                }
+              } catch (e) {}
+            }
+            if (!hasRefreshToken) {
+              localStorage.removeItem("allure_erp_user");
+              window.location.reload();
+            }
+          }
         }
         return response;
       };
@@ -299,6 +319,7 @@ export default function Home() {
           {activeTab === "reports" && <Reports token={user.token} role={user.role} />}
           {activeTab === "settings" && <Settings token={user.token} role={user.role} />}
           {activeTab === "visualization" && <VisualizationCenter token={user.token} role={user.role} />}
+          {activeTab === "archive" && <Archive token={user.token} role={user.role} />}
         </main>
       </div>
 
@@ -374,15 +395,10 @@ export default function Home() {
                 setAiMessages((prev) => [...prev, { sender: "user", text: userMsg }]);
                 setAiLoading(true);
                 try {
-                  const res = await fetch(`${API_BASE_URL}/api/ai/chat`, {
+                  const data = await apiRequest("/api/ai/chat", {
                     method: "POST",
-                    headers: {
-                      "Content-Type": "application/json",
-                      Authorization: `Bearer ${user.token}`,
-                    },
                     body: JSON.stringify({ message: userMsg }),
                   });
-                  const data = await res.json();
                   setAiMessages((prev) => [...prev, { sender: "ai", text: data.response }]);
                 } catch (err) {
                   setAiMessages((prev) => [...prev, { sender: "ai", text: "Sorry, I am unable to connect to the backend AI services right now." }]);

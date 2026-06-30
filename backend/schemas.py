@@ -66,6 +66,10 @@ class CategoryCreate(BaseModel):
     name: str
     description: Optional[str] = None
 
+class CategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
 class CategoryResponse(BaseSchema):
     id: str
     name: str
@@ -932,6 +936,9 @@ class ProjectMaterialHistoryResponse(BaseSchema):
     quantity: float
     notes: Optional[str]
     created_at: datetime
+    status: Optional[str] = "approved"
+    approved_by: Optional[str] = None
+    approved_at: Optional[datetime] = None
     inventory: Optional[InventoryItemResponse] = None
 
 
@@ -990,4 +997,12 @@ class NewMaterialAndProjectUsageRequest(BaseModel):
         if v <= 0:
             raise ValueError("Quantity must be greater than 0")
         return v
+
+class CategoryMergeRequest(BaseModel):
+    source_id: str
+    target_id: str
+
+class CategoryMoveMaterialsRequest(BaseModel):
+    material_ids: List[str]
+    target_id: str
 

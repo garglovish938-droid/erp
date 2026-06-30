@@ -11,6 +11,7 @@ import { inventoryService } from "@/services/inventoryService";
 import { supplierService } from "@/services/supplierService";
 import { API_BASE_URL } from "@/lib/api";
 import { formatCurrency } from "@/lib/currency";
+import CategoryModal from "./CategoryModal";
 
 export default function Inventory({ token, role }: { token: string; role: string }) {
   const { showToast } = useToast();
@@ -31,6 +32,7 @@ export default function Inventory({ token, role }: { token: string; role: string
   const [showAdjustModal, setShowAdjustModal] = useState(false);
   const [showScanModal, setShowScanModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [currentItem, setCurrentItem] = useState<any>(null);
   
   // File upload state
@@ -397,6 +399,13 @@ export default function Inventory({ token, role }: { token: string; role: string
               >
                 <ArrowUpRight className="w-4 h-4" />
                 Import CSV
+              </button>
+              
+              <button 
+                onClick={() => setShowCategoryModal(true)}
+                className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors shadow-sm text-sm font-semibold border"
+              >
+                Manage Categories
               </button>
               
               <button 
@@ -849,6 +858,14 @@ export default function Inventory({ token, role }: { token: string; role: string
           </div>
         </div>
       )}
+
+      <CategoryModal
+        isOpen={showCategoryModal}
+        onClose={() => setShowCategoryModal(false)}
+        categories={categories}
+        items={items}
+        onRefresh={fetchData}
+      />
     </div>
   );
 }

@@ -12,7 +12,7 @@ from models import (
     Document, VersionHistory, ProjectAssignment, DailyWorkLog, Shift, AttendanceRule
 )
 from schemas import (
-    UserCreate, UserUpdate, CategoryCreate, InventoryItemCreate, InventoryItemUpdate,
+    UserCreate, UserUpdate, CategoryCreate, CategoryUpdate, InventoryItemCreate, InventoryItemUpdate,
     SupplierCreate, SupplierUpdate, ClientCreate, ClientUpdate, ProjectCreate,
     ProjectUpdate, ProjectBOMCreate, MaterialRequestCreate, PurchaseOrderCreate, DailyExpenseCreate,
     StaffCreate, StaffUpdate, AttendanceCreate, CustomFieldDefinitionCreate, CustomFieldValueCreate,
@@ -244,11 +244,85 @@ def get_categories(db: Session) -> List[Category]:
     return db.query(Category).filter(Category.is_deleted == False).all()
 
 def create_category(db: Session, category: CategoryCreate) -> Category:
+    existing = db.query(Category).filter(Category.name == category.name, Category.is_deleted == False).first()
+    if existing:
+        raise ValueError(f"Category with name '{category.name}' already exists.")
     db_cat = Category(name=category.name, description=category.description)
     db.add(db_cat)
     db.commit()
     db.refresh(db_cat)
     return db_cat
+
+def update_category(db: Session, category_id: str, category_in: CategoryUpdate) -> Optional[Category]:
+    db_cat = db.query(Category).filter(Category.id == category_id, Category.is_deleted == False).first()
+    if not db_cat:
+        return None
+    if category_in.name is not None and category_in.name != db_cat.name:
+        existing = db.query(Category).filter(Category.name == category_in.name, Category.is_deleted == False).first()
+        if existing:
+            raise ValueError(f"Category with name '{category_in.name}' already exists.")
+        db_cat.name = category_in.name
+    if category_in.description is not None:
+        db_cat.description = category_in.description
+    db.commit()
+    db.refresh(db_cat)
+    return db_cat
+
+def delete_category(db: Session, category_id: str, actor_id: Optional[str] = None) -> bool:
+    db_cat = db.query(Category).filter(Category.id == category_id, Category.is_deleted == False).first()
+    if not db_cat:
+        return False
+    
+    # Soft delete the category
+    db_cat.is_deleted = True
+    db_cat.deleted_at = datetime.utcnow()
+    db_cat.deleted_by = actor_id
+    
+    # Reassign materials in this category to None (uncategorized)
+    db.query(InventoryItem).filter(InventoryItem.category_id == category_id).update(
+        {InventoryItem.category_id: None},
+        synchronize_session=False
+    )
+    
+    db.commit()
+    return True
+
+def merge_categories(db: Session, source_id: str, target_id: str, actor_id: Optional[str] = None) -> bool:
+    if source_id == target_id:
+        raise ValueError("Cannot merge a category into itself.")
+        
+    source_cat = db.query(Category).filter(Category.id == source_id, Category.is_deleted == False).first()
+    target_cat = db.query(Category).filter(Category.id == target_id, Category.is_deleted == False).first()
+    if not source_cat or not target_cat:
+        return False
+        
+    # Reassign materials in source category to target category
+    db.query(InventoryItem).filter(InventoryItem.category_id == source_id).update(
+        {InventoryItem.category_id: target_id},
+        synchronize_session=False
+    )
+    
+    # Soft delete source category
+    source_cat.is_deleted = True
+    source_cat.deleted_at = datetime.utcnow()
+    source_cat.deleted_by = actor_id
+    
+    db.commit()
+    return True
+
+def move_materials_category(db: Session, material_ids: List[str], target_id: str) -> bool:
+    target_cat = db.query(Category).filter(Category.id == target_id, Category.is_deleted == False).first()
+    if not target_cat:
+        return False
+        
+    # Bulk update category_id
+    db.query(InventoryItem).filter(InventoryItem.id.in_(material_ids)).update(
+        {InventoryItem.category_id: target_id},
+        synchronize_session=False
+    )
+    
+    db.commit()
+    return True
 
 # --- SUPPLIERS ---
 def get_suppliers(db: Session, include_deleted: bool = False) -> List[Supplier]:
@@ -2268,6 +2342,252 @@ def transfer_project_material(
     db.commit()
     return True
 
+def initiate_project_material_transfer(
+    db: Session,
+    from_project_id: str,
+    to_project_id: str,
+    inventory_id: str,
+    quantity: float,
+    user_id: str,
+    notes: Optional[str] = None,
+    reason: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    device: Optional[str] = None,
+    browser: Optional[str] = None
+) -> ProjectMaterialHistory:
+    if from_project_id == to_project_id:
+        raise ValueError("Cannot transfer within the same project")
+
+    from_project = db.query(Project).filter(Project.id == from_project_id, Project.is_deleted == False).first()
+    to_project = db.query(Project).filter(Project.id == to_project_id, Project.is_deleted == False).first()
+    if not from_project or not to_project:
+        raise ValueError("Source or destination project not found")
+
+    inventory = db.query(InventoryItem).filter(InventoryItem.id == inventory_id, InventoryItem.is_deleted == False).first()
+    if not inventory:
+        raise ValueError("Inventory item not found")
+
+    bom_from = db.query(ProjectBOM).filter(ProjectBOM.project_id == from_project_id, ProjectBOM.inventory_id == inventory_id).first()
+    if not bom_from or bom_from.used_quantity < quantity:
+        raise ValueError(f"Insufficient allocated quantity in source project. Available: {bom_from.used_quantity if bom_from else 0} {inventory.unit}")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    username = user.full_name if user else "Employee"
+
+    # Encode the destination project ID inside the notes field
+    encoded_notes = f"to_project_id:{to_project_id} | {notes or ''}"
+
+    # Add a pending material history log in source project
+    history_from = ProjectMaterialHistory(
+        project_id=from_project_id,
+        inventory_id=inventory_id,
+        user_id=user_id,
+        username=username,
+        action="transferred_out",
+        quantity=quantity,
+        notes=encoded_notes,
+        status="pending"
+    )
+    db.add(history_from)
+    db.commit()
+    db.refresh(history_from)
+    return history_from
+
+def get_pending_transfers(db: Session) -> List[ProjectMaterialHistory]:
+    return db.query(ProjectMaterialHistory).filter(
+        ProjectMaterialHistory.action == "transferred_out",
+        ProjectMaterialHistory.status == "pending"
+    ).order_by(ProjectMaterialHistory.created_at.desc()).all()
+
+def approve_project_material_transfer(
+    db: Session,
+    history_id: str,
+    approver_id: str,
+    ip_address: Optional[str] = None,
+    device: Optional[str] = None,
+    browser: Optional[str] = None
+) -> bool:
+    # 1. Get the pending history record
+    history_from = db.query(ProjectMaterialHistory).filter(
+        ProjectMaterialHistory.id == history_id,
+        ProjectMaterialHistory.action == "transferred_out",
+        ProjectMaterialHistory.status == "pending"
+    ).first()
+    if not history_from:
+        raise ValueError("Pending transfer request not found")
+
+    # 2. Parse destination project ID from notes
+    notes_str = history_from.notes or ""
+    to_project_id = None
+    original_notes = ""
+    if "to_project_id:" in notes_str:
+        try:
+            parts = notes_str.split(" | ", 1)
+            to_project_id = parts[0].replace("to_project_id:", "").strip()
+            if len(parts) > 1:
+                original_notes = parts[1]
+        except Exception:
+            raise ValueError("Invalid format in transfer notes. Cannot parse target project ID.")
+    else:
+        raise ValueError("Destination project ID missing in transfer record.")
+
+    from_project_id = history_from.project_id
+    inventory_id = history_from.inventory_id
+    quantity = history_from.quantity
+
+    from_project = db.query(Project).filter(Project.id == from_project_id, Project.is_deleted == False).first()
+    to_project = db.query(Project).filter(Project.id == to_project_id, Project.is_deleted == False).first()
+    if not from_project or not to_project:
+        raise ValueError("Source or destination project not found")
+
+    inventory = db.query(InventoryItem).filter(InventoryItem.id == inventory_id, InventoryItem.is_deleted == False).first()
+    if not inventory:
+        raise ValueError("Inventory item not found")
+
+    bom_from = db.query(ProjectBOM).filter(ProjectBOM.project_id == from_project_id, ProjectBOM.inventory_id == inventory_id).first()
+    if not bom_from or bom_from.used_quantity < quantity:
+        raise ValueError(f"Insufficient allocated quantity in source project. Available: {bom_from.used_quantity if bom_from else 0} {inventory.unit}")
+
+    bom_to = db.query(ProjectBOM).filter(ProjectBOM.project_id == to_project_id, ProjectBOM.inventory_id == inventory_id).first()
+    if not bom_to:
+        bom_to = ProjectBOM(
+            project_id=to_project_id,
+            inventory_id=inventory_id,
+            required_quantity=0.0,
+            used_quantity=0.0,
+            consumed_quantity=0.0,
+            status="pending"
+        )
+        db.add(bom_to)
+        db.flush()
+
+    old_from_qty = bom_from.used_quantity
+    old_to_qty = bom_to.used_quantity
+
+    # Perform actual transfer
+    bom_from.used_quantity -= quantity
+    bom_from.consumed_quantity = max(0.0, bom_from.consumed_quantity - quantity)
+    
+    bom_to.used_quantity += quantity
+    bom_to.consumed_quantity += quantity
+
+    # Update BOM status
+    for bom in [bom_from, bom_to]:
+        if bom.required_quantity > 0:
+            if bom.used_quantity >= bom.required_quantity:
+                bom.status = "fulfilled"
+            elif bom.used_quantity > 0:
+                bom.status = "partial"
+            else:
+                bom.status = "pending"
+        else:
+            bom.status = "fulfilled" if bom.used_quantity > 0 else "pending"
+
+    # Log stock transactions (transfer out and in)
+    tx_out = StockTransaction(
+        inventory_id=inventory_id,
+        transaction_type="transfer",
+        quantity=-quantity,
+        project_id=from_project_id,
+        user_id=approver_id,
+        notes=f"Transferred to Project: {to_project.name}. Approved by admin/manager."
+    )
+    tx_in = StockTransaction(
+        inventory_id=inventory_id,
+        transaction_type="transfer",
+        quantity=quantity,
+        project_id=to_project_id,
+        user_id=approver_id,
+        notes=f"Transferred from Project: {from_project.name}. Approved by admin/manager."
+    )
+    db.add_all([tx_out, tx_in])
+
+    # Update source history record status
+    history_from.status = "approved"
+    history_from.approved_by = approver_id
+    history_from.approved_at = datetime.utcnow()
+    # clean up the to_project_id encoding from notes for display readability
+    history_from.notes = f"Transferred to Project: {to_project.name}. Notes: {original_notes}"
+
+    # Create target history record with approved status
+    history_to = ProjectMaterialHistory(
+        project_id=to_project_id,
+        inventory_id=inventory_id,
+        user_id=history_from.user_id,
+        username=history_from.username,
+        action="transferred_in",
+        quantity=quantity,
+        notes=f"Transferred from Project: {from_project.name}. Notes: {original_notes}",
+        status="approved",
+        approved_by=approver_id,
+        approved_at=datetime.utcnow()
+    )
+    db.add(history_to)
+
+    # Audit Log
+    log_audit(
+        db=db,
+        user_id=approver_id,
+        project_id=from_project_id,
+        inventory_id=inventory_id,
+        action="material_transfer_approved",
+        details=f"Approved transfer of {quantity} {inventory.unit} of {inventory.name} from {from_project.name} to {to_project.name}",
+        old_value=f"From BOM: {old_from_qty} | To BOM: {old_to_qty}",
+        new_value=f"From BOM: {bom_from.used_quantity} | To BOM: {bom_to.used_quantity}",
+        reason=original_notes,
+        ip_address=ip_address,
+        device=device,
+        browser=browser
+    )
+
+    db.commit()
+    return True
+
+def reject_project_material_transfer(
+    db: Session,
+    history_id: str,
+    approver_id: str,
+    reason: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    device: Optional[str] = None,
+    browser: Optional[str] = None
+) -> bool:
+    history_from = db.query(ProjectMaterialHistory).filter(
+        ProjectMaterialHistory.id == history_id,
+        ProjectMaterialHistory.action == "transferred_out",
+        ProjectMaterialHistory.status == "pending"
+    ).first()
+    if not history_from:
+        raise ValueError("Pending transfer request not found")
+
+    # Update status to rejected
+    history_from.status = "rejected"
+    history_from.approved_by = approver_id
+    history_from.approved_at = datetime.utcnow()
+    
+    notes_str = history_from.notes or ""
+    original_notes = notes_str.split(" | ", 1)[-1] if " | " in notes_str else notes_str
+    history_from.notes = f"{original_notes} (Rejected: {reason or 'No reason provided'})"
+
+    # Audit Log
+    log_audit(
+        db=db,
+        user_id=approver_id,
+        project_id=history_from.project_id,
+        inventory_id=history_from.inventory_id,
+        action="material_transfer_rejected",
+        details=f"Rejected transfer of {history_from.quantity} units. Reason: {reason or 'none'}",
+        old_value="pending",
+        new_value="rejected",
+        reason=reason,
+        ip_address=ip_address,
+        device=device,
+        browser=browser
+    )
+
+    db.commit()
+    return True
+
 def add_new_material_to_project(
     db: Session,
     project_id: str,
@@ -2382,4 +2702,212 @@ def add_new_material_to_project(
     db.commit()
     db.refresh(db_item)
     return db_item
+
+def get_archived_items(db: Session) -> dict:
+    archived_users = db.query(User).filter(User.is_deleted == True).all()
+    archived_categories = db.query(Category).filter(Category.is_deleted == True).all()
+    archived_inventory = db.query(InventoryItem).filter(InventoryItem.is_deleted == True).all()
+    archived_suppliers = db.query(Supplier).filter(Supplier.is_deleted == True).all()
+    archived_clients = db.query(Client).filter(Client.is_deleted == True).all()
+    archived_projects = db.query(Project).filter(Project.is_deleted == True).all()
+    archived_staff = db.query(Staff).filter(Staff.is_deleted == True).all()
+
+    # Convert to dictionaries for cleaner JSON transmission
+    return {
+        "users": [
+            {
+                "id": u.id,
+                "email": u.email,
+                "full_name": u.full_name,
+                "role": u.role,
+                "deleted_at": u.deleted_at.isoformat() if u.deleted_at else None,
+                "deleted_by": u.deleted_by
+            } for u in archived_users
+        ],
+        "categories": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "description": c.description,
+                "deleted_at": c.deleted_at.isoformat() if c.deleted_at else None,
+                "deleted_by": c.deleted_by
+            } for c in archived_categories
+        ],
+        "inventory": [
+            {
+                "id": i.id,
+                "name": i.name,
+                "sku": i.sku,
+                "barcode": i.barcode,
+                "quantity": i.quantity,
+                "unit": i.unit,
+                "deleted_at": i.deleted_at.isoformat() if i.deleted_at else None,
+                "deleted_by": i.deleted_by
+            } for i in archived_inventory
+        ],
+        "suppliers": [
+            {
+                "id": s.id,
+                "name": s.name,
+                "contact_person": s.contact_person,
+                "phone": s.phone,
+                "deleted_at": s.deleted_at.isoformat() if s.deleted_at else None,
+                "deleted_by": s.deleted_by
+            } for s in archived_suppliers
+        ],
+        "clients": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "contact_person": c.contact_person,
+                "phone": c.phone,
+                "deleted_at": c.deleted_at.isoformat() if c.deleted_at else None,
+                "deleted_by": c.deleted_by
+            } for c in archived_clients
+        ],
+        "projects": [
+            {
+                "id": p.id,
+                "name": p.name,
+                "status": p.status,
+                "deleted_at": p.deleted_at.isoformat() if p.deleted_at else None,
+                "deleted_by": p.deleted_by
+            } for p in archived_projects
+        ],
+        "staff": [
+            {
+                "id": s.id,
+                "name": s.name,
+                "role": s.role,
+                "phone": s.phone,
+                "deleted_at": s.deleted_at.isoformat() if s.deleted_at else None,
+                "deleted_by": s.deleted_by
+            } for s in archived_staff
+        ]
+    }
+
+def permanently_delete_record(
+    db: Session,
+    entity_type: str,
+    entity_id: str,
+    actor_id: str,
+    reason: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    device: Optional[str] = None,
+    browser: Optional[str] = None
+) -> bool:
+    entity_type = entity_type.lower()
+    
+    # 1. Retrieve the soft-deleted record and check dependency constraints
+    if entity_type == "user":
+        record = db.query(User).filter(User.id == entity_id, User.is_deleted == True).first()
+        if not record:
+            raise ValueError("User not found or is not archived.")
+        # Check dependencies
+        dep_count = db.query(StockTransaction).filter(StockTransaction.user_id == entity_id).count()
+        dep_count += db.query(MaterialRequest).filter((MaterialRequest.requested_by == entity_id) | (MaterialRequest.approved_by == entity_id)).count()
+        dep_count += db.query(DailyWorkLog).filter(DailyWorkLog.user_id == entity_id).count()
+        if dep_count > 0:
+            raise ValueError(f"Cannot permanently delete user: they have {dep_count} linked transaction/log records. Keep them archived instead.")
+            
+    elif entity_type == "category":
+        record = db.query(Category).filter(Category.id == entity_id, Category.is_deleted == True).first()
+        if not record:
+            raise ValueError("Category not found or is not archived.")
+        # Reassignment is already done on soft delete, but just in case:
+        dep_count = db.query(InventoryItem).filter(InventoryItem.category_id == entity_id).count()
+        if dep_count > 0:
+            raise ValueError(f"Cannot permanently delete category: {dep_count} inventory items are still linked.")
+            
+    elif entity_type == "inventory":
+        record = db.query(InventoryItem).filter(InventoryItem.id == entity_id, InventoryItem.is_deleted == True).first()
+        if not record:
+            raise ValueError("Inventory item not found or is not archived.")
+        dep_count = db.query(StockTransaction).filter(StockTransaction.inventory_id == entity_id).count()
+        dep_count += db.query(ProjectBOM).filter(ProjectBOM.inventory_id == entity_id).count()
+        dep_count += db.query(MaterialRequest).filter(MaterialRequest.inventory_id == entity_id).count()
+        dep_count += db.query(PurchaseOrder).filter(PurchaseOrder.inventory_id == entity_id).count()
+        if dep_count > 0:
+            raise ValueError(f"Cannot permanently delete material: it is linked to {dep_count} stock transactions, BOM items, requests, or POs.")
+            
+    elif entity_type == "supplier":
+        record = db.query(Supplier).filter(Supplier.id == entity_id, Supplier.is_deleted == True).first()
+        if not record:
+            raise ValueError("Supplier not found or is not archived.")
+        dep_count = db.query(InventoryItem).filter(InventoryItem.supplier_id == entity_id).count()
+        dep_count += db.query(PurchaseOrder).filter(PurchaseOrder.supplier_id == entity_id).count()
+        if dep_count > 0:
+            raise ValueError(f"Cannot permanently delete supplier: it has {dep_count} linked materials or POs.")
+            
+    elif entity_type == "client":
+        record = db.query(Client).filter(Client.id == entity_id, Client.is_deleted == True).first()
+        if not record:
+            raise ValueError("Client not found or is not archived.")
+        dep_count = db.query(Project).filter(Project.client_id == entity_id).count()
+        if dep_count > 0:
+            raise ValueError(f"Cannot permanently delete client: it has {dep_count} projects linked.")
+            
+    elif entity_type == "project":
+        record = db.query(Project).filter(Project.id == entity_id, Project.is_deleted == True).first()
+        if not record:
+            raise ValueError("Project not found or is not archived.")
+        dep_count = db.query(ProjectBOM).filter(ProjectBOM.project_id == entity_id).count()
+        dep_count += db.query(StockTransaction).filter(StockTransaction.project_id == entity_id).count()
+        dep_count += db.query(MaterialRequest).filter(MaterialRequest.project_id == entity_id).count()
+        dep_count += db.query(ProjectAssignment).filter(ProjectAssignment.project_id == entity_id).count()
+        dep_count += db.query(ProjectDailyLog).filter(ProjectDailyLog.project_id == entity_id).count()
+        if dep_count > 0:
+            raise ValueError(f"Cannot permanently delete project: it has {dep_count} linked BOM items, stock logs, requests, or assignments.")
+            
+    elif entity_type == "staff":
+        record = db.query(Staff).filter(Staff.id == entity_id, Staff.is_deleted == True).first()
+        if not record:
+            raise ValueError("Staff member not found or is not archived.")
+        dep_count = db.query(Attendance).filter(Attendance.staff_id == entity_id).count()
+        dep_count += db.query(Task).filter(Task.assigned_to == entity_id).count()
+        dep_count += db.query(ProjectDailyLog).filter(ProjectDailyLog.staff_id == entity_id).count()
+        if dep_count > 0:
+            raise ValueError(f"Cannot permanently delete staff: they have {dep_count} linked attendance, task, or log records.")
+            
+    else:
+        raise ValueError("Invalid entity type for permanent deletion.")
+
+    # 2. Log in Audit Log
+    log_audit(
+        db=db,
+        user_id=actor_id,
+        action=f"permanent_delete_{entity_type}",
+        details=f"Permanently deleted {entity_type} ID: {entity_id}. Reason: {reason or 'none'}",
+        old_value="archived",
+        new_value="permanently_deleted",
+        reason=reason,
+        ip_address=ip_address,
+        device=device,
+        browser=browser
+    )
+
+    # 3. Hard delete
+    db.delete(record)
+    db.commit()
+    return True
+
+def restore_category(db: Session, category_id: str) -> bool:
+    db_cat = db.query(Category).filter(Category.id == category_id, Category.is_deleted == True).first()
+    if not db_cat:
+        return False
+    db_cat.is_deleted = False
+    db_cat.deleted_at = None
+    db_cat.deleted_by = None
+    db.commit()
+    return True
+
+def restore_user(db: Session, user_id_to_restore: str) -> bool:
+    db_user = db.query(User).filter(User.id == user_id_to_restore, User.is_deleted == True).first()
+    if not db_user:
+        return False
+    db_user.is_deleted = False
+    db_user.deleted_at = None
+    db_user.deleted_by = None
+    db.commit()
+    return True
 

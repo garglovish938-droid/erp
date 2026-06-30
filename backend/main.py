@@ -37,6 +37,38 @@ import crud, schemas, auth
 from collections import defaultdict
 import time
 
+def format_inr(number) -> str:
+    if number is None:
+        return "₹0.00"
+    try:
+        # Separate decimal part
+        s = f"{float(number):.2f}"
+        parts = s.split(".")
+        integer_part = parts[0]
+        decimal_part = parts[1]
+        
+        # Reverse the integer part to format from right to left
+        reversed_int = integer_part[::-1]
+        formatted = []
+        
+        # The first group from right is 3 digits
+        formatted.append(reversed_int[:3])
+        # Subsequent groups are 2 digits
+        remaining = reversed_int[3:]
+        for i in range(0, len(remaining), 2):
+            formatted.append(remaining[i:i+2])
+            
+        # Join groups with comma and reverse back
+        integer_formatted = ",".join(formatted)[::-1]
+        # Handle sign if negative
+        if integer_formatted.startswith("-,"):
+             integer_formatted = "-" + integer_formatted[2:]
+             
+        return f"₹{integer_formatted}.{decimal_part}"
+    except Exception:
+        return f"₹{number}"
+
+
 class AuthRateLimiter:
     def __init__(self, limit: int = 5, window: int = 60):
         self.limit = limit
@@ -122,7 +154,10 @@ try:
                 "ALTER TABLE project_daily_logs ADD COLUMN approved_at TIMESTAMP",
                 "ALTER TABLE project_daily_logs ADD COLUMN version_id INTEGER DEFAULT 1",
                 "ALTER TABLE audit_logs ADD COLUMN images TEXT",
-                "ALTER TABLE audit_logs ADD COLUMN documents TEXT"
+                "ALTER TABLE audit_logs ADD COLUMN documents TEXT",
+                "ALTER TABLE project_material_history ADD COLUMN status TEXT DEFAULT 'approved'",
+                "ALTER TABLE project_material_history ADD COLUMN approved_by TEXT",
+                "ALTER TABLE project_material_history ADD COLUMN approved_at DATETIME"
             ]
         else:
             alters = [
@@ -138,7 +173,10 @@ try:
                 "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP",
                 "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS version_id INTEGER DEFAULT 1",
                 "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS images TEXT",
-                "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS documents TEXT"
+                "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS documents TEXT",
+                "ALTER TABLE project_material_history ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'approved'",
+                "ALTER TABLE project_material_history ADD COLUMN IF NOT EXISTS approved_by VARCHAR(36)",
+                "ALTER TABLE project_material_history ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP"
             ]
             
         for statement in alters:
@@ -1479,12 +1517,49 @@ def read_categories(db: Session = Depends(get_db), current_user: User = Depends(
 
 @app.post("/api/categories", response_model=schemas.CategoryResponse)
 def create_category(cat_in: schemas.CategoryCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_store_or_higher)):
-    return crud.create_category(db=db, category=cat_in)
+    try:
+        return crud.create_category(db=db, category=cat_in)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.put("/api/categories/{category_id}", response_model=schemas.CategoryResponse)
+def update_category(category_id: str, cat_in: schemas.CategoryUpdate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_store_or_higher)):
+    try:
+        cat = crud.update_category(db=db, category_id=category_id, category_in=cat_in)
+        if not cat:
+            raise HTTPException(status_code=404, detail="Category not found")
+        return cat
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/api/categories/{category_id}")
+def delete_category(category_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_store_or_higher)):
+    success = crud.delete_category(db=db, category_id=category_id, actor_id=current_user.id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return {"status": "success", "message": "Category soft-deleted and materials uncategorized"}
+
+@app.post("/api/categories/merge")
+def merge_categories(req_in: schemas.CategoryMergeRequest, db: Session = Depends(get_db), current_user: User = Depends(auth.require_store_or_higher)):
+    try:
+        success = crud.merge_categories(db=db, source_id=req_in.source_id, target_id=req_in.target_id, actor_id=current_user.id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Source or target category not found")
+        return {"status": "success", "message": "Categories merged successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/categories/move-materials")
+def move_materials_category(req_in: schemas.CategoryMoveMaterialsRequest, db: Session = Depends(get_db), current_user: User = Depends(auth.require_store_or_higher)):
+    success = crud.move_materials_category(db=db, material_ids=req_in.material_ids, target_id=req_in.target_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Target category not found")
+    return {"status": "success", "message": "Materials moved to new category successfully"}
 
 
 # --- SUPPLIERS ---
 @app.get("/api/suppliers", response_model=List[schemas.SupplierResponse])
-def read_suppliers(include_deleted: bool = False, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+def read_suppliers(include_deleted: bool = False, db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
     return crud.get_suppliers(db, include_deleted)
 
 @app.post("/api/suppliers", response_model=schemas.SupplierResponse)
@@ -1858,7 +1933,9 @@ def transfer_material_between_projects(
     current_user: User = Depends(auth.require_any_authenticated)
 ):
     try:
-        success = crud.transfer_project_material(
+        is_worker = current_user.role in ["worker", "operator", "carpenter", "machine_operator", "store_assistant"]
+        
+        history = crud.initiate_project_material_transfer(
             db=db,
             from_project_id=req_in.from_project_id,
             to_project_id=req_in.to_project_id,
@@ -1868,9 +1945,56 @@ def transfer_material_between_projects(
             notes=req_in.notes,
             reason=reason
         )
+        
+        if not is_worker:
+            crud.approve_project_material_transfer(
+                db=db,
+                history_id=history.id,
+                approver_id=current_user.id
+            )
+            broadcast_sync({"event": "inventory_change"})
+            broadcast_sync({"event": "project_materials_change"})
+            return {"status": "success", "message": "Material transfer completed successfully (Auto-Approved)"}
+            
+        broadcast_sync({"event": "project_materials_change"})
+        return {"status": "success", "message": "Material transfer request submitted and pending manager approval"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/projects/materials/transfers/pending", response_model=List[schemas.ProjectMaterialHistoryResponse])
+def read_pending_transfers(db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
+    return crud.get_pending_transfers(db)
+
+@app.post("/api/projects/materials/transfers/{history_id}/approve")
+def approve_transfer(
+    history_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    try:
+        success = crud.approve_project_material_transfer(db=db, history_id=history_id, approver_id=current_user.id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Transfer request not found or database error")
         broadcast_sync({"event": "inventory_change"})
         broadcast_sync({"event": "project_materials_change"})
-        return {"status": "success", "message": "Material transferred successfully"}
+        return {"status": "success", "message": "Material transfer approved successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/projects/materials/transfers/{history_id}/reject")
+def reject_transfer(
+    history_id: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    try:
+        reason = payload.get("reason", "")
+        success = crud.reject_project_material_transfer(db=db, history_id=history_id, approver_id=current_user.id, reason=reason)
+        if not success:
+            raise HTTPException(status_code=404, detail="Transfer request not found or database error")
+        broadcast_sync({"event": "project_materials_change"})
+        return {"status": "success", "message": "Material transfer request rejected"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -3154,8 +3278,8 @@ def download_inventory_report_pdf(db: Session = Depends(get_db), current_user: U
             cat_name, 
             str(item.quantity), 
             item.unit, 
-            f"${item.unit_cost:.2f}", 
-            f"${(item.quantity * item.unit_cost):.2f}"
+            format_inr(item.unit_cost).replace("₹", "Rs. "), 
+            format_inr(item.quantity * item.unit_cost).replace("₹", "Rs. ")
         ])
         
     table = Table(data, colWidths=[70, 150, 80, 50, 40, 60, 70])
@@ -3376,11 +3500,11 @@ def download_purchasing_report_pdf(
             item_name[:15],
             po.category,
             f"{po.quantity:.1f}",
-            f"${po.unit_cost:.2f}",
-            f"${po.total_cost:.2f}",
+            format_inr(po.unit_cost).replace("₹", "Rs. "),
+            format_inr(po.total_cost).replace("₹", "Rs. "),
             po.status.title()
         ])
-    data.append(["Grand Total", "", "", "", "", "", f"${grand_total:.2f}", ""])
+    data.append(["Grand Total", "", "", "", "", "", format_inr(grand_total).replace("₹", "Rs. "), ""])
         
     table = Table(data, colWidths=[90, 85, 85, 75, 40, 50, 60, 55])
     table.setStyle(TableStyle([
@@ -3405,6 +3529,54 @@ def download_purchasing_report_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": "attachment; filename=purchasing_report.pdf"}
     )
+
+
+# --- ARCHIVE SYSTEM ---
+@app.get("/api/archive")
+def get_archive_list(db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
+    return crud.get_archived_items(db)
+
+@app.delete("/api/archive/{entity_type}/{entity_id}/permanent")
+def permanently_delete_archived_record(
+    entity_type: str,
+    entity_id: str,
+    reason: Optional[str] = Query(None),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    try:
+        ip_addr = request.client.host if request and request.client else None
+        user_agent = request.headers.get("user-agent") if request else None
+        
+        success = crud.permanently_delete_record(
+            db=db,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            actor_id=current_user.id,
+            reason=reason,
+            ip_address=ip_addr,
+            device=user_agent
+        )
+        if not success:
+            raise HTTPException(status_code=404, detail="Archived record not found")
+        return {"status": "success", "message": f"Successfully permanently deleted {entity_type} record."}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/archive/category/{category_id}/restore")
+def restore_archived_category(category_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    success = crud.restore_category(db=db, category_id=category_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Category not found or not archived")
+    return {"status": "success", "message": "Category restored successfully"}
+
+@app.post("/api/archive/user/{user_id}/restore")
+def restore_archived_user(user_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    success = crud.restore_user(db=db, user_id_to_restore=user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="User not found or not archived")
+    return {"status": "success", "message": "User restored successfully"}
 
 
 # --- BACKUP & RESTORE SYSTEM ---
@@ -3494,7 +3666,7 @@ def download_projects_report_excel(db: Session = Depends(get_db), current_user: 
     ws = wb.active
     ws.title = "Projects Report"
 
-    ws.append(["Project Name", "Client", "Site Location", "Status", "Start Date", "End Date", "Budget ($)", "BOM Items", "BOM Fulfilled"])
+    ws.append(["Project Name", "Client", "Site Location", "Status", "Start Date", "End Date", "Budget (INR)", "BOM Items", "BOM Fulfilled"])
 
     header_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
     header_font = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
@@ -3552,7 +3724,7 @@ def download_projects_report_pdf(db: Session = Depends(get_db), current_user: Us
     story.append(Paragraph("Allure Living ERP - Projects & Budget Report", title_style))
     story.append(Spacer(1, 12))
 
-    data = [["Project Name", "Client", "Status", "Start Date", "End Date", "Budget ($)", "BOM"]]
+    data = [["Project Name", "Client", "Status", "Start Date", "End Date", "Budget (INR)", "BOM"]]
     for p in projects:
         client_name = p.client.name if p.client else "N/A"
         total_bom = len(p.bom_items)
@@ -3563,7 +3735,7 @@ def download_projects_report_pdf(db: Session = Depends(get_db), current_user: Us
             p.status.replace("_", " ").title(),
             p.start_date.strftime("%Y-%m-%d") if p.start_date else "-",
             p.end_date.strftime("%Y-%m-%d") if p.end_date else "-",
-            f"${p.budget:,.0f}",
+            format_inr(p.budget).replace("₹", "Rs. "),
             f"{fulfilled}/{total_bom}"
         ])
 
@@ -5262,9 +5434,9 @@ async def create_expense(
             current_user,
             project_id,
             "Expense Added",
-            f"Expense of ${amount} added for category: {expense_category}",
+            f"Expense of {format_inr(amount)} added for category: {expense_category}",
             None,
-            f"${amount}"
+            format_inr(amount)
         )
     return db_exp
 
