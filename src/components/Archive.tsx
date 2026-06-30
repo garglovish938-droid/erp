@@ -67,23 +67,45 @@ export default function Archive({ token, role }: ArchiveProps) {
       const data = await apiRequest(url, { method: "POST" });
       showToast(data.message || "Record restored successfully", "success");
       fetchArchive();
+      
+      // Dispatch client side events to notify all active views to refresh instantly
+      window.dispatchEvent(new CustomEvent("erp_websocket_event", { detail: { event: "project_change" } }));
+      window.dispatchEvent(new CustomEvent("erp_websocket_event", { detail: { event: "inventory_change" } }));
+      window.dispatchEvent(new CustomEvent("erp_websocket_event", { detail: { event: "attendance_change" } }));
+      window.dispatchEvent(new CustomEvent("erp_websocket_event", { detail: { event: "request_change" } }));
     } catch (err: any) {
       showToast(err.message || "Failed to restore record", "error");
     }
   };
 
   const handlePermanentDelete = async (entityId: string, type: string) => {
-    const reason = window.prompt("WARNING: Permanent deletion cannot be undone. Please state the reason for permanent deletion:");
+    // 1. Initial Confirmation
+    if (!window.confirm("WARNING: Permanent deletion cannot be undone. Are you sure you want to proceed?")) {
+      return;
+    }
+    
+    // 2. Reason Prompt
+    const reason = window.prompt("Reason Required: Please state the formal reason for permanent deletion audit trail:");
     if (reason === null) return; // cancelled
     if (!reason.trim()) {
       showToast("Reason is required for permanent deletion audit trail.", "error");
       return;
     }
+    
+    // 3. Double Confirmation
+    if (!window.confirm(`FINAL CONFIRMATION: Are you absolutely certain you want to permanently delete this ${type} record? This will perform dependency validation.`)) {
+      return;
+    }
 
     // Map frontend tab types to backend entity types
     let backendType = type;
-    if (type === "staff") backendType = "staff";
+    if (type === "projects") backendType = "project";
+    else if (type === "categories") backendType = "category";
     else if (type === "inventory") backendType = "inventory";
+    else if (type === "staff") backendType = "staff";
+    else if (type === "clients") backendType = "client";
+    else if (type === "suppliers") backendType = "supplier";
+    else if (type === "users") backendType = "user";
 
     try {
       const data = await apiRequest(`/api/archive/${backendType}/${entityId}/permanent?reason=${encodeURIComponent(reason)}`, {
@@ -91,6 +113,11 @@ export default function Archive({ token, role }: ArchiveProps) {
       });
       showToast(data.message || "Record permanently deleted", "success");
       fetchArchive();
+      
+      // Dispatch local custom events to notify views
+      window.dispatchEvent(new CustomEvent("erp_websocket_event", { detail: { event: "project_change" } }));
+      window.dispatchEvent(new CustomEvent("erp_websocket_event", { detail: { event: "inventory_change" } }));
+      window.dispatchEvent(new CustomEvent("erp_websocket_event", { detail: { event: "attendance_change" } }));
     } catch (err: any) {
       showToast(err.message || "Failed to permanently delete record", "error");
     }

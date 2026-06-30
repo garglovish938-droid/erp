@@ -273,16 +273,15 @@ def delete_category(db: Session, category_id: str, actor_id: Optional[str] = Non
     if not db_cat:
         return False
     
+    # Check if category has active inventory items
+    has_items = db.query(InventoryItem).filter(InventoryItem.category_id == category_id, InventoryItem.is_deleted == False).first()
+    if has_items:
+        raise ValueError("Cannot delete category: it is not empty. Please move materials to another category first.")
+        
     # Soft delete the category
     db_cat.is_deleted = True
     db_cat.deleted_at = datetime.utcnow()
     db_cat.deleted_by = actor_id
-    
-    # Reassign materials in this category to None (uncategorized)
-    db.query(InventoryItem).filter(InventoryItem.category_id == category_id).update(
-        {InventoryItem.category_id: None},
-        synchronize_session=False
-    )
     
     db.commit()
     return True
@@ -859,20 +858,37 @@ def update_material_request_status(
             
             if bom_item:
                 bom_item.used_quantity += db_req.quantity
+                bom_item.consumed_quantity += db_req.quantity
                 if bom_item.used_quantity >= bom_item.required_quantity:
                     bom_item.status = "fulfilled"
                 else:
                     bom_item.status = "partial"
             else:
                 # Create a BOM entry if not pre-planned
-                new_bom = ProjectBOM(
+                bom_item = ProjectBOM(
                     project_id=db_req.project_id,
                     inventory_id=db_req.inventory_id,
                     required_quantity=db_req.quantity,
                     used_quantity=db_req.quantity,
+                    consumed_quantity=db_req.quantity,
                     status="fulfilled"
                 )
-                db.add(new_bom)
+                db.add(bom_item)
+                db.flush()
+                
+            # Create ProjectMaterialHistory entry for issued action
+            user = db.query(User).filter(User.id == user_id).first()
+            username = user.full_name if user else "Employee"
+            history = ProjectMaterialHistory(
+                project_id=db_req.project_id,
+                inventory_id=db_req.inventory_id,
+                user_id=user_id,
+                username=username,
+                action="issued",
+                quantity=db_req.quantity,
+                notes=f"Issued from material request ID: {request_id}"
+            )
+            db.add(history)
             
     db.commit()
     db.refresh(db_req)

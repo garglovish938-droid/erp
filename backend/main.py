@@ -1534,10 +1534,13 @@ def update_category(category_id: str, cat_in: schemas.CategoryUpdate, db: Sessio
 
 @app.delete("/api/categories/{category_id}")
 def delete_category(category_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_store_or_higher)):
-    success = crud.delete_category(db=db, category_id=category_id, actor_id=current_user.id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Category not found")
-    return {"status": "success", "message": "Category soft-deleted and materials uncategorized"}
+    try:
+        success = crud.delete_category(db=db, category_id=category_id, actor_id=current_user.id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Category not found")
+        return {"status": "success", "message": "Category soft-deleted"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/categories/merge")
 def merge_categories(req_in: schemas.CategoryMergeRequest, db: Session = Depends(get_db), current_user: User = Depends(auth.require_store_or_higher)):
@@ -1920,7 +1923,7 @@ def use_or_return_project_material(
             reason=reason
         )
         broadcast_sync({"event": "inventory_change"})
-        broadcast_sync({"event": "project_materials_change"})
+        broadcast_sync({"event": "project_change"})
         return history
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1953,10 +1956,10 @@ def transfer_material_between_projects(
                 approver_id=current_user.id
             )
             broadcast_sync({"event": "inventory_change"})
-            broadcast_sync({"event": "project_materials_change"})
+            broadcast_sync({"event": "project_change"})
             return {"status": "success", "message": "Material transfer completed successfully (Auto-Approved)"}
             
-        broadcast_sync({"event": "project_materials_change"})
+        broadcast_sync({"event": "project_change"})
         return {"status": "success", "message": "Material transfer request submitted and pending manager approval"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1976,7 +1979,7 @@ def approve_transfer(
         if not success:
             raise HTTPException(status_code=404, detail="Transfer request not found or database error")
         broadcast_sync({"event": "inventory_change"})
-        broadcast_sync({"event": "project_materials_change"})
+        broadcast_sync({"event": "project_change"})
         return {"status": "success", "message": "Material transfer approved successfully"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2114,6 +2117,12 @@ def update_request_status(
         updated_req = crud.update_material_request_status(db=db, request_id=request_id, status=status, user_id=current_user.id)
         if not updated_req:
             raise HTTPException(status_code=404, detail="Request not found")
+            
+        broadcast_sync({"event": "request_change"})
+        if status == "issued":
+            broadcast_sync({"event": "project_change"})
+            broadcast_sync({"event": "inventory_change"})
+            
         return updated_req
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -3599,6 +3608,19 @@ def permanently_delete_archived_record(
         )
         if not success:
             raise HTTPException(status_code=404, detail="Archived record not found")
+            
+        # Broadcast changes based on entity type to auto-refresh all clients
+        et = entity_type.lower()
+        if et == "project":
+            broadcast_sync({"event": "project_change"})
+        elif et in ["inventory", "category"]:
+            broadcast_sync({"event": "inventory_change"})
+        elif et == "staff":
+            broadcast_sync({"event": "attendance_change"})
+            broadcast_sync({"event": "project_change"})
+        elif et == "user":
+            broadcast_sync({"event": "user_change"})
+            
         return {"status": "success", "message": f"Successfully permanently deleted {entity_type} record."}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

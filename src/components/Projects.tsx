@@ -886,8 +886,8 @@ export default function Projects({ token, role }: { token: string; role: string 
         {paginatedProjects.length > 0 ? (
           paginatedProjects.map((proj) => {
             const isExpanded = expandedProj === proj.id;
-            const completedBOMCount = proj.bom_items.filter((b: any) => b.status === "fulfilled").length;
-            const totalBOMCount = proj.bom_items.length;
+            const completedBOMCount = (proj.bom_items || []).filter((b: any) => b.status === "fulfilled").length;
+            const totalBOMCount = (proj.bom_items || []).length;
             const bomProgress = totalBOMCount > 0 ? (completedBOMCount / totalBOMCount) * 100 : 0;
             const docs = projectDocs[proj.id] || [];
 
@@ -1008,8 +1008,8 @@ export default function Projects({ token, role }: { token: string; role: string 
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50 text-[11px]">
-                              {proj.bom_items.length > 0 ? (
-                                proj.bom_items.map((bom: any) => {
+                              {(proj.bom_items || []).length > 0 ? (
+                                (proj.bom_items || []).map((bom: any) => {
                                   const returnedQty = (materialHistory[proj.id] || [])
                                     .filter(h => h.inventory_id === bom.inventory_id && h.action === "returned")
                                     .reduce((acc, h) => acc + h.quantity, 0);
