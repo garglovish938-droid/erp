@@ -14,14 +14,13 @@ export default function Archive({ token, role }: ArchiveProps) {
   const { showToast } = useToast();
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeTab, setActiveTab] = useState<"projects" | "inventory" | "categories" | "staff" | "clients" | "suppliers" | "users">("projects");
+  const [activeTab, setActiveTab] = useState<"projects" | "inventory" | "categories" | "staff" | "clients" | "users">("projects");
   const [archiveData, setArchiveData] = useState<Record<string, any[]>>({
     projects: [],
     inventory: [],
     categories: [],
     staff: [],
     clients: [],
-    suppliers: [],
     users: []
   });
 
@@ -37,7 +36,6 @@ export default function Archive({ token, role }: ArchiveProps) {
         categories: data.categories || [],
         staff: data.staff || [],
         clients: data.clients || [],
-        suppliers: data.suppliers || [],
         users: data.users || []
       });
     } catch (err: any) {
@@ -118,7 +116,6 @@ export default function Archive({ token, role }: ArchiveProps) {
     categories: "Categories",
     staff: "Employees",
     clients: "Clients",
-    suppliers: "Suppliers",
     users: "Users"
   };
 
