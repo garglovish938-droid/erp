@@ -74,6 +74,7 @@ export default function Archive({ token, role }: ArchiveProps) {
     try {
       const data = await apiRequest(url, { method: "POST" });
       showToast(data.message || "Record restored successfully", "success");
+      setSelectedIds(prev => prev.filter(id => id !== entityId));
       fetchArchive();
       
       // Dispatch client side events to notify all active views to refresh instantly
@@ -120,6 +121,7 @@ export default function Archive({ token, role }: ArchiveProps) {
         method: "DELETE"
       });
       showToast(data.message || "Record permanently deleted", "success");
+      setSelectedIds(prev => prev.filter(id => id !== entityId));
       fetchArchive();
       
       // Dispatch local custom events to notify views
@@ -196,12 +198,14 @@ export default function Archive({ token, role }: ArchiveProps) {
 
   const getFilteredItems = () => {
     const items = archiveData[activeTab] || [];
-    if (!searchQuery.trim()) return items;
-    const query = searchQuery.toLowerCase();
+    if (!Array.isArray(items)) return [];
+    const query = searchQuery.trim().toLowerCase();
     return items.filter(item => {
+      if (!item) return false;
       const name = (item.name || item.full_name || item.email || "").toLowerCase();
       const sku = (item.sku || "").toLowerCase();
       const barcode = (item.barcode || "").toLowerCase();
+      if (!query) return true;
       return name.includes(query) || sku.includes(query) || barcode.includes(query);
     });
   };
@@ -297,7 +301,7 @@ export default function Archive({ token, role }: ArchiveProps) {
               <thead>
                 <tr className="bg-slate-50 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase tracking-wider">
                   <th className="p-4 w-12">
-                    <button onClick={() => handleToggleSelectAll(filteredItems)} className="text-slate-400">
+                    <button onClick={() => handleToggleSelectAll(filteredItems)} className="text-slate-400" title="Select All">
                       {filteredItems.length > 0 && filteredItems.every(item => selectedIds.includes(item.id)) ? (
                         <CheckSquare className="w-4 h-4 text-indigo-650" />
                       ) : (
@@ -313,7 +317,7 @@ export default function Archive({ token, role }: ArchiveProps) {
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
                 {filteredItems.length > 0 ? (
-                  filteredItems.map(item => {
+                  filteredItems.filter(item => item !== null && item !== undefined).map(item => {
                     const deleteTime = item.deleted_at 
                       ? new Date(item.deleted_at).toLocaleString("en-IN", {
                           dateStyle: "medium",
@@ -333,7 +337,7 @@ export default function Archive({ token, role }: ArchiveProps) {
                     return (
                       <tr key={item.id} className="hover:bg-slate-50/30 dark:hover:bg-slate-950/10">
                         <td className="p-4 w-12">
-                          <button onClick={() => handleToggleSelect(item.id)} className="text-slate-400">
+                          <button onClick={() => handleToggleSelect(item.id)} className="text-slate-400" title={selectedIds.includes(item.id) ? "Deselect item" : "Select item"}>
                             {selectedIds.includes(item.id) ? (
                               <CheckSquare className="w-4 h-4 text-indigo-650" />
                             ) : (
@@ -401,7 +405,7 @@ export default function Archive({ token, role }: ArchiveProps) {
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
               <h3 className="text-base font-bold capitalize text-slate-900 dark:text-white">Bulk {bulkAction.replace("_", " ")}</h3>
-              <button type="button" onClick={() => setShowBulkConfirmModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+              <button title="Close" type="button" onClick={() => setShowBulkConfirmModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
             {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
@@ -438,7 +442,7 @@ export default function Archive({ token, role }: ArchiveProps) {
               </div>
 
               <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 dark:border-slate-800 mt-6">
-                <button type="button" onClick={() => setShowBulkConfirmModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold font-sans">Cancel</button>
+                <button title="Close" type="button" onClick={() => setShowBulkConfirmModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold font-sans">Cancel</button>
                 <button type="submit" disabled={submitLoading} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow flex items-center gap-1 font-sans">
                   {submitLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   Confirm Bulk Action

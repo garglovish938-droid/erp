@@ -49,6 +49,7 @@ export default function Projects({ token, role }: { token: string; role: string 
   
   const [categories, setCategories] = useState<any[]>([]);
   const [tempCompletion, setTempCompletion] = useState<Record<string, number>>({});
+  const sliderTimeoutRefs = useRef<Record<string, any>>({});
   
   // Add Material form states
   const [addMaterialTab, setAddMaterialTab] = useState<"existing" | "new">("existing");
@@ -88,7 +89,9 @@ export default function Projects({ token, role }: { token: string; role: string 
   const [showBOMActionModal, setShowBOMActionModal] = useState(false);
   const [selectedBOMItem, setSelectedBOMItem] = useState<any>(null);
   const [bomAction, setBOMAction] = useState<"edit" | "increase" | "decrease" | "return" | "transfer" | "delete">("edit");
-  const [bomActionForm, setBOMActionForm] = useState({ quantity: 1, reason: "", to_project_id: "" });
+  const [bomActionForm, setBOMActionForm] = useState({ quantity: 1, reason: "", notes: "", to_project_id: "" });
+  const [showBOMHistoryModal, setShowBOMHistoryModal] = useState(false);
+  const [bomHistoryItem, setBomHistoryItem] = useState<any>(null);
 
   // Inline client creation
   const [showInlineClient, setShowInlineClient] = useState(false);
@@ -172,6 +175,8 @@ export default function Projects({ token, role }: { token: string; role: string 
           fetchProjectDocs(expandedProj);
           fetchAssignments(expandedProj);
           fetchAuditTrail(expandedProj);
+          fetchCosting(expandedProj);
+          fetchMaterialHistory(expandedProj);
         }
       } else if (msg?.event === "project_activity" && msg.data?.project_id === expandedProj) {
         if (expandedProj) {
@@ -607,14 +612,16 @@ export default function Projects({ token, role }: { token: string; role: string 
         body = {
           inventory_id: selectedBOMItem.inventory_id,
           quantity: bomActionForm.quantity,
-          action: "used"
+          action: "used",
+          notes: bomActionForm.notes
         };
       } else if (bomAction === "decrease" || bomAction === "return") {
         url = `${API_BASE_URL}/api/projects/${selectedProject.id}/materials/use?reason=${encodeURIComponent(bomActionForm.reason)}`;
         body = {
           inventory_id: selectedBOMItem.inventory_id,
           quantity: bomActionForm.quantity,
-          action: "returned"
+          action: "returned",
+          notes: bomActionForm.notes
         };
       } else if (bomAction === "transfer") {
         url = `${API_BASE_URL}/api/projects/materials/transfer?reason=${encodeURIComponent(bomActionForm.reason)}`;
@@ -622,7 +629,8 @@ export default function Projects({ token, role }: { token: string; role: string 
           from_project_id: selectedProject.id,
           to_project_id: bomActionForm.to_project_id,
           inventory_id: selectedBOMItem.inventory_id,
-          quantity: bomActionForm.quantity
+          quantity: bomActionForm.quantity,
+          notes: bomActionForm.notes
         };
       }
 
@@ -1169,7 +1177,7 @@ export default function Projects({ token, role }: { token: string; role: string 
                                                 setSelectedProject(proj); 
                                                 setSelectedBOMItem(bom); 
                                                 setBOMAction("edit");
-                                                setBOMActionForm({ quantity: bom.required_quantity, reason: "", to_project_id: "" });
+                                                setBOMActionForm({ quantity: bom.required_quantity, reason: "", notes: "", to_project_id: "" });
                                                 setSubmitError("");
                                                 setShowBOMActionModal(true); 
                                               }}
@@ -1184,7 +1192,7 @@ export default function Projects({ token, role }: { token: string; role: string 
                                                 setSelectedProject(proj); 
                                                 setSelectedBOMItem(bom); 
                                                 setBOMAction("increase");
-                                                setBOMActionForm({ quantity: 1, reason: "", to_project_id: "" });
+                                                setBOMActionForm({ quantity: 1, reason: "", notes: "", to_project_id: "" });
                                                 setSubmitError("");
                                                 setShowBOMActionModal(true); 
                                               }}
@@ -1199,7 +1207,7 @@ export default function Projects({ token, role }: { token: string; role: string 
                                                 setSelectedProject(proj); 
                                                 setSelectedBOMItem(bom); 
                                                 setBOMAction("decrease");
-                                                setBOMActionForm({ quantity: 1, reason: "", to_project_id: "" });
+                                                setBOMActionForm({ quantity: 1, reason: "", notes: "", to_project_id: "" });
                                                 setSubmitError("");
                                                 setShowBOMActionModal(true); 
                                               }}
@@ -1214,7 +1222,7 @@ export default function Projects({ token, role }: { token: string; role: string 
                                                 setSelectedProject(proj); 
                                                 setSelectedBOMItem(bom); 
                                                 setBOMAction("transfer");
-                                                setBOMActionForm({ quantity: 1, reason: "", to_project_id: "" });
+                                                setBOMActionForm({ quantity: 1, reason: "", notes: "", to_project_id: "" });
                                                 setSubmitError("");
                                                 setShowBOMActionModal(true); 
                                               }}
@@ -1229,7 +1237,7 @@ export default function Projects({ token, role }: { token: string; role: string 
                                                 setSelectedProject(proj); 
                                                 setSelectedBOMItem(bom); 
                                                 setBOMAction("delete");
-                                                setBOMActionForm({ quantity: 0, reason: "", to_project_id: "" });
+                                                setBOMActionForm({ quantity: 0, reason: "", notes: "", to_project_id: "" });
                                                 setSubmitError("");
                                                 setShowBOMActionModal(true); 
                                               }}
@@ -1237,6 +1245,17 @@ export default function Projects({ token, role }: { token: string; role: string 
                                               title="Delete Allocation"
                                             >
                                               Delete
+                                            </button>
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setBomHistoryItem(bom);
+                                                setShowBOMHistoryModal(true);
+                                              }}
+                                              className="px-1.5 py-0.5 bg-sky-50 hover:bg-sky-100 text-sky-600 font-bold rounded text-[9px]"
+                                              title="View Transaction History"
+                                            >
+                                              History
                                             </button>
                                           </div>
                                         </td>
@@ -1589,9 +1608,16 @@ export default function Projects({ token, role }: { token: string; role: string 
                                 min="0" 
                                 max="100" 
                                 value={tempCompletion[proj.id] !== undefined ? tempCompletion[proj.id] : (proj.completion_percentage || 0)} 
-                                onChange={(e) => setTempCompletion({ ...tempCompletion, [proj.id]: parseInt(e.target.value) })}
-                                onMouseUp={(e) => handleUpdateCompletion(proj.id, parseInt((e.target as HTMLInputElement).value))}
-                                onTouchEnd={(e) => handleUpdateCompletion(proj.id, parseInt((e.target as HTMLInputElement).value))}
+                                onChange={(e) => {
+                                  const val = parseInt(e.target.value);
+                                  setTempCompletion(prev => ({ ...prev, [proj.id]: val }));
+                                  if (sliderTimeoutRefs.current[proj.id]) {
+                                    clearTimeout(sliderTimeoutRefs.current[proj.id]);
+                                  }
+                                  sliderTimeoutRefs.current[proj.id] = setTimeout(() => {
+                                    handleUpdateCompletion(proj.id, val);
+                                  }, 400);
+                                }}
                                 disabled={proj.progress_mode === "auto"}
                                 className={`w-32 accent-indigo-600 ${proj.progress_mode === "auto" ? "cursor-not-allowed opacity-40" : "cursor-pointer"}`}
                                 title={proj.progress_mode === "auto" ? "Calculated from daily logs & BOM items" : "Slide to adjust progress"}
@@ -1792,7 +1818,7 @@ export default function Projects({ token, role }: { token: string; role: string 
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-lg p-6 shadow-2xl max-h-[90vh] overflow-y-auto animate-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-4 mb-4">
               <h3 className="text-lg font-bold">{editMode ? "Edit Project Specs" : "Add Project Record"}</h3>
-              <button onClick={() => setShowFormModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded-lg"><X className="w-5 h-5" /></button>
+              <button title="Close" onClick={() => setShowFormModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded-lg"><X className="w-5 h-5" /></button>
             </div>
 
             {submitError && <div className="bg-rose-500/10 text-rose-500 border border-rose-500/25 p-3 rounded-xl text-xs mb-4">{submitError}</div>}
@@ -1957,7 +1983,7 @@ export default function Projects({ token, role }: { token: string; role: string 
               )}
 
               <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 dark:border-slate-800 mt-6">
-                <button type="button" onClick={() => setShowFormModal(false)} className="px-5 py-2.5 text-sm border border-slate-200 dark:border-slate-800 rounded-xl hover:bg-slate-50 transition-colors">Cancel</button>
+                <button title="Close" type="button" onClick={() => setShowFormModal(false)} className="px-5 py-2.5 text-sm border border-slate-200 dark:border-slate-800 rounded-xl hover:bg-slate-50 transition-colors">Cancel</button>
                 <button type="submit" className="px-5 py-2.5 text-sm bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-medium transition-colors shadow-lg">Save Record</button>
               </div>
             </form>
@@ -1971,7 +1997,7 @@ export default function Projects({ token, role }: { token: string; role: string 
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
               <h3 className="text-base font-bold">Specify BOM Material</h3>
-              <button onClick={() => setShowBOMModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+              <button title="Close" onClick={() => setShowBOMModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
             {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
@@ -1991,7 +2017,7 @@ export default function Projects({ token, role }: { token: string; role: string 
               </div>
 
               <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 dark:border-slate-800 mt-6">
-                <button type="button" onClick={() => setShowBOMModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
+                <button title="Close" type="button" onClick={() => setShowBOMModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
                 <button type="submit" className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow">Add Item</button>
               </div>
             </form>
@@ -2005,7 +2031,7 @@ export default function Projects({ token, role }: { token: string; role: string 
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
               <h3 className="text-base font-bold">Request Material Issue</h3>
-              <button onClick={() => setShowRequestModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+              <button title="Close" onClick={() => setShowRequestModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
             {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
@@ -2022,10 +2048,78 @@ export default function Projects({ token, role }: { token: string; role: string 
               </div>
 
               <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 dark:border-slate-800 mt-6">
-                <button type="button" onClick={() => setShowRequestModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
+                <button title="Close" type="button" onClick={() => setShowRequestModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
                 <button type="submit" className="px-4 py-2 bg-indigo-650 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow">Submit Request</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* BOM HISTORY MODAL */}
+      {showBOMHistoryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in zoom-in-95 duration-200">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-lg p-6 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">Material Transaction History</h3>
+                <p className="text-[10px] text-slate-400 font-semibold mt-0.5">{bomHistoryItem?.inventory?.name} ({bomHistoryItem?.inventory?.sku})</p>
+              </div>
+              <button onClick={() => { setShowBOMHistoryModal(false); setBomHistoryItem(null); }} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+            </div>
+
+            <div className="max-h-[350px] overflow-y-auto pr-1 scrollbar-thin">
+              {(() => {
+                const logs = (materialHistory[selectedProject?.id] || []).filter((h: any) => h.inventory_id === bomHistoryItem?.inventory_id);
+                if (logs.length === 0) {
+                  return (
+                    <div className="text-center py-8 text-slate-400 text-xs">
+                      No transaction history logs found for this item in this project.
+                    </div>
+                  );
+                }
+                return (
+                  <div className="space-y-3.5">
+                    {logs.map((log: any) => {
+                      const dateStr = new Date(log.created_at).toLocaleString("en-IN", {
+                        dateStyle: "medium",
+                        timeStyle: "short"
+                      });
+                      return (
+                        <div key={log.id} className="p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200/50 dark:border-slate-800 rounded-2xl text-xs space-y-1.5">
+                          <div className="flex justify-between items-center flex-wrap gap-2">
+                            <span className={cn(
+                              "font-black uppercase text-[9px] px-2 py-0.5 rounded-full",
+                              log.action === "used" ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600" :
+                              log.action === "returned" ? "bg-amber-50 dark:bg-amber-950/40 text-amber-600" :
+                              "bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600"
+                            )}>
+                              {log.action}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-mono">{dateStr}</span>
+                          </div>
+                          <div className="font-semibold text-slate-800 dark:text-slate-200">
+                            Quantity: <span className="font-extrabold">{log.quantity}</span> {bomHistoryItem?.inventory?.unit || "Units"}
+                          </div>
+                          <div className="text-[10px] text-slate-500">
+                            Logged by: <span className="font-bold text-slate-600 dark:text-slate-400">{log.username || "Employee"}</span>
+                          </div>
+                          {log.notes && (
+                            <div className="text-[10px] text-slate-400 italic bg-white dark:bg-slate-900 p-1.5 rounded-lg border border-slate-100 dark:border-slate-800">
+                              Notes: {log.notes}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 dark:border-slate-800 mt-6">
+              <button type="button" onClick={() => { setShowBOMHistoryModal(false); setBomHistoryItem(null); }} className="px-4 py-2 border rounded-xl text-xs font-bold">Close</button>
+            </div>
           </div>
         </div>
       )}
@@ -2036,7 +2130,7 @@ export default function Projects({ token, role }: { token: string; role: string 
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-101 dark:border-slate-800 pb-3 mb-4">
               <h3 className="text-base font-bold capitalize text-slate-900 dark:text-white">{bomAction} Allocation</h3>
-              <button type="button" onClick={() => setShowBOMActionModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+              <button title="Close" type="button" onClick={() => setShowBOMActionModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
             {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
@@ -2100,23 +2194,35 @@ export default function Projects({ token, role }: { token: string; role: string 
                   </div>
 
                   {bomAction !== "edit" && (
-                    <div>
-                      <label className="text-xs font-semibold text-slate-400 block mb-1">Reason / Notes*</label>
-                      <input 
-                        type="text" 
-                        required 
-                        value={bomActionForm.reason} 
-                        onChange={e => setBOMActionForm({ ...bomActionForm, reason: e.target.value })} 
-                        placeholder="e.g. damaged during install / extra needed" 
-                        className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl outline-none" 
-                      />
-                    </div>
+                    <>
+                      <div>
+                        <label className="text-xs font-semibold text-slate-400 block mb-1">Reason*</label>
+                        <input 
+                          type="text" 
+                          required 
+                          value={bomActionForm.reason} 
+                          onChange={e => setBOMActionForm({ ...bomActionForm, reason: e.target.value })} 
+                          placeholder="e.g. damaged during install / extra needed" 
+                          className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl outline-none" 
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-semibold text-slate-400 block mb-1">Notes</label>
+                        <input 
+                          type="text" 
+                          value={bomActionForm.notes} 
+                          onChange={e => setBOMActionForm({ ...bomActionForm, notes: e.target.value })} 
+                          placeholder="Additional commentary (optional)" 
+                          className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl outline-none" 
+                        />
+                      </div>
+                    </>
                   )}
                 </>
               )}
 
               <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 dark:border-slate-800 mt-6">
-                <button type="button" onClick={() => setShowBOMActionModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
+                <button title="Close" type="button" onClick={() => setShowBOMActionModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
                 <button type="submit" disabled={submitLoading} className={`px-4 py-2 text-white rounded-xl text-xs font-bold shadow flex items-center gap-1 ${bomAction === "delete" ? "bg-rose-600 hover:bg-rose-700" : "bg-indigo-650 hover:bg-indigo-700"}`}>
                   {submitLoading && <Loader2 className="w-3 h-3 animate-spin" />}
                   {bomAction === "delete" ? "Confirm Delete" : "Save Changes"}
@@ -2133,7 +2239,7 @@ export default function Projects({ token, role }: { token: string; role: string 
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
               <h3 className="text-base font-bold">Attach Blueprint / Photo</h3>
-              <button onClick={() => setShowDocModal(false)} className="text-slate-400 hover:bg-slate-150 p-1.5 rounded"><X className="w-5 h-5" /></button>
+              <button title="Close" onClick={() => setShowDocModal(false)} className="text-slate-400 hover:bg-slate-150 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
             {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
@@ -2161,7 +2267,7 @@ export default function Projects({ token, role }: { token: string; role: string 
               </div>
 
               <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 mt-6">
-                <button type="button" onClick={() => setShowDocModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
+                <button title="Close" type="button" onClick={() => setShowDocModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
                 <button type="submit" disabled={uploadingDoc} className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-50 shadow">
                   {uploadingDoc ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
                   Attach File
@@ -2180,7 +2286,7 @@ export default function Projects({ token, role }: { token: string; role: string 
             <h4 className="text-base font-bold text-slate-900 dark:text-white">Confirm Deletion</h4>
             <p className="text-xs text-slate-500 leading-relaxed mt-2">{confirmMessage}</p>
             <div className="flex gap-3 justify-center mt-6">
-              <button
+              <button title="Close"
                 onClick={() => setShowConfirmModal(false)}
                 className="px-4 py-2 border rounded-xl hover:bg-slate-50 text-xs font-bold"
               >
@@ -2202,7 +2308,7 @@ export default function Projects({ token, role }: { token: string; role: string 
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
               <h3 className="text-base font-bold text-slate-900 dark:text-white">Bulk CSV Projects Import</h3>
-              <button onClick={() => setShowImportModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+              <button title="Close" onClick={() => setShowImportModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
             {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
@@ -2215,7 +2321,7 @@ export default function Projects({ token, role }: { token: string; role: string 
               </div>
 
               <div className="flex gap-3 justify-end pt-4 border-t mt-6">
-                <button type="button" onClick={() => setShowImportModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
+                <button title="Close" type="button" onClick={() => setShowImportModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
                 <button type="submit" disabled={importLoading} className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow">
                   {importLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   Import Data
@@ -2232,7 +2338,7 @@ export default function Projects({ token, role }: { token: string; role: string 
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-6 shadow-2xl overflow-y-auto max-h-[90vh]">
             <div className="flex items-center justify-between border-b border-slate-105 dark:border-slate-800 pb-3 mb-4">
               <h3 className="text-base font-bold">Add Material to Project</h3>
-              <button onClick={() => setShowAddMaterialModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+              <button title="Close" onClick={() => setShowAddMaterialModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
             {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
@@ -2332,7 +2438,7 @@ export default function Projects({ token, role }: { token: string; role: string 
                 </div>
 
                 <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 dark:border-slate-800 mt-6">
-                  <button type="button" onClick={() => setShowAddMaterialModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
+                  <button title="Close" type="button" onClick={() => setShowAddMaterialModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
                   <button type="submit" disabled={submitLoading} className="px-4 py-2 bg-indigo-650 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow flex items-center gap-1">
                     {submitLoading && <Loader2 className="w-3 h-3 animate-spin" />}
                     Confirm Allocate
@@ -2490,7 +2596,7 @@ export default function Projects({ token, role }: { token: string; role: string 
                 </div>
 
                 <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 dark:border-slate-800 mt-6">
-                  <button type="button" onClick={() => setShowAddMaterialModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
+                  <button title="Close" type="button" onClick={() => setShowAddMaterialModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
                   <button type="submit" disabled={submitLoading} className="px-4 py-2 bg-indigo-650 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow flex items-center gap-1">
                     {submitLoading && <Loader2 className="w-3 h-3 animate-spin" />}
                     Create & Allocate
@@ -2508,7 +2614,7 @@ export default function Projects({ token, role }: { token: string; role: string 
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-101 dark:border-slate-800 pb-3 mb-4">
               <h3 className="text-base font-bold text-slate-900 dark:text-white">Transfer Project Material</h3>
-              <button onClick={() => setShowTransferModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+              <button title="Close" onClick={() => setShowTransferModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
             {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
@@ -2594,7 +2700,7 @@ export default function Projects({ token, role }: { token: string; role: string 
               </div>
 
               <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 dark:border-slate-800 mt-6">
-                <button type="button" onClick={() => setShowTransferModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
+                <button title="Close" type="button" onClick={() => setShowTransferModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
                 <button type="submit" disabled={submitLoading} className="px-4 py-2 bg-amber-650 hover:bg-amber-700 text-white rounded-xl text-xs font-bold shadow flex items-center gap-1">
                   {submitLoading && <Loader2 className="w-3 h-3 animate-spin" />}
                   Confirm Transfer
@@ -2611,7 +2717,7 @@ export default function Projects({ token, role }: { token: string; role: string 
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-101 dark:border-slate-800 pb-3 mb-4">
               <h3 className="text-base font-bold text-slate-900 dark:text-white">Edit Material Allocation Log</h3>
-              <button onClick={() => setShowEditHistoryModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+              <button title="Close" onClick={() => setShowEditHistoryModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
             {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
@@ -2678,7 +2784,7 @@ export default function Projects({ token, role }: { token: string; role: string 
               </div>
 
               <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 dark:border-slate-800 mt-6">
-                <button type="button" onClick={() => setShowEditHistoryModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
+                <button title="Close" type="button" onClick={() => setShowEditHistoryModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
                 <button type="submit" disabled={submitLoading} className="px-4 py-2 bg-indigo-650 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow flex items-center gap-1">
                   {submitLoading && <Loader2 className="w-3 h-3 animate-spin" />}
                   Save Changes

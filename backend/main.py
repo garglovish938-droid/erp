@@ -997,28 +997,29 @@ async def import_inventory_csv(
         headers = next(reader)
     except StopIteration:
         raise HTTPException(status_code=400, detail="CSV file is empty.")
+    import re
     headers = [h.strip() for h in headers]
     header_mapping = {
-        "sku": ["sku", "material code/sku", "code", "material code", "item sku"],
-        "name": ["name", "material name", "item name", "description"],
+        "sku": ["sku", "sku code", "item code", "material code", "material code/sku", "code", "item sku"],
+        "name": ["name", "material name", "item name", "product name", "description"],
         "category": ["category", "material category", "group"],
         "brand": ["brand", "make", "manufacturer"],
         "unit": ["unit", "unit of measure", "uom"],
-        "quantity": ["quantity", "qty", "stock quantity", "stock", "in stock", "current stock", "current_stock"],
+        "quantity": ["quantity", "qty", "stock quantity", "stock", "in stock", "current stock", "current_stock", "opening stock"],
         "minimum_stock_level": ["minimum_stock_level", "min stock", "minimum level", "min stock level", "alert level"],
-        "unit_cost": ["unit_cost", "cost", "unit cost", "unit cost ($)", "price"],
+        "unit_cost": ["unit_cost", "cost", "unit cost", "unit cost ($)", "price", "rate"],
         "barcode": ["barcode", "barcode value"]
     }
+    
+    def clean_header(val: str) -> str:
+        return re.sub(r'[^a-z0-9]', '', val.lower())
+
     col_indices = {}
     for field, synonyms in header_mapping.items():
-        found = False
-        for syn in synonyms:
-            for idx, h in enumerate(headers):
-                if h.lower() == syn:
-                    col_indices[field] = idx
-                    found = True
-                    break
-            if found:
+        clean_syns = [clean_header(s) for s in synonyms]
+        for idx, h in enumerate(headers):
+            if clean_header(h) in clean_syns:
+                col_indices[field] = idx
                 break
     if "sku" not in col_indices or "name" not in col_indices:
         raise HTTPException(status_code=400, detail=f"Required columns 'SKU' or 'Name' not found for Inventory import. Columns: {headers}")
@@ -1242,6 +1243,8 @@ async def import_inventory_csv(
 
     db.commit()
     crud.log_activity(db, current_user.id, "bulk_import", f"Created {success_count}, updated {updated_count}, skipped {skipped_count} items")
+    broadcast_sync({"event": "inventory_change"})
+    broadcast_sync({"event": "category_change"})
     return {
         "status": "success",
         "message": f"Created {success_count}, updated {updated_count}, skipped {skipped_count} records.",
@@ -2118,7 +2121,7 @@ def reject_transfer(
         success = crud.reject_project_material_transfer(db=db, history_id=history_id, approver_id=current_user.id, reason=reason)
         if not success:
             raise HTTPException(status_code=404, detail="Transfer request not found or database error")
-        broadcast_sync({"event": "project_materials_change"})
+        broadcast_sync({"event": "project_change"})
         return {"status": "success", "message": "Material transfer request rejected"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2138,7 +2141,7 @@ def add_new_material_and_use_in_project(
             user_id=current_user.id
         )
         broadcast_sync({"event": "inventory_change"})
-        broadcast_sync({"event": "project_materials_change"})
+        broadcast_sync({"event": "project_change"})
         return item
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2174,7 +2177,7 @@ def edit_project_material_log(
         if not history:
             raise HTTPException(status_code=404, detail="Material history record not found")
         broadcast_sync({"event": "inventory_change"})
-        broadcast_sync({"event": "project_materials_change"})
+        broadcast_sync({"event": "project_change"})
         return history
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2198,7 +2201,7 @@ def delete_project_material_log(
         if not success:
             raise HTTPException(status_code=404, detail="Material history record not found")
         broadcast_sync({"event": "inventory_change"})
-        broadcast_sync({"event": "project_materials_change"})
+        broadcast_sync({"event": "project_change"})
         return {"status": "success", "message": "Material history record deleted"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -6291,6 +6294,7 @@ def update_project_completion(
             notif_type="project_progress"
         )
         
+    broadcast_sync({"event": "project_change"})
     return {"status": "success", "project_id": project_id, "completion_percentage": int(pct)}
 
 
