@@ -6258,7 +6258,7 @@ def update_project_progress_mode(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    mode = payload.get("progress_mode")
+    mode = payload.get("progress_mode") or payload.get("mode")
     if mode not in ["manual", "auto"]:
         raise HTTPException(status_code=400, detail="progress_mode must be 'manual' or 'auto'")
 
