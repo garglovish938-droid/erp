@@ -382,7 +382,9 @@ export default function Inventory({ token, role }: { token: string; role: string
       const matchesSearch = 
         item.name.toLowerCase().includes(search.toLowerCase()) || 
         item.sku.toLowerCase().includes(search.toLowerCase()) ||
-        item.barcode.includes(search);
+        (item.barcode || "").includes(search) ||
+        (item.brand || "").toLowerCase().includes(search.toLowerCase()) ||
+        (item.category?.name || "").toLowerCase().includes(search.toLowerCase());
       const matchesCat = selectedCat === "All" || item.category?.name === selectedCat;
       return matchesSearch && matchesCat;
     })

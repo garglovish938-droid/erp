@@ -1021,18 +1021,25 @@ async def import_inventory_csv(
             if clean_header(h) in clean_syns:
                 col_indices[field] = idx
                 break
-    if "sku" not in col_indices or "name" not in col_indices:
-        raise HTTPException(status_code=400, detail=f"Required columns 'SKU' or 'Name' not found for Inventory import. Columns: {headers}")
+    if "name" not in col_indices:
+        raise HTTPException(status_code=400, detail=f"Required column 'Name' (or valid synonym) not found for Inventory import. Columns: {headers}")
     
-    # Pre-fetch all existing active/inactive SKUs and Barcodes from database to do fast in-memory validation
+    # Pre-fetch all existing active/inactive SKUs, Barcodes and Names from database to do fast in-memory validation
     existing_skus = {} # SKU -> Item ID
     existing_barcodes = {} # Barcode -> Item ID
+    existing_names = {} # Name.lower().strip() -> Item ID
     
-    for item_id, sku, barcode in db.query(InventoryItem.id, InventoryItem.sku, InventoryItem.barcode).all():
-        existing_skus[sku.lower()] = item_id
-        existing_barcodes[barcode.lower()] = item_id
+    for item_id, sku, barcode, name in db.query(InventoryItem.id, InventoryItem.sku, InventoryItem.barcode, InventoryItem.name).all():
+        if sku:
+            existing_skus[sku.lower()] = item_id
+        if barcode:
+            existing_barcodes[barcode.lower()] = item_id
+        if name:
+            existing_names[name.lower().strip()] = item_id
         
-    allocated_barcodes = set() # Set of lowercased barcodes allocated during this import batch
+    allocated_skus = set()
+    allocated_barcodes = set()
+    allocated_names = set()
     category_cache = {}
     
     import_logs = []
@@ -1087,22 +1094,27 @@ async def import_inventory_csv(
             sku = get_val("sku")
             name = get_val("name")
             
-            # Validation: SKU existence
-            if not sku:
-                import_logs.append(f"Row {row_num}: Missing SKU. Row skipped.")
-                skipped_count += 1
-                continue
-                
             # Validation: Name existence
             if not name:
-                import_logs.append(f"Row {row_num} (SKU: {sku}): Missing material name. Row skipped.")
+                import_logs.append(f"Row {row_num}: Missing material name. Row skipped.")
                 skipped_count += 1
                 continue
                 
+            # Validation: SKU existence. If SKU is blank, generate a unique SKU.
+            if not sku:
+                import random
+                clean_name = re.sub(r'[^a-zA-Z0-9]', '', name)[:6].upper()
+                if not clean_name:
+                    clean_name = "MAT"
+                sku = f"{clean_name}-GEN-{random.randint(10000, 99999)}"
+                while sku.lower() in existing_skus or sku.lower() in allocated_skus:
+                    sku = f"{clean_name}-GEN-{random.randint(10000, 99999)}"
+                row_warnings.append(f"SKU was blank. Auto-generated unique SKU '{sku}'.")
+
             # Validation: Quantity values
             quantity_str = get_val("quantity", "0")
             try:
-                quantity = float(quantity_str)
+                quantity = float(quantity_str) if quantity_str else 0.0
                 if quantity < 0:
                     import_logs.append(f"Row {row_num} (SKU: {sku}): Quantity '{quantity_str}' cannot be negative. Row skipped.")
                     skipped_count += 1
@@ -1115,7 +1127,7 @@ async def import_inventory_csv(
             # Validation: Min stock values
             min_stock_str = get_val("minimum_stock_level", "5")
             try:
-                min_stock = float(min_stock_str)
+                min_stock = float(min_stock_str) if min_stock_str else 5.0
                 if min_stock < 0:
                     min_stock = 5.0
                     row_warnings.append(f"Min stock '{min_stock_str}' was negative. Defaulted to 5.0.")
@@ -1126,7 +1138,7 @@ async def import_inventory_csv(
             # Validation: Unit cost values
             unit_cost_str = get_val("unit_cost", "0")
             try:
-                unit_cost = float(unit_cost_str)
+                unit_cost = float(unit_cost_str) if unit_cost_str else 0.0
                 if unit_cost < 0:
                     unit_cost = 0.0
                     row_warnings.append(f"Unit cost '{unit_cost_str}' was negative. Defaulted to 0.0.")
@@ -1137,11 +1149,12 @@ async def import_inventory_csv(
             # Other fields
             cat_name = get_val("category", "Uncategorized")
             brand = get_val("brand")
-            unit = get_val("unit", "Sheets")
+            unit = get_val("unit", "Pcs")  # default to Pcs
+            size_variant = get_val("size_variant")
             
             # Database Savepoint for Row
             with db.begin_nested():
-                cat_key = cat_name.lower()
+                cat_key = cat_name.lower().strip()
                 if cat_key in category_cache:
                     db_cat = category_cache[cat_key]
                 else:
@@ -1157,45 +1170,62 @@ async def import_inventory_csv(
                         db.flush()
                     category_cache[cat_key] = db_cat
                     
-                # Check if SKU already exists
+                # Match duplicates by: SKU, Barcode, or Name
                 db_item = None
                 sku_lower = sku.lower()
-                if sku_lower in existing_skus:
-                    item_id = existing_skus[sku_lower]
-                    db_item = db.query(InventoryItem).filter(InventoryItem.id == item_id).first()
-                    
-                # Resolve barcode
                 barcode = get_val("barcode")
-                if not barcode:
-                    barcode = get_next_barcode(allocated_barcodes)
-                else:
-                    barcode_lower = barcode.lower()
-                    is_taken = False
-                    if barcode_lower in allocated_barcodes:
-                        is_taken = True
-                    elif barcode_lower in existing_barcodes:
-                        item_id_with_barcode = existing_barcodes[barcode_lower]
-                        if db_item and db_item.id == item_id_with_barcode:
-                            pass
-                        else:
-                            is_taken = True
-                            
-                    if is_taken:
-                        old_barcode = barcode
+                barcode_lower = barcode.lower() if barcode else None
+                name_key = name.lower().strip()
+                
+                # Check SKU
+                if sku_lower in existing_skus:
+                    db_item = db.query(InventoryItem).filter(InventoryItem.id == existing_skus[sku_lower]).first()
+                elif sku_lower in allocated_skus:
+                    db_item = db.query(InventoryItem).filter(InventoryItem.sku.ilike(sku)).first()
+                
+                # Check Barcode
+                if not db_item and barcode_lower:
+                    if barcode_lower in existing_barcodes:
+                        db_item = db.query(InventoryItem).filter(InventoryItem.id == existing_barcodes[barcode_lower]).first()
+                    elif barcode_lower in allocated_barcodes:
+                        db_item = db.query(InventoryItem).filter(InventoryItem.barcode.ilike(barcode)).first()
+                
+                # Check Name
+                if not db_item:
+                    if name_key in existing_names:
+                        db_item = db.query(InventoryItem).filter(InventoryItem.id == existing_names[name_key]).first()
+                    elif name_key in allocated_names:
+                        db_item = db.query(InventoryItem).filter(InventoryItem.name.ilike(name)).first()
+                
+                # Resolve barcode for new item or check validity
+                if not db_item:
+                    if not barcode:
                         barcode = get_next_barcode(allocated_barcodes)
-                        row_warnings.append(f"Barcode '{old_barcode}' is already in use. Re-assigned to unique barcode '{barcode}'.")
                     else:
-                        allocated_barcodes.add(barcode_lower)
-                        
+                        if barcode_lower in allocated_barcodes or barcode_lower in existing_barcodes:
+                            old_barcode = barcode
+                            barcode = get_next_barcode(allocated_barcodes)
+                            row_warnings.append(f"Barcode '{old_barcode}' is already in use. Re-assigned to unique barcode '{barcode}'.")
+                        else:
+                            allocated_barcodes.add(barcode_lower)
+                            
                 if db_item:
+                    # Duplicate matched! Update existing stock safely: add quantity
+                    old_qty = db_item.quantity
                     db_item.name = name
                     db_item.category_id = db_cat.id
                     if brand:
                         db_item.brand = brand
                     db_item.unit = unit
-                    db_item.quantity = quantity
-                    db_item.minimum_stock_level = min_stock
-                    db_item.unit_cost = unit_cost
+                    if size_variant:
+                        db_item.size_variant = size_variant
+                    
+                    db_item.quantity += quantity
+                    db_item.available_quantity = db_item.quantity - (db_item.reserved_quantity or 0.0)
+                    if min_stock > 0:
+                        db_item.minimum_stock_level = min_stock
+                    if unit_cost > 0:
+                        db_item.unit_cost = unit_cost
                     db_item.updated_at = datetime.utcnow()
                     
                     if db_item.is_deleted:
@@ -1203,17 +1233,25 @@ async def import_inventory_csv(
                         db_item.deleted_at = None
                         db_item.deleted_by = None
                         
-                    if db_item.barcode:
-                        old_bc_lower = db_item.barcode.lower()
-                        if old_bc_lower in existing_barcodes:
-                            existing_barcodes.pop(old_bc_lower, None)
-                            
-                    db_item.barcode = barcode
-                    existing_barcodes[barcode.lower()] = db_item.id
+                    # Handle barcode update if needed
+                    if barcode and db_item.barcode != barcode:
+                        if barcode_lower not in allocated_barcodes and barcode_lower not in existing_barcodes:
+                            db_item.barcode = barcode
+                            existing_barcodes[barcode_lower] = db_item.id
+                            allocated_barcodes.add(barcode_lower)
+                    
                     db.flush()
+                    # Update cache
+                    existing_skus[sku_lower] = db_item.id
+                    allocated_skus.add(sku_lower)
+                    existing_names[name_key] = db_item.id
+                    allocated_names.add(name_key)
+                    
                     updated_count += 1
+                    msg = f"Row {row_num} (SKU: {sku}): Duplicate matched. Quantity updated from {old_qty} to {db_item.quantity}."
                     if row_warnings:
-                        import_logs.append(f"Row {row_num} (SKU: {sku}): Updated with warning(s): {'; '.join(row_warnings)}")
+                        msg += f" Warning(s): {'; '.join(row_warnings)}"
+                    import_logs.append(msg)
                 else:
                     new_item = InventoryItem(
                         sku=sku,
@@ -1221,20 +1259,37 @@ async def import_inventory_csv(
                         category_id=db_cat.id,
                         brand=brand,
                         unit=unit,
+                        size_variant=size_variant,
                         quantity=quantity,
                         minimum_stock_level=min_stock,
                         unit_cost=unit_cost,
-                        barcode=barcode
+                        barcode=barcode,
+                        available_quantity=quantity,
+                        reserved_quantity=0.0
                     )
                     db.add(new_item)
                     db.flush()
                     
+                    # Update cache
                     existing_skus[sku_lower] = new_item.id
+                    allocated_skus.add(sku_lower)
+                    existing_names[name_key] = new_item.id
+                    allocated_names.add(name_key)
                     existing_barcodes[barcode.lower()] = new_item.id
+                    allocated_barcodes.add(barcode.lower())
+                    
                     success_count += 1
+                    msg = f"Row {row_num} (SKU: {sku}): Created material '{name}' with quantity {quantity}."
                     if row_warnings:
-                        import_logs.append(f"Row {row_num} (SKU: {sku}): Created with warning(s): {'; '.join(row_warnings)}")
-                        
+                        msg += f" Warning(s): {'; '.join(row_warnings)}"
+                    import_logs.append(msg)
+                    
+            # Call to sync reserved/available
+            if db_item:
+                crud.update_inventory_reserved_and_available(db, db_item.id)
+            else:
+                crud.update_inventory_reserved_and_available(db, new_item.id)
+                
         except Exception as row_error:
             # begin_nested() automatically rolls back to savepoint on exit if exception is raised
             import_logs.append(f"Row {row_num} (SKU: {sku or 'N/A'}): Database error: {str(row_error)}. Row skipped.")
