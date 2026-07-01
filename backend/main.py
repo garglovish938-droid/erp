@@ -102,6 +102,7 @@ app = FastAPI(
 # Using allow_origin_regex with credentials causes Starlette to silently drop the CORS headers
 _default_origins = [
     "https://erp-eight-orpin.vercel.app",
+    "https://crp-eight-orpin.vercel.app",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]

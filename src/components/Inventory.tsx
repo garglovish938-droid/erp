@@ -352,10 +352,13 @@ export default function Inventory({ token, role }: { token: string; role: string
 
   // Checkbox selection helpers
   const handleToggleSelectAll = (filteredItems: any[]) => {
-    if (selectedIds.length === filteredItems.length) {
-      setSelectedIds([]);
+    const allSelected = filteredItems.length > 0 && filteredItems.every(item => selectedIds.includes(item.id));
+    if (allSelected) {
+      const filteredIds = filteredItems.map(item => item.id);
+      setSelectedIds(prev => prev.filter(id => !filteredIds.includes(id)));
     } else {
-      setSelectedIds(filteredItems.map(item => item.id));
+      const filteredIds = filteredItems.map(item => item.id);
+      setSelectedIds(prev => Array.from(new Set([...prev, ...filteredIds])));
     }
   };
 
@@ -509,8 +512,8 @@ export default function Inventory({ token, role }: { token: string; role: string
               <tr className="border-b border-slate-200 dark:border-slate-800/80">
                 {isStoreOrHigher && (
                   <th className="p-5 w-12 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">
-                    <button onClick={() => handleToggleSelectAll(paginatedItems)} className="text-slate-400">
-                      {selectedIds.length === paginatedItems.length && paginatedItems.length > 0 ? (
+                    <button onClick={() => handleToggleSelectAll(processedItems)} className="text-slate-400">
+                      {processedItems.length > 0 && processedItems.every(item => selectedIds.includes(item.id)) ? (
                         <CheckSquare className="w-4 h-4 text-indigo-600" />
                       ) : (
                         <Square className="w-4 h-4" />

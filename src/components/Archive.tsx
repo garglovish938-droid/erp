@@ -132,10 +132,13 @@ export default function Archive({ token, role }: ArchiveProps) {
   };
 
   const handleToggleSelectAll = (filteredItems: any[]) => {
-    if (selectedIds.length === filteredItems.length) {
-      setSelectedIds([]);
+    const allSelected = filteredItems.length > 0 && filteredItems.every(item => selectedIds.includes(item.id));
+    if (allSelected) {
+      const filteredIds = filteredItems.map(item => item.id);
+      setSelectedIds(prev => prev.filter(id => !filteredIds.includes(id)));
     } else {
-      setSelectedIds(filteredItems.map(item => item.id));
+      const filteredIds = filteredItems.map(item => item.id);
+      setSelectedIds(prev => Array.from(new Set([...prev, ...filteredIds])));
     }
   };
 
@@ -304,7 +307,7 @@ export default function Archive({ token, role }: ArchiveProps) {
                 <tr className="bg-slate-50 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 text-slate-400 font-bold uppercase tracking-wider">
                   <th className="p-4 w-12">
                     <button onClick={() => handleToggleSelectAll(filteredItems)} className="text-slate-400">
-                      {selectedIds.length === filteredItems.length && filteredItems.length > 0 ? (
+                      {filteredItems.length > 0 && filteredItems.every(item => selectedIds.includes(item.id)) ? (
                         <CheckSquare className="w-4 h-4 text-indigo-650" />
                       ) : (
                         <Square className="w-4 h-4" />
