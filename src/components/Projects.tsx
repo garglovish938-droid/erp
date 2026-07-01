@@ -541,22 +541,12 @@ export default function Projects({ token, role }: { token: string; role: string 
 
   const handleUpdateProgressMode = async (projId: string, mode: string) => {
     try {
-      const headers = { 
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      };
-      const res = await fetch(`${API_BASE_URL}/api/projects/${projId}/progress-mode`, {
+      await apiRequest(`/api/projects/${projId}/progress-mode`, {
         method: "PUT",
-        headers,
         body: JSON.stringify({ progress_mode: mode })
       });
-      if (res.ok) {
-        showToast(`Project progress mode set to ${mode}!`, "success");
-        fetchData();
-      } else {
-        const err = await res.json();
-        showToast(err.detail || "Failed to update progress mode", "error");
-      }
+      showToast(`Project progress mode set to ${mode}!`, "success");
+      fetchData();
     } catch (e: any) {
       showToast(e.message || "Failed to update progress mode", "error");
     }
@@ -564,22 +554,18 @@ export default function Projects({ token, role }: { token: string; role: string 
 
   const handleUpdateCompletion = async (projId: string, pct: number) => {
     try {
-      const headers = { 
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      };
-      const res = await fetch(`${API_BASE_URL}/api/projects/${projId}/completion`, {
+      await apiRequest(`/api/projects/${projId}/completion`, {
         method: "PUT",
-        headers,
         body: JSON.stringify({ completion_percentage: pct })
       });
-      if (res.ok) {
-        showToast("Project completion percentage updated!", "success");
-        fetchData();
-      } else {
-        const err = await res.json();
-        showToast(err.detail || "Failed to update completion percentage", "error");
-      }
+      showToast("Project completion percentage updated!", "success");
+      // Clear tempCompletion override so that the fresh value bound to projects is displayed
+      setTempCompletion(prev => {
+        const copy = { ...prev };
+        delete copy[projId];
+        return copy;
+      });
+      fetchData();
     } catch (e: any) {
       showToast(e.message || "Failed to update completion percentage", "error");
     }
@@ -1598,19 +1584,24 @@ export default function Projects({ token, role }: { token: string; role: string 
                           <div className="flex items-center gap-4">
                             <div className="flex-1 bg-slate-200 dark:bg-slate-800 h-3 rounded-full overflow-hidden">
                               <div 
-                                className="bg-gradient-to-r from-indigo-500 to-purple-600 h-full rounded-full transition-all duration-300"
-                                style={{ width: `${tempCompletion[proj.id] !== undefined ? tempCompletion[proj.id] : (proj.completion_percentage || 0)}%` }}
+                                className="bg-gradient-to-r from-indigo-500 to-purple-600 h-full rounded-full transition-all duration-300 progress-bar-fill"
+                                style={{ width: `${proj.completion_percentage || 0}%` }}
                               ></div>
                             </div>
                             {isManagerOrHigher && statusFilter === "active" && (
                               <input 
+                                key={`${proj.id}-${proj.completion_percentage}`}
                                 type="range" 
                                 min="0" 
                                 max="100" 
-                                value={tempCompletion[proj.id] !== undefined ? tempCompletion[proj.id] : (proj.completion_percentage || 0)} 
+                                defaultValue={proj.completion_percentage || 0} 
                                 onChange={(e) => {
                                   const val = parseInt(e.target.value);
-                                  setTempCompletion(prev => ({ ...prev, [proj.id]: val }));
+                                  const container = e.target.parentElement;
+                                  const progressBar = container?.querySelector('.progress-bar-fill') as HTMLDivElement;
+                                  if (progressBar) {
+                                    progressBar.style.width = `${val}%`;
+                                  }
                                   if (sliderTimeoutRefs.current[proj.id]) {
                                     clearTimeout(sliderTimeoutRefs.current[proj.id]);
                                   }
