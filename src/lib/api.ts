@@ -4,17 +4,26 @@ const RENDER_BACKEND_URL = "https://factory-erp-backend-cwcb.onrender.com";
 
 const getApiUrl = () => {
   if (typeof window !== 'undefined') {
-    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-      return process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    const envUrl = process.env.NEXT_PUBLIC_API_URL || "";
+    
+    if (isLocalhost) {
+      return envUrl || "http://127.0.0.1:8000";
+    } else {
+      if (envUrl && !envUrl.includes("localhost") && !envUrl.includes("127.0.0.1")) {
+        return envUrl;
+      }
+      return RENDER_BACKEND_URL;
     }
-    return process.env.NEXT_PUBLIC_API_URL || RENDER_BACKEND_URL;
   }
-  return process.env.NEXT_PUBLIC_API_URL || process.env.BACKEND_API_URL || RENDER_BACKEND_URL;
+  const envUrl = process.env.NEXT_PUBLIC_API_URL || process.env.BACKEND_API_URL || "";
+  if (envUrl && !envUrl.includes("localhost") && !envUrl.includes("127.0.0.1")) {
+    return envUrl;
+  }
+  return RENDER_BACKEND_URL;
 };
 
 const rawApiUrl = getApiUrl();
-
-// Strip trailing slash if present to prevent double slash errors (e.g. //api/auth/login)
 export const API_BASE_URL = rawApiUrl.replace(/\/$/, "");
 
 
