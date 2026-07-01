@@ -53,6 +53,8 @@ export default function CategoryModal({
   const [reassignSourceId, setReassignSourceId] = useState("");
   const [reassignTargetId, setReassignTargetId] = useState("");
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+  const [catSortField, setCatSortField] = useState<"name" | "count">("name");
+  const [catSortOrder, setCatSortOrder] = useState<"asc" | "desc">("asc");
   
   const { showToast } = useToast();
   const [loading, setLoading] = useState(false);
@@ -100,11 +102,11 @@ export default function CategoryModal({
 
   const handleDeleteClick = async (cat: Category) => {
     const hasItems = items.some(item => item.category_id === cat.id);
-    const confirmMsg = hasItems 
-      ? `Are you sure you want to delete category "${cat.name}"? This category contains materials which will become "Uncategorized".`
-      : `Are you sure you want to delete category "${cat.name}"?`;
-      
-    if (!window.confirm(confirmMsg)) return;
+    if (hasItems) {
+      showToast(`Cannot delete category "${cat.name}" because it contains materials. Please reassign or delete the materials first.`, "error");
+      return;
+    }
+    if (!window.confirm(`Are you sure you want to delete category "${cat.name}"?`)) return;
 
     setLoading(true);
     try {
@@ -180,10 +182,27 @@ export default function CategoryModal({
     );
   };
 
-  const filteredCategories = categories.filter(cat =>
-    cat.name.toLowerCase().includes(catSearch.toLowerCase()) ||
-    (cat.description || "").toLowerCase().includes(catSearch.toLowerCase())
-  );
+  const filteredCategories = categories
+    .filter(cat =>
+      cat.name.toLowerCase().includes(catSearch.toLowerCase()) ||
+      (cat.description || "").toLowerCase().includes(catSearch.toLowerCase())
+    )
+    .sort((a, b) => {
+      let valA: any = a[catSortField as keyof Category];
+      let valB: any = b[catSortField as keyof Category];
+
+      if (catSortField === "count") {
+        valA = items.filter(item => item.category_id === a.id).length;
+        valB = items.filter(item => item.category_id === b.id).length;
+      } else {
+        valA = (valA || "").toLowerCase();
+        valB = (valB || "").toLowerCase();
+      }
+
+      if (valA < valB) return catSortOrder === "asc" ? -1 : 1;
+      if (valA > valB) return catSortOrder === "asc" ? 1 : -1;
+      return 0;
+    });
 
   const materialsInSource = items.filter(item => 
     reassignSourceId ? item.category_id === reassignSourceId : !item.category_id
@@ -320,17 +339,43 @@ export default function CategoryModal({
                   <table className="w-full text-left text-xs border-collapse">
                     <thead>
                       <tr className="bg-slate-50 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800">
-                        <th className="p-3 font-bold uppercase tracking-wider text-slate-400">Name</th>
+                        <th 
+                          onClick={() => {
+                            if (catSortField === "name") {
+                              setCatSortOrder(prev => prev === "asc" ? "desc" : "asc");
+                            } else {
+                              setCatSortField("name");
+                              setCatSortOrder("asc");
+                            }
+                          }}
+                          className="p-3 font-bold uppercase tracking-wider text-slate-400 cursor-pointer hover:text-slate-650 select-none"
+                        >
+                          Name {catSortField === "name" && (catSortOrder === "asc" ? "↑" : "↓")}
+                        </th>
                         <th className="p-3 font-bold uppercase tracking-wider text-slate-400">Description</th>
+                        <th 
+                          onClick={() => {
+                            if (catSortField === "count") {
+                              setCatSortOrder(prev => prev === "asc" ? "desc" : "asc");
+                            } else {
+                              setCatSortField("count");
+                              setCatSortOrder("asc");
+                            }
+                          }}
+                          className="p-3 font-bold uppercase tracking-wider text-slate-400 cursor-pointer hover:text-slate-650 select-none"
+                        >
+                          Products {catSortField === "count" && (catSortOrder === "asc" ? "↑" : "↓")}
+                        </th>
                         <th className="p-3 font-bold uppercase tracking-wider text-slate-400 text-right">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
                       {filteredCategories.length > 0 ? (
                         filteredCategories.map(cat => (
-                          <tr key={cat.id} className="border-b border-slate-200/50 dark:border-slate-800/50 hover:bg-slate-50/50 dark:hover:bg-slate-950/20">
+                          <tr key={cat.id} className="border-b border-slate-200/50 dark:border-slate-800/50 hover:bg-slate-50/50 dark:hover:bg-slate-955/20">
                             <td className="p-3 font-bold text-slate-800 dark:text-slate-200">{cat.name}</td>
                             <td className="p-3 text-slate-500 dark:text-slate-400 truncate max-w-[150px]">{cat.description || "—"}</td>
+                            <td className="p-3 text-slate-500 dark:text-slate-400 font-semibold">{items.filter(item => item.category_id === cat.id).length}</td>
                             <td className="p-3 text-right">
                               <div className="inline-flex gap-1.5">
                                 <button
@@ -353,7 +398,7 @@ export default function CategoryModal({
                         ))
                       ) : (
                         <tr>
-                          <td colSpan={3} className="p-8 text-center text-slate-400 font-medium">No categories found.</td>
+                          <td colSpan={4} className="p-8 text-center text-slate-400 font-medium">No categories found.</td>
                         </tr>
                       )}
                     </tbody>

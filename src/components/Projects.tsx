@@ -84,6 +84,12 @@ export default function Projects({ token, role }: { token: string; role: string 
   const [submitError, setSubmitError] = useState("");
   const [submitLoading, setSubmitLoading] = useState(false);
 
+  // BOM Action States
+  const [showBOMActionModal, setShowBOMActionModal] = useState(false);
+  const [selectedBOMItem, setSelectedBOMItem] = useState<any>(null);
+  const [bomAction, setBOMAction] = useState<"edit" | "increase" | "decrease" | "return" | "transfer" | "delete">("edit");
+  const [bomActionForm, setBOMActionForm] = useState({ quantity: 1, reason: "", to_project_id: "" });
+
   // Inline client creation
   const [showInlineClient, setShowInlineClient] = useState(false);
   const [inlineClientData, setInlineClientData] = useState({ name: "", contact_person: "", phone: "", email: "", address: "" });
@@ -528,6 +534,29 @@ export default function Projects({ token, role }: { token: string; role: string 
     }
   };
 
+  const handleUpdateProgressMode = async (projId: string, mode: string) => {
+    try {
+      const headers = { 
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json"
+      };
+      const res = await fetch(`${API_BASE_URL}/api/projects/${projId}/progress-mode`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ progress_mode: mode })
+      });
+      if (res.ok) {
+        showToast(`Project progress mode set to ${mode}!`, "success");
+        fetchData();
+      } else {
+        const err = await res.json();
+        showToast(err.detail || "Failed to update progress mode", "error");
+      }
+    } catch (e: any) {
+      showToast(e.message || "Failed to update progress mode", "error");
+    }
+  };
+
   const handleUpdateCompletion = async (projId: string, pct: number) => {
     try {
       const headers = { 
@@ -548,6 +577,77 @@ export default function Projects({ token, role }: { token: string; role: string 
       }
     } catch (e: any) {
       showToast(e.message || "Failed to update completion percentage", "error");
+    }
+  };
+
+  const handleBOMAction = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedProject || !selectedBOMItem) return;
+    setSubmitLoading(true);
+    setSubmitError("");
+    try {
+      const headers = {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json"
+      };
+
+      let url = "";
+      let method = "POST";
+      let body: any = null;
+
+      if (bomAction === "edit") {
+        url = `${API_BASE_URL}/api/projects/${selectedProject.id}/bom/${selectedBOMItem.id}`;
+        method = "PUT";
+        body = { required_quantity: bomActionForm.quantity };
+      } else if (bomAction === "delete") {
+        url = `${API_BASE_URL}/api/projects/${selectedProject.id}/bom/${selectedBOMItem.id}`;
+        method = "DELETE";
+      } else if (bomAction === "increase") {
+        url = `${API_BASE_URL}/api/projects/${selectedProject.id}/materials/use?reason=${encodeURIComponent(bomActionForm.reason)}`;
+        body = {
+          inventory_id: selectedBOMItem.inventory_id,
+          quantity: bomActionForm.quantity,
+          action: "used"
+        };
+      } else if (bomAction === "decrease" || bomAction === "return") {
+        url = `${API_BASE_URL}/api/projects/${selectedProject.id}/materials/use?reason=${encodeURIComponent(bomActionForm.reason)}`;
+        body = {
+          inventory_id: selectedBOMItem.inventory_id,
+          quantity: bomActionForm.quantity,
+          action: "returned"
+        };
+      } else if (bomAction === "transfer") {
+        url = `${API_BASE_URL}/api/projects/materials/transfer?reason=${encodeURIComponent(bomActionForm.reason)}`;
+        body = {
+          from_project_id: selectedProject.id,
+          to_project_id: bomActionForm.to_project_id,
+          inventory_id: selectedBOMItem.inventory_id,
+          quantity: bomActionForm.quantity
+        };
+      }
+
+      const res = await fetch(url, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined
+      });
+
+      if (res.ok) {
+        showToast(`Material allocation action '${bomAction}' executed successfully!`, "success");
+        setShowBOMActionModal(false);
+        fetchData();
+        if (selectedProject) {
+          fetchAssignments(selectedProject.id);
+        }
+      } else {
+        const err = await res.json();
+        throw new Error(err.detail || `Failed to perform action ${bomAction}`);
+      }
+    } catch (err: any) {
+      setSubmitError(err.message || "An error occurred");
+      showToast(err.message || "Operation failed", "error");
+    } finally {
+      setSubmitLoading(false);
     }
   };
 
@@ -1062,12 +1162,83 @@ export default function Projects({ token, role }: { token: string; role: string 
                                       </td>
                                       {isManagerOrHigher && statusFilter === "active" && (
                                         <td className="py-3 text-right">
-                                          <button
-                                            onClick={(e) => { e.stopPropagation(); setSelectedProject(proj); setNewRequest({ ...newRequest, inventory_id: bom.inventory_id }); setSubmitError(""); setShowRequestModal(true); }}
-                                            className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/20 text-indigo-600 dark:text-indigo-400 font-bold rounded-lg border border-indigo-100/30 text-[10px]"
-                                          >
-                                            Request Issue
-                                          </button>
+                                          <div className="flex justify-end gap-1.5 flex-wrap">
+                                            <button
+                                              onClick={(e) => { 
+                                                e.stopPropagation(); 
+                                                setSelectedProject(proj); 
+                                                setSelectedBOMItem(bom); 
+                                                setBOMAction("edit");
+                                                setBOMActionForm({ quantity: bom.required_quantity, reason: "", to_project_id: "" });
+                                                setSubmitError("");
+                                                setShowBOMActionModal(true); 
+                                              }}
+                                              className="px-1.5 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded text-[9px]"
+                                              title="Edit Allocated Quantity"
+                                            >
+                                              Edit
+                                            </button>
+                                            <button
+                                              onClick={(e) => { 
+                                                e.stopPropagation(); 
+                                                setSelectedProject(proj); 
+                                                setSelectedBOMItem(bom); 
+                                                setBOMAction("increase");
+                                                setBOMActionForm({ quantity: 1, reason: "", to_project_id: "" });
+                                                setSubmitError("");
+                                                setShowBOMActionModal(true); 
+                                              }}
+                                              className="px-1.5 py-0.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-600 font-bold rounded text-[9px]"
+                                              title="Deduct (Use) stock"
+                                            >
+                                              + Qty
+                                            </button>
+                                            <button
+                                              onClick={(e) => { 
+                                                e.stopPropagation(); 
+                                                setSelectedProject(proj); 
+                                                setSelectedBOMItem(bom); 
+                                                setBOMAction("decrease");
+                                                setBOMActionForm({ quantity: 1, reason: "", to_project_id: "" });
+                                                setSubmitError("");
+                                                setShowBOMActionModal(true); 
+                                              }}
+                                              className="px-1.5 py-0.5 bg-amber-50 hover:bg-amber-100 text-amber-600 font-bold rounded text-[9px]"
+                                              title="Return stock"
+                                            >
+                                              - Qty
+                                            </button>
+                                            <button
+                                              onClick={(e) => { 
+                                                e.stopPropagation(); 
+                                                setSelectedProject(proj); 
+                                                setSelectedBOMItem(bom); 
+                                                setBOMAction("transfer");
+                                                setBOMActionForm({ quantity: 1, reason: "", to_project_id: "" });
+                                                setSubmitError("");
+                                                setShowBOMActionModal(true); 
+                                              }}
+                                              className="px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-bold rounded text-[9px]"
+                                              title="Transfer to another project"
+                                            >
+                                              Transfer
+                                            </button>
+                                            <button
+                                              onClick={(e) => { 
+                                                e.stopPropagation(); 
+                                                setSelectedProject(proj); 
+                                                setSelectedBOMItem(bom); 
+                                                setBOMAction("delete");
+                                                setBOMActionForm({ quantity: 0, reason: "", to_project_id: "" });
+                                                setSubmitError("");
+                                                setShowBOMActionModal(true); 
+                                              }}
+                                              className="px-1.5 py-0.5 bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold rounded text-[9px]"
+                                              title="Delete Allocation"
+                                            >
+                                              Delete
+                                            </button>
+                                          </div>
                                         </td>
                                       )}
                                     </tr>
@@ -1390,8 +1561,20 @@ export default function Projects({ token, role }: { token: string; role: string 
 
                         <div className="border-t border-slate-100 dark:border-slate-800 pt-4">
                           <div className="flex items-center justify-between mb-2">
-                            <span className="text-[10px] text-slate-400 uppercase font-bold block">Completion Percentage ({proj.completion_percentage || 0}%)</span>
-                            <span className="text-[10px] text-indigo-500 font-bold">Current Progress</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] text-slate-400 uppercase font-bold block">Completion Percentage ({proj.completion_percentage || 0}%)</span>
+                              {isManagerOrHigher && statusFilter === "active" && (
+                                <select
+                                  value={proj.progress_mode || "manual"}
+                                  onChange={(e) => handleUpdateProgressMode(proj.id, e.target.value)}
+                                  className="text-[9px] font-extrabold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-350 border border-slate-200 dark:border-slate-700 rounded px-1.5 py-0.5 outline-none cursor-pointer"
+                                >
+                                  <option value="manual">Manual</option>
+                                  <option value="auto">Auto</option>
+                                </select>
+                              )}
+                            </div>
+                            <span className="text-[10px] text-indigo-500 font-bold">{proj.progress_mode === "auto" ? "Auto-Calculated" : "Manual Adjustment"}</span>
                           </div>
                           <div className="flex items-center gap-4">
                             <div className="flex-1 bg-slate-200 dark:bg-slate-800 h-3 rounded-full overflow-hidden">
@@ -1409,8 +1592,9 @@ export default function Projects({ token, role }: { token: string; role: string 
                                 onChange={(e) => setTempCompletion({ ...tempCompletion, [proj.id]: parseInt(e.target.value) })}
                                 onMouseUp={(e) => handleUpdateCompletion(proj.id, parseInt((e.target as HTMLInputElement).value))}
                                 onTouchEnd={(e) => handleUpdateCompletion(proj.id, parseInt((e.target as HTMLInputElement).value))}
-                                className="w-32 cursor-pointer accent-indigo-600"
-                                title="Slide to adjust progress"
+                                disabled={proj.progress_mode === "auto"}
+                                className={`w-32 accent-indigo-600 ${proj.progress_mode === "auto" ? "cursor-not-allowed opacity-40" : "cursor-pointer"}`}
+                                title={proj.progress_mode === "auto" ? "Calculated from daily logs & BOM items" : "Slide to adjust progress"}
                               />
                             )}
                           </div>
@@ -1839,7 +2023,104 @@ export default function Projects({ token, role }: { token: string; role: string 
 
               <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 dark:border-slate-800 mt-6">
                 <button type="button" onClick={() => setShowRequestModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
-                <button type="submit" className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow">Submit Request</button>
+                <button type="submit" className="px-4 py-2 bg-indigo-650 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow">Submit Request</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* BOM ACTION MODAL */}
+      {showBOMActionModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in zoom-in-95 duration-200">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-101 dark:border-slate-800 pb-3 mb-4">
+              <h3 className="text-base font-bold capitalize text-slate-900 dark:text-white">{bomAction} Allocation</h3>
+              <button type="button" onClick={() => setShowBOMActionModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+            </div>
+
+            {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
+
+            <form onSubmit={handleBOMAction} className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-400 block mb-1">Material Name</label>
+                <input 
+                  type="text" 
+                  disabled 
+                  value={selectedBOMItem?.inventory?.name || ""} 
+                  className="w-full p-2.5 text-sm bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-500 cursor-not-allowed" 
+                />
+              </div>
+
+              {bomAction === "delete" ? (
+                <div className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-950/20 p-3 border border-amber-200/50 rounded-xl">
+                  Are you sure you want to delete this allocation?
+                  {selectedBOMItem?.used_quantity > 0 && (
+                    <p className="mt-1 font-bold">
+                      Note: The issued/used quantity of {selectedBOMItem.used_quantity} {selectedBOMItem.inventory?.unit} will be returned to the warehouse inventory.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {bomAction === "transfer" && (
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 block mb-1">Destination Project*</label>
+                      <select
+                        required
+                        value={bomActionForm.to_project_id}
+                        onChange={e => setBOMActionForm({ ...bomActionForm, to_project_id: e.target.value })}
+                        className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl outline-none"
+                      >
+                        <option value="">Select Project</option>
+                        {projects.filter(p => p.id !== selectedProject?.id && !p.is_deleted).map(p => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="text-xs font-semibold text-slate-400 block mb-1">
+                      {bomAction === "edit" ? "Allocated Required Qty*" :
+                       bomAction === "increase" ? "Quantity to Deduct (Use)*" :
+                       bomAction === "decrease" ? "Quantity to Decrease*" :
+                       bomAction === "return" ? "Quantity to Return*" :
+                       "Quantity*"}
+                    </label>
+                    <input 
+                      type="number" 
+                      required 
+                      min="0.01" 
+                      step="any" 
+                      value={bomActionForm.quantity || ""} 
+                      onChange={e => setBOMActionForm({ ...bomActionForm, quantity: parseFloat(e.target.value) || 0 })} 
+                      className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl outline-none" 
+                    />
+                  </div>
+
+                  {bomAction !== "edit" && (
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 block mb-1">Reason / Notes*</label>
+                      <input 
+                        type="text" 
+                        required 
+                        value={bomActionForm.reason} 
+                        onChange={e => setBOMActionForm({ ...bomActionForm, reason: e.target.value })} 
+                        placeholder="e.g. damaged during install / extra needed" 
+                        className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl outline-none" 
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+
+              <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 dark:border-slate-800 mt-6">
+                <button type="button" onClick={() => setShowBOMActionModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
+                <button type="submit" disabled={submitLoading} className={`px-4 py-2 text-white rounded-xl text-xs font-bold shadow flex items-center gap-1 ${bomAction === "delete" ? "bg-rose-600 hover:bg-rose-700" : "bg-indigo-650 hover:bg-indigo-700"}`}>
+                  {submitLoading && <Loader2 className="w-3 h-3 animate-spin" />}
+                  {bomAction === "delete" ? "Confirm Delete" : "Save Changes"}
+                </button>
               </div>
             </form>
           </div>

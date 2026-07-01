@@ -251,6 +251,8 @@ class InventoryItemResponse(BaseSchema):
     brand: Optional[str]
     size_variant: Optional[str]
     quantity: float
+    reserved_quantity: float = 0.0
+    available_quantity: float = 0.0
     unit: str
     minimum_stock_level: float
     unit_cost: float
@@ -302,6 +304,7 @@ class ProjectCreate(BaseModel):
     end_date: Optional[date] = None
     budget: float = 0.0
     department: Optional[str] = None
+    progress_mode: Optional[str] = "manual"
 
     @field_validator('client_id', 'start_date', 'end_date', mode='before')
     @classmethod
@@ -332,6 +335,7 @@ class ProjectUpdate(BaseModel):
     end_date: Optional[date] = None
     budget: Optional[float] = None
     department: Optional[str] = None
+    progress_mode: Optional[str] = None
 
     @field_validator('client_id', 'start_date', 'end_date', mode='before')
     @classmethod
@@ -362,6 +366,8 @@ class ProjectResponse(BaseSchema):
     start_date: Optional[date]
     end_date: Optional[date]
     budget: float
+    completion_percentage: int = 0
+    progress_mode: str = "manual"
     department: Optional[str] = None
     created_at: datetime
     is_deleted: bool
@@ -902,6 +908,8 @@ class DailyExpenseResponse(BaseSchema):
     attachment_url: Optional[str]
     created_at: datetime
     is_deleted: bool
+    deleted_at: Optional[datetime] = None
+    deleted_by: Optional[str] = None
     project: Optional[ProjectResponse] = None
     creator: Optional[UserResponse] = None
 
@@ -1005,4 +1013,12 @@ class CategoryMergeRequest(BaseModel):
 class CategoryMoveMaterialsRequest(BaseModel):
     material_ids: List[str]
     target_id: str
+
+class BulkActionRequest(BaseModel):
+    entity_type: str  # inventory, project, employee, client, expense, purchase, request, document
+    action: str  # archive, restore, delete_permanent
+    ids: List[str]
+    reason: Optional[str] = None
+    password: Optional[str] = None
+
 

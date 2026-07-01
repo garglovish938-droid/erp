@@ -108,6 +108,73 @@ def save_version_snapshot(db: Session, entity_type: str, entity_id: str, data_di
     db.add(history)
     db.commit()
 
+def recalculate_project_progress(db: Session, project_id: str):
+    from models import Project, ProjectBOM, ProjectDailyLog
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        return
+    
+    if project.progress_mode != "auto":
+        return
+        
+    # 1. Materials Progress
+    bom_items = db.query(ProjectBOM).filter(ProjectBOM.project_id == project_id).all()
+    has_materials = len(bom_items) > 0
+    mat_progress = 0.0
+    if has_materials:
+        total_req = sum(b.required_quantity for b in bom_items)
+        if total_req > 0:
+            total_used = sum(min(b.used_quantity, b.required_quantity) for b in bom_items)
+            mat_progress = (total_used / total_req) * 100.0
+        else:
+            mat_progress = 100.0
+            
+    # 2. Tasks Progress (from approved daily logs)
+    latest_log = db.query(ProjectDailyLog).filter(
+        ProjectDailyLog.project_id == project_id,
+        ProjectDailyLog.approval_status == "approved"
+    ).order_by(ProjectDailyLog.log_date.desc(), ProjectDailyLog.created_at.desc()).first()
+    
+    has_tasks = latest_log is not None
+    task_progress = latest_log.progress_percentage if latest_log else 0.0
+    
+    if has_materials and has_tasks:
+        pct = (mat_progress + task_progress) / 2
+    elif has_materials:
+        pct = mat_progress
+    elif has_tasks:
+        pct = task_progress
+    else:
+        pct = 0.0
+        
+    new_pct = int(min(100.0, max(0.0, pct)))
+    
+    if project.completion_percentage != new_pct:
+        project.completion_percentage = new_pct
+        if new_pct == 100 and project.status != "completed":
+            project.status = "completed"
+        db.commit()
+
+def update_inventory_reserved_and_available(db: Session, inventory_id: str):
+    from models import InventoryItem, ProjectBOM, Project
+    item = db.query(InventoryItem).filter(InventoryItem.id == inventory_id).first()
+    if not item:
+        return
+        
+    reserved = 0.0
+    bom_items = db.query(ProjectBOM).join(Project).filter(
+        ProjectBOM.inventory_id == inventory_id,
+        Project.is_deleted == False
+    ).all()
+    for bom in bom_items:
+        pending = bom.required_quantity - bom.used_quantity
+        if pending > 0:
+            reserved += pending
+            
+    item.reserved_quantity = reserved
+    item.available_quantity = item.quantity - reserved
+    db.commit()
+
 # --- AUTH & USERS ---
 def sync_user_to_staff(db: Session, db_user: User):
     staff_member = db.query(Staff).filter(
@@ -516,6 +583,7 @@ def create_inventory_item(db: Session, item: InventoryItemCreate, user_id: Optio
     db.add(db_item)
     db.commit()
     db.refresh(db_item)
+    update_inventory_reserved_and_available(db, db_item.id)
     
     check_item_stock_level(db, db_item)
     save_version_snapshot(db, "InventoryItem", db_item.id, item.model_dump(), user_id)
@@ -533,6 +601,7 @@ def update_inventory_item(db: Session, item_id: str, item_in: InventoryItemUpdat
         
     db.commit()
     db.refresh(db_item)
+    update_inventory_reserved_and_available(db, db_item.id)
     
     check_item_stock_level(db, db_item)
     save_version_snapshot(db, "InventoryItem", db_item.id, item_in.model_dump(), user_id)
@@ -547,6 +616,7 @@ def delete_inventory_item(db: Session, item_id: str, user_id: str) -> bool:
     db_item.deleted_at = datetime.utcnow()
     db_item.deleted_by = user_id
     db.commit()
+    update_inventory_reserved_and_available(db, item_id)
     log_activity(db, user_id, "delete_inventory", f"Soft deleted inventory item: ID {item_id}")
     return True
 
@@ -588,6 +658,7 @@ def restore_inventory_item(db: Session, item_id: str, user_id: str) -> bool:
     db_item.deleted_at = None
     db_item.deleted_by = None
     db.commit()
+    update_inventory_reserved_and_available(db, item_id)
     log_activity(db, user_id, "restore_inventory", f"Restored inventory item: ID {item_id}")
     return True
 
@@ -632,6 +703,7 @@ def adjust_stock(
     db.add(transaction)
     db.commit()
     db.refresh(db_item)
+    update_inventory_reserved_and_available(db, inventory_id)
     
     # Audit log
     log_activity(db, user_id, "stock_adjustment", f"Stock adjusted for {db_item.sku}: {actual_qty} {db_item.unit} ({transaction_type})")
@@ -782,6 +854,8 @@ def add_bom_item(db: Session, project_id: str, bom_in: ProjectBOMCreate) -> Proj
     db.add(db_bom)
     db.commit()
     db.refresh(db_bom)
+    update_inventory_reserved_and_available(db, db_bom.inventory_id)
+    recalculate_project_progress(db, project_id)
     return db_bom
 
 # --- MATERIAL REQUESTS (Approval Pipeline) ---
@@ -2060,6 +2134,8 @@ def record_material_usage(
         browser=browser
     )
 
+    update_inventory_reserved_and_available(db, inventory_id)
+    recalculate_project_progress(db, project_id)
     db.commit()
     db.refresh(history)
     return history
@@ -2167,6 +2243,8 @@ def update_project_material_history(
         browser=browser
     )
 
+    update_inventory_reserved_and_available(db, history.inventory_id)
+    recalculate_project_progress(db, project_id)
     db.commit()
     db.refresh(history)
     return history
@@ -2216,6 +2294,7 @@ def delete_project_material_history(
     else:
         bom.status = "fulfilled" if bom.used_quantity > 0 else "pending"
 
+    inv_id = history.inventory_id
     # Delete history record
     db.delete(history)
 
@@ -2224,7 +2303,7 @@ def delete_project_material_history(
         db=db,
         user_id=user_id,
         project_id=project_id,
-        inventory_id=history.inventory_id,
+        inventory_id=inv_id,
         action="delete_material_history",
         details=f"Admin deleted history log. Action: {old_hist_action} | Qty: {old_hist_qty}",
         old_value=f"Action: {old_hist_action} | Qty: {old_hist_qty}",
@@ -2235,6 +2314,8 @@ def delete_project_material_history(
         browser=browser
     )
 
+    update_inventory_reserved_and_available(db, inv_id)
+    recalculate_project_progress(db, project_id)
     db.commit()
     return True
 
@@ -2561,6 +2642,9 @@ def approve_project_material_transfer(
         browser=browser
     )
 
+    update_inventory_reserved_and_available(db, inventory_id)
+    recalculate_project_progress(db, from_project_id)
+    recalculate_project_progress(db, to_project_id)
     db.commit()
     return True
 
@@ -2720,6 +2804,8 @@ def add_new_material_to_project(
         browser=browser
     )
 
+    update_inventory_reserved_and_available(db, db_item.id)
+    recalculate_project_progress(db, project_id)
     db.commit()
     db.refresh(db_item)
     return db_item
@@ -2889,6 +2975,32 @@ def permanently_delete_record(
         dep_count += db.query(ProjectDailyLog).filter(ProjectDailyLog.staff_id == entity_id).count()
         if dep_count > 0:
             raise ValueError(f"Cannot permanently delete staff: they have {dep_count} linked attendance, task, or log records.")
+            
+    elif entity_type == "expense":
+        record = db.query(DailyExpense).filter(DailyExpense.id == entity_id, DailyExpense.is_deleted == True).first()
+        if not record:
+            raise ValueError("Expense not found or is not archived.")
+            
+    elif entity_type == "purchase":
+        record = db.query(PurchaseOrder).filter(PurchaseOrder.id == entity_id, PurchaseOrder.is_deleted == True).first()
+        if not record:
+            raise ValueError("Purchase order not found or is not archived.")
+        dep_count = db.query(StockTransaction).filter(StockTransaction.notes.like(f"%{entity_id}%")).count()
+        if dep_count > 0:
+            raise ValueError(f"Cannot permanently delete purchase order: it has {dep_count} linked stock transactions.")
+            
+    elif entity_type == "request":
+        record = db.query(MaterialRequest).filter(MaterialRequest.id == entity_id, MaterialRequest.is_deleted == True).first()
+        if not record:
+            raise ValueError("Material request not found or is not archived.")
+        dep_count = db.query(StockTransaction).filter(StockTransaction.notes.like(f"%{entity_id}%")).count()
+        if dep_count > 0:
+            raise ValueError(f"Cannot permanently delete material request: it has {dep_count} linked stock transactions.")
+            
+    elif entity_type == "document":
+        record = db.query(Document).filter(Document.id == entity_id, Document.is_deleted == True).first()
+        if not record:
+            raise ValueError("Document not found or is not archived.")
             
     else:
         raise ValueError("Invalid entity type for permanent deletion.")

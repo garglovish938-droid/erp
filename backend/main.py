@@ -144,6 +144,7 @@ try:
             alters = [
                 "ALTER TABLE projects ADD COLUMN department TEXT",
                 "ALTER TABLE projects ADD COLUMN completion_percentage INTEGER DEFAULT 0",
+                "ALTER TABLE projects ADD COLUMN progress_mode TEXT DEFAULT 'manual'",
                 "ALTER TABLE projects ADD COLUMN version_id INTEGER DEFAULT 1",
                 "ALTER TABLE project_bom ADD COLUMN consumed_quantity FLOAT DEFAULT 0.0",
                 "ALTER TABLE project_daily_logs ADD COLUMN inventory_id VARCHAR(36)",
@@ -157,12 +158,17 @@ try:
                 "ALTER TABLE audit_logs ADD COLUMN documents TEXT",
                 "ALTER TABLE project_material_history ADD COLUMN status TEXT DEFAULT 'approved'",
                 "ALTER TABLE project_material_history ADD COLUMN approved_by TEXT",
-                "ALTER TABLE project_material_history ADD COLUMN approved_at DATETIME"
+                "ALTER TABLE project_material_history ADD COLUMN approved_at DATETIME",
+                "ALTER TABLE inventory ADD COLUMN reserved_quantity FLOAT DEFAULT 0.0",
+                "ALTER TABLE inventory ADD COLUMN available_quantity FLOAT DEFAULT 0.0",
+                "ALTER TABLE daily_expenses ADD COLUMN deleted_at DATETIME",
+                "ALTER TABLE daily_expenses ADD COLUMN deleted_by TEXT"
             ]
         else:
             alters = [
                 "ALTER TABLE projects ADD COLUMN IF NOT EXISTS department VARCHAR(100)",
                 "ALTER TABLE projects ADD COLUMN IF NOT EXISTS completion_percentage INTEGER DEFAULT 0",
+                "ALTER TABLE projects ADD COLUMN IF NOT EXISTS progress_mode VARCHAR(20) DEFAULT 'manual'",
                 "ALTER TABLE projects ADD COLUMN IF NOT EXISTS version_id INTEGER DEFAULT 1",
                 "ALTER TABLE project_bom ADD COLUMN IF NOT EXISTS consumed_quantity FLOAT DEFAULT 0.0",
                 "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS inventory_id VARCHAR(36)",
@@ -176,7 +182,11 @@ try:
                 "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS documents TEXT",
                 "ALTER TABLE project_material_history ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'approved'",
                 "ALTER TABLE project_material_history ADD COLUMN IF NOT EXISTS approved_by VARCHAR(36)",
-                "ALTER TABLE project_material_history ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP"
+                "ALTER TABLE project_material_history ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP",
+                "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS reserved_quantity FLOAT DEFAULT 0.0",
+                "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS available_quantity FLOAT DEFAULT 0.0",
+                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(36)"
             ]
             
         for statement in alters:
@@ -203,6 +213,29 @@ try:
         print("Database already contains users. Skipping auto-seed.")
 except Exception as e:
     print(f"Error during auto-seed check: {e}")
+finally:
+    db.close()
+
+# One-time recalculation of all inventory reserved and available quantities
+try:
+    db = SessionLocal()
+    items = db.query(InventoryItem).filter(InventoryItem.is_deleted == False).all()
+    for item in items:
+        reserved = 0.0
+        bom_items = db.query(ProjectBOM).join(Project).filter(
+            ProjectBOM.inventory_id == item.id,
+            Project.is_deleted == False
+        ).all()
+        for bom in bom_items:
+            pending = bom.required_quantity - bom.used_quantity
+            if pending > 0:
+                reserved += pending
+        item.reserved_quantity = reserved
+        item.available_quantity = item.quantity - reserved
+    db.commit()
+    print("[Startup] Recalculated and synchronized all inventory reserved and available quantities successfully.")
+except Exception as e:
+    print(f"[Startup] Error recalculating inventory quantities: {e}")
 finally:
     db.close()
 
@@ -1850,6 +1883,94 @@ def add_bom_to_project(project_id: str, bom_in: schemas.ProjectBOMCreate, db: Se
     res = crud.add_bom_item(db=db, project_id=project_id, bom_in=bom_in)
     broadcast_sync({"event": "project_change"})
     return res
+
+
+@app.put("/api/projects/{project_id}/bom/{bom_id}", response_model=schemas.ProjectBOMResponse)
+def update_project_bom(
+    project_id: str,
+    bom_id: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    if current_user.role not in ["admin", "super_admin"]:
+        assigned_ids = crud.get_user_project_ids(db, current_user.id)
+        if project_id not in assigned_ids:
+            raise HTTPException(status_code=403, detail="You can only manage projects assigned to you")
+
+    bom = db.query(ProjectBOM).filter(ProjectBOM.id == bom_id, ProjectBOM.project_id == project_id).first()
+    if not bom:
+        raise HTTPException(status_code=404, detail="BOM item not found")
+
+    req_qty = payload.get("required_quantity")
+    if req_qty is None or float(req_qty) < 0:
+        raise HTTPException(status_code=400, detail="required_quantity must be >= 0")
+
+    old_req = bom.required_quantity
+    bom.required_quantity = float(req_qty)
+    
+    if bom.required_quantity > 0:
+        if bom.used_quantity >= bom.required_quantity:
+            bom.status = "fulfilled"
+        elif bom.used_quantity > 0:
+            bom.status = "partial"
+        else:
+            bom.status = "pending"
+    else:
+        bom.status = "fulfilled" if bom.used_quantity > 0 else "pending"
+
+    db.commit()
+    
+    crud.update_inventory_reserved_and_available(db, bom.inventory_id)
+    crud.recalculate_project_progress(db, project_id)
+    db.refresh(bom)
+    
+    broadcast_sync({"event": "project_change"})
+    return bom
+
+@app.delete("/api/projects/{project_id}/bom/{bom_id}")
+def delete_project_bom(
+    project_id: str,
+    bom_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    if current_user.role not in ["admin", "super_admin"]:
+        assigned_ids = crud.get_user_project_ids(db, current_user.id)
+        if project_id not in assigned_ids:
+            raise HTTPException(status_code=403, detail="You can only manage projects assigned to you")
+
+    bom = db.query(ProjectBOM).filter(ProjectBOM.id == bom_id, ProjectBOM.project_id == project_id).first()
+    if not bom:
+        raise HTTPException(status_code=404, detail="BOM item not found")
+
+    inventory_id = bom.inventory_id
+    used_qty = bom.used_quantity
+    
+    if used_qty > 0:
+        inv = db.query(InventoryItem).filter(InventoryItem.id == inventory_id).first()
+        if inv:
+            inv.quantity += used_qty
+            tx = StockTransaction(
+                inventory_id=inventory_id,
+                transaction_type="return",
+                quantity=used_qty,
+                project_id=project_id,
+                user_id=current_user.id,
+                notes=f"Restored from deleted allocation for Project ID: {project_id}"
+            )
+            db.add(tx)
+
+    db.delete(bom)
+    db.commit()
+    
+    crud.update_inventory_reserved_and_available(db, inventory_id)
+    crud.recalculate_project_progress(db, project_id)
+    
+    broadcast_sync({"event": "project_change"})
+    broadcast_sync({"event": "inventory_change"})
+    
+    return {"status": "success", "message": "BOM item allocation deleted and stock returned to warehouse if applicable"}
 
 
 @app.get("/api/projects/{project_id}/assignments", response_model=List[schemas.ProjectAssignmentResponse])
@@ -5149,7 +5270,7 @@ def get_project_costing(
     for bom in project.bom_items:
         inv = db.query(InventoryItem).filter(InventoryItem.id == bom.inventory_id).first()
         if inv:
-            material_cost += (bom.used_quantity or 0.0) * (inv.unit_cost or 0.0)
+            material_cost += (bom.consumed_quantity or 0.0) * (inv.unit_cost or 0.0)
 
     # Calculate labour cost (from daily logs)
     daily_logs = db.query(ProjectDailyLog).filter(ProjectDailyLog.project_id == project_id).all()
@@ -5961,6 +6082,9 @@ async def approve_project_daily_log(
     try:
         db.commit()
         db.refresh(log)
+        if status_val == "approved":
+            crud.recalculate_project_progress(db, project_id)
+            db.commit() # Save progress update if any
     except StaleDataError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Conflict detected: This work log was modified by another request. Please try again.")
@@ -6051,6 +6175,54 @@ def get_project_daily_logs(
         })
     return {"project_id": project_id, "project_name": project.name, "logs": logs}
 
+
+
+@app.put("/api/projects/{project_id}/progress-mode")
+def update_project_progress_mode(
+    project_id: str,
+    payload: dict,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    project = db.query(Project).filter(Project.id == project_id, Project.is_deleted == False).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    mode = payload.get("progress_mode")
+    if mode not in ["manual", "auto"]:
+        raise HTTPException(status_code=400, detail="progress_mode must be 'manual' or 'auto'")
+
+    old_mode = project.progress_mode
+    project.progress_mode = mode
+    
+    db.commit()
+    
+    if mode == "auto":
+        crud.recalculate_project_progress(db, project_id)
+        db.refresh(project)
+
+    ip_addr = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    crud.log_detailed_activity(db, current_user.id, "Project", "update_progress_mode", project_id,
+                               f"Project '{project.name}' progress mode set to {mode}",
+                               ip_address=ip_addr, device=user_agent)
+                               
+    log_and_broadcast_activity_sync(
+        db=db,
+        user=current_user,
+        project_id=project_id,
+        action="Change Project Progress Mode",
+        details=f"Updated progress mode to {mode}",
+        old_value=old_mode,
+        new_value=mode,
+        request=request
+    )
+    
+    # Broadcast project change to websocket clients
+    broadcast_sync({"event": "project_change"})
+    
+    return {"status": "success", "progress_mode": project.progress_mode, "completion_percentage": project.completion_percentage}
 
 
 @app.put("/api/projects/{project_id}/completion")
@@ -6403,5 +6575,190 @@ def resolve_ai_chat_response(payload: AIChatPayload, db: Session = Depends(get_d
         reply += "• *'Who checked in today?'* to fetch live attendance details.\n"
         reply += "• *'List registered suppliers'* to check your contact directory."
         return {"response": reply}
+
+
+@app.post("/api/archive/bulk")
+def bulk_archive_action(
+    req: schemas.BulkActionRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    if not auth.verify_password(req.password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Invalid password verification")
+
+    model_class = None
+    if req.entity_type == "inventory":
+        model_class = InventoryItem
+    elif req.entity_type == "project":
+        model_class = Project
+    elif req.entity_type == "employee":
+        model_class = Staff
+    elif req.entity_type == "client":
+        model_class = Client
+    elif req.entity_type == "expense":
+        model_class = DailyExpense
+    elif req.entity_type == "purchase":
+        model_class = PurchaseOrder
+    elif req.entity_type == "request":
+        model_class = MaterialRequest
+    elif req.entity_type == "document":
+        model_class = Document
+    else:
+        raise HTTPException(status_code=400, detail=f"Invalid entity type: {req.entity_type}")
+
+    processed_count = 0
+    errors = []
+    
+    for item_id in req.ids:
+        try:
+            item = db.query(model_class).filter(model_class.id == item_id).first()
+            if not item:
+                errors.append(f"Item ID {item_id} not found")
+                continue
+                
+            if req.action == "archive":
+                item.is_deleted = True
+                item.deleted_at = datetime.utcnow()
+                item.deleted_by = current_user.id
+                db.flush()
+                if req.entity_type == "inventory":
+                    crud.update_inventory_reserved_and_available(db, item_id)
+                elif req.entity_type == "project":
+                    crud.recalculate_project_progress(db, item_id)
+                processed_count += 1
+                
+            elif req.action == "restore":
+                if req.entity_type == "inventory":
+                    if item.supplier_id:
+                        sup = db.query(Supplier).filter(Supplier.id == item.supplier_id).first()
+                        if sup and sup.is_deleted:
+                            errors.append(f"Cannot restore {item.name}: associated supplier is archived.")
+                            continue
+                    if item.category_id:
+                        cat = db.query(Category).filter(Category.id == item.category_id).first()
+                        if cat and cat.is_deleted:
+                            errors.append(f"Cannot restore {item.name}: associated category is archived.")
+                            continue
+                
+                item.is_deleted = False
+                item.deleted_at = None
+                item.deleted_by = None
+                db.flush()
+                if req.entity_type == "inventory":
+                    crud.update_inventory_reserved_and_available(db, item_id)
+                elif req.entity_type == "project":
+                    crud.recalculate_project_progress(db, item_id)
+                processed_count += 1
+                
+            elif req.action == "delete_permanent":
+                entity_name = req.entity_type
+                if entity_name == "inventory":
+                    entity_name = "inventory_item"
+                elif entity_name == "employee":
+                    entity_name = "staff"
+                
+                success = crud.permanently_delete_record(
+                    db=db,
+                    entity_type=entity_name,
+                    entity_id=item_id,
+                    actor_id=current_user.id,
+                    reason=req.reason,
+                    ip_address=request.client.host if request.client else None,
+                    device=request.headers.get("user-agent")
+                )
+                if success:
+                    processed_count += 1
+                else:
+                    errors.append(f"Failed to permanently delete Item ID {item_id}")
+        except Exception as ex:
+            db.rollback()
+            errors.append(f"Error processing item {item_id}: {str(ex)}")
+            
+    db.commit()
+    
+    event_map = {
+        "inventory": "inventory_change",
+        "project": "project_change",
+        "employee": "user_change",
+        "client": "client_change",
+        "expense": "expense_change",
+        "purchase": "purchase_change",
+        "request": "request_change",
+        "document": "document_change"
+    }
+    broadcast_sync({"event": event_map.get(req.entity_type, "inventory_change")})
+    
+    ip_addr = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    crud.log_detailed_activity(
+        db=db,
+        user_id=current_user.id,
+        entity_type="BulkAction",
+        action=f"bulk_{req.action}",
+        entity_id=req.entity_type,
+        details=f"Bulk {req.action} on {req.entity_type}. Successful: {processed_count}/{len(req.ids)}. Reason: {req.reason or 'None'}",
+        ip_address=ip_addr,
+        device=user_agent
+    )
+    
+    if errors and processed_count == 0:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+        
+    return {
+        "status": "success",
+        "processed_count": processed_count,
+        "total_count": len(req.ids),
+        "errors": errors
+    }
+
+@app.post("/api/expenses/{expense_id}/restore")
+def restore_expense(expense_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    exp = db.query(DailyExpense).filter(DailyExpense.id == expense_id).first()
+    if not exp:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    exp.is_deleted = False
+    exp.deleted_at = None
+    exp.deleted_by = None
+    db.commit()
+    broadcast_sync({"event": "expense_change"})
+    return {"status": "success", "message": "Expense restored"}
+
+@app.post("/api/purchasing/{po_id}/restore")
+def restore_purchase_order(po_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    po = db.query(PurchaseOrder).filter(PurchaseOrder.id == po_id).first()
+    if not po:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+    po.is_deleted = False
+    po.deleted_at = None
+    po.deleted_by = None
+    db.commit()
+    broadcast_sync({"event": "purchase_change"})
+    return {"status": "success", "message": "Purchase order restored"}
+
+@app.post("/api/requests/{request_id}/restore")
+def restore_material_request(request_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    mr = db.query(MaterialRequest).filter(MaterialRequest.id == request_id).first()
+    if not mr:
+        raise HTTPException(status_code=404, detail="Material request not found")
+    mr.is_deleted = False
+    mr.deleted_at = None
+    mr.deleted_by = None
+    db.commit()
+    broadcast_sync({"event": "request_change"})
+    return {"status": "success", "message": "Material request restored"}
+
+@app.post("/api/documents/{doc_id}/restore")
+def restore_document(doc_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    doc.is_deleted = False
+    doc.deleted_at = None
+    doc.deleted_by = None
+    db.commit()
+    broadcast_sync({"event": "document_change"})
+    return {"status": "success", "message": "Document restored"}
+
 
 

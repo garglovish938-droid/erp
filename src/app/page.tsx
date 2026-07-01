@@ -118,19 +118,18 @@ export default function Home() {
   useEffect(() => {
     if (!user) return;
 
-    const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    let wsHost = window.location.host;
-    
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
-    if (apiUrl) {
-      try {
-        const urlObj = new URL(apiUrl);
-        wsHost = urlObj.host;
-      } catch (e) {}
-    }
-    
-    if (wsHost.includes("localhost:3000") || wsHost.includes("127.0.0.1:3000")) {
-      wsHost = "localhost:8000";
+    let wsHost = "";
+    let wsProto = "ws:";
+    try {
+      const urlObj = new URL(API_BASE_URL);
+      wsHost = urlObj.host;
+      wsProto = urlObj.protocol === "https:" ? "wss:" : "ws:";
+    } catch (e) {
+      wsHost = window.location.host;
+      wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      if (wsHost.includes("localhost:3000") || wsHost.includes("127.0.0.1:3000")) {
+        wsHost = "localhost:8000";
+      }
     }
     
     const wsUrl = `${wsProto}//${wsHost}/ws`;

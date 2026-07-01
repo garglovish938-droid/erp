@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { 
   Plus, Search, ScanLine, X, Loader2, ArrowUpRight, Trash2, Edit2, 
   RotateCcw, CheckSquare, Square, AlertTriangle, ChevronLeft, ChevronRight, FileText, Barcode 
@@ -60,9 +60,22 @@ export default function Inventory({ token, role }: { token: string; role: string
 
   // Pagination & Sorting
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 8;
+  const [itemsPerPage, setItemsPerPage] = useState<number | "ALL">(25);
   const [sortField, setSortField] = useState("name");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+
+  // Bulk confirmation modal states
+  const [showBulkConfirmModal, setShowBulkConfirmModal] = useState(false);
+  const [bulkAction, setBulkAction] = useState<"archive" | "restore" | "delete_permanent">("archive");
+  const [bulkPassword, setBulkPassword] = useState("");
+  const [bulkReason, setBulkReason] = useState("");
+  const [submitLoading, setSubmitLoading] = useState(false);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
+  };
 
   const isStoreOrHigher = ["admin", "manager", "store"].includes(role);
   const isAdmin = role === "admin";
@@ -235,33 +248,50 @@ export default function Inventory({ token, role }: { token: string; role: string
     setShowConfirmModal(true);
   };
 
-  const handleBulkArchive = () => {
+  const triggerBulkAction = (action: "archive" | "restore" | "delete_permanent") => {
+    setBulkAction(action);
+    setBulkPassword("");
+    setBulkReason("");
+    setSubmitError("");
+    setShowBulkConfirmModal(true);
+  };
+
+  const handleExecuteBulkAction = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (selectedIds.length === 0) return;
-    setConfirmMessage(`Are you sure you want to archive all ${selectedIds.length} selected materials?`);
-    setConfirmAction(() => async () => {
-      let successCount = 0;
-      let failedMessages: string[] = [];
-      
-      for (const id of selectedIds) {
-        try {
-          await inventoryService.deleteInventoryItem(id);
-          successCount++;
-        } catch (e: any) {
-          failedMessages.push(e.message || `Failed to archive material ID ${id}`);
-        }
+    setSubmitLoading(true);
+    setSubmitError("");
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/archive/bulk`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          entity_type: "inventory",
+          action: bulkAction,
+          ids: selectedIds,
+          reason: bulkReason,
+          password: bulkPassword
+        })
+      });
+
+      if (res.ok) {
+        showToast(`Successfully performed bulk ${bulkAction} on ${selectedIds.length} materials`, "success");
+        setSelectedIds([]);
+        setShowBulkConfirmModal(false);
+        fetchData();
+      } else {
+        const err = await res.json();
+        throw new Error(err.detail || `Failed to perform bulk ${bulkAction}`);
       }
-      
-      if (failedMessages.length > 0) {
-        showToast(failedMessages.join(" | "), "error");
-      } else if (successCount > 0) {
-        showToast(`Successfully archived ${successCount} material items`, "success");
-      }
-      
-      setSelectedIds([]);
-      fetchData();
-      setShowConfirmModal(false);
-    });
-    setShowConfirmModal(true);
+    } catch (err: any) {
+      setSubmitError(err.message || "Bulk operation failed");
+      showToast(err.message || "Bulk operation failed", "error");
+    } finally {
+      setSubmitLoading(false);
+    }
   };
 
   const handleAdjustStock = async (e: React.FormEvent) => {
@@ -363,8 +393,15 @@ export default function Inventory({ token, role }: { token: string; role: string
       return 0;
     });
 
-  const totalPages = Math.ceil(processedItems.length / itemsPerPage);
-  const paginatedItems = processedItems.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+  const rowHeight = 72;
+  const visibleHeight = 600;
+  const totalPages = typeof itemsPerPage === "number" ? Math.ceil(processedItems.length / itemsPerPage) : 1;
+  const startIndex = itemsPerPage === "ALL" ? Math.max(0, Math.floor(scrollTop / rowHeight) - 5) : 0;
+  const endIndex = itemsPerPage === "ALL" ? Math.min(processedItems.length, Math.floor((scrollTop + visibleHeight) / rowHeight) + 5) : processedItems.length;
+
+  const paginatedItems = itemsPerPage === "ALL"
+    ? processedItems.slice(startIndex, endIndex)
+    : processedItems.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
 
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-7xl mx-auto space-y-8">
@@ -456,7 +493,7 @@ export default function Inventory({ token, role }: { token: string; role: string
         <div className="flex items-center gap-3 p-3 bg-white dark:bg-slate-900 rounded-2xl border animate-in slide-in-from-top-3 duration-250">
           <span className="text-xs font-bold text-indigo-600">{selectedIds.length} Materials Selected</span>
           <button
-            onClick={handleBulkArchive}
+            onClick={() => triggerBulkAction("archive")}
             className="px-4.5 py-2 bg-rose-50 text-rose-600 hover:bg-rose-100 text-xs font-bold rounded-xl border border-rose-200"
           >
             Archive Selected
@@ -466,7 +503,7 @@ export default function Inventory({ token, role }: { token: string; role: string
 
       {/* Materials Table */}
       <div className="glass rounded-3xl overflow-hidden border border-slate-202 dark:border-slate-800 shadow-xl">
-        <div className="overflow-x-auto max-h-[60vh] overflow-y-auto scrollbar-thin">
+        <div ref={containerRef} onScroll={handleScroll} className="overflow-x-auto max-h-[60vh] overflow-y-auto scrollbar-thin">
           <table className="w-full text-left border-collapse">
             <thead className="sticky top-0 z-10 bg-slate-55 dark:bg-slate-900">
               <tr className="border-b border-slate-200 dark:border-slate-800/80">
@@ -490,6 +527,11 @@ export default function Inventory({ token, role }: { token: string; role: string
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50 text-sm font-medium">
+              {itemsPerPage === "ALL" && startIndex > 0 && (
+                <tr style={{ height: `${startIndex * rowHeight}px` }}>
+                  <td colSpan={isStoreOrHigher ? 7 : 6} style={{ padding: 0, border: 0 }} />
+                </tr>
+              )}
               {paginatedItems.length > 0 ? (
                 paginatedItems.map((item) => {
                   const isLow = item.quantity <= item.minimum_stock_level && item.quantity > 0;
@@ -569,30 +611,64 @@ export default function Inventory({ token, role }: { token: string; role: string
                   </td>
                 </tr>
               )}
+              {itemsPerPage === "ALL" && endIndex < processedItems.length && (
+                <tr style={{ height: `${(processedItems.length - endIndex) * rowHeight}px` }}>
+                  <td colSpan={isStoreOrHigher ? 7 : 6} style={{ padding: 0, border: 0 }} />
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
 
         {/* Pagination bounds */}
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between p-5 border-t border-slate-100 dark:border-slate-800/80 bg-slate-50/50">
-            <span className="text-xs text-slate-400 font-semibold">Page {currentPage} of {totalPages}</span>
-            <div className="flex gap-2">
-              <button
-                disabled={currentPage === 1}
-                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                className="p-1.5 border rounded-lg hover:bg-slate-100 disabled:opacity-50"
+        {(totalPages > 1 || itemsPerPage === "ALL" || processedItems.length > 0) && (
+          <div className="flex items-center justify-between p-5 border-t border-slate-100 dark:border-slate-800/80 bg-slate-50/50 flex-wrap gap-4">
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-400 font-semibold">Show items:</span>
+              <select
+                value={itemsPerPage}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setItemsPerPage(val === "ALL" ? "ALL" : parseInt(val));
+                  setCurrentPage(1);
+                  setScrollTop(0);
+                  if (containerRef.current) {
+                    containerRef.current.scrollTop = 0;
+                  }
+                }}
+                className="p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-xs font-bold outline-none cursor-pointer"
               >
-                <ChevronLeft className="w-4 h-4" />
-              </button>
-              <button
-                disabled={currentPage === totalPages}
-                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                className="p-1.5 border rounded-lg hover:bg-slate-100 disabled:opacity-50"
-              >
-                <ChevronRight className="w-4 h-4" />
-              </button>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="250">250</option>
+                <option value="500">500</option>
+                <option value="1000">1000</option>
+                <option value="ALL">ALL (Virtual Scroll)</option>
+              </select>
+              <span className="text-xs text-slate-400 font-semibold">
+                Showing {itemsPerPage === "ALL" ? `all ${processedItems.length}` : `${Math.min(processedItems.length, (currentPage - 1) * itemsPerPage + 1)}-${Math.min(processedItems.length, currentPage * itemsPerPage)} of ${processedItems.length}`} items
+              </span>
             </div>
+            
+            {itemsPerPage !== "ALL" && totalPages > 1 && (
+              <div className="flex gap-2">
+                <button
+                  disabled={currentPage === 1}
+                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                  className="p-1.5 border rounded-lg hover:bg-slate-100 disabled:opacity-50"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <button
+                  disabled={currentPage === totalPages}
+                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                  className="p-1.5 border rounded-lg hover:bg-slate-100 disabled:opacity-50"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -855,6 +931,58 @@ export default function Inventory({ token, role }: { token: string; role: string
                 Yes, Delete
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* BULK ACTION CONFIRMATION MODAL */}
+      {showBulkConfirmModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in zoom-in-95 duration-200">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-101 dark:border-slate-800 pb-3 mb-4">
+              <h3 className="text-base font-bold capitalize text-slate-900 dark:text-white">Bulk {bulkAction.replace("_", " ")}</h3>
+              <button type="button" onClick={() => setShowBulkConfirmModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+            </div>
+
+            {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
+
+            <form onSubmit={handleExecuteBulkAction} className="space-y-4">
+              <div className="text-xs text-slate-650 bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-100/50">
+                You are about to perform bulk <strong className="text-indigo-600">{bulkAction.replace("_", " ")}</strong> on <strong className="text-indigo-600">{selectedIds.length}</strong> items.
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-400 block mb-1">Reason / Notes*</label>
+                <input 
+                  type="text" 
+                  required 
+                  value={bulkReason} 
+                  onChange={e => setBulkReason(e.target.value)} 
+                  placeholder="e.g. Obsolete materials / project canceled" 
+                  className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl outline-none" 
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-400 block mb-1">Administrator Password Verification*</label>
+                <input 
+                  type="password" 
+                  required 
+                  value={bulkPassword} 
+                  onChange={e => setBulkPassword(e.target.value)} 
+                  placeholder="Enter your login password" 
+                  className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl outline-none" 
+                />
+              </div>
+
+              <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 dark:border-slate-800 mt-6">
+                <button type="button" onClick={() => setShowBulkConfirmModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
+                <button type="submit" disabled={submitLoading} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow flex items-center gap-1">
+                  {submitLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  Confirm Bulk Action
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

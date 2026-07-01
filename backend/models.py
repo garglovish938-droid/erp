@@ -64,6 +64,8 @@ class InventoryItem(Base):
     brand = Column(String(100), nullable=True)
     size_variant = Column(String(100), nullable=True)
     quantity = Column(Float, default=0.0, nullable=False)
+    reserved_quantity = Column(Float, default=0.0, nullable=False)
+    available_quantity = Column(Float, default=0.0, nullable=False)
     unit = Column(String(20), nullable=False)  # Sheets, Pairs, Meters, etc.
     minimum_stock_level = Column(Float, default=5.0, nullable=False)
     unit_cost = Column(Float, default=0.0, nullable=False)
@@ -137,6 +139,7 @@ class Project(Base):
     end_date = Column(Date, nullable=True)
     budget = Column(Float, default=0.0, nullable=False)
     completion_percentage = Column(Integer, default=0, nullable=False)  # NEW: 0-100
+    progress_mode = Column(String(20), default="manual", nullable=False)
     department = Column(String(100), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     version_id = Column(Integer, default=1, nullable=False)
@@ -580,6 +583,8 @@ class DailyExpense(Base):
     attachment_url = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     is_deleted = Column(Boolean, default=False, nullable=False)
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by = Column(String(36), nullable=True)
 
     project = relationship("Project")
     creator = relationship("User")

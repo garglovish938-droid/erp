@@ -7,9 +7,11 @@ class Settings:
     # Database configuration: supports Postgres (production) and SQLite (local dev)
     # In production (Railway), DATABASE_URL is injected automatically by the PostgreSQL plugin.
     # SQLAlchemy 2.0 requires 'postgresql://' instead of 'postgres://'
+    _base_dir = os.path.dirname(os.path.abspath(__file__))
+    _default_db = f"sqlite:///{os.path.join(_base_dir, 'erp.db')}"
     DATABASE_URL: str = os.getenv(
         "DATABASE_URL",
-        "sqlite:///./erp.db"
+        _default_db
     ).replace("postgres://", "postgresql://", 1)
 
     # JWT security settings — ALWAYS override SECRET_KEY via environment variable in production!
