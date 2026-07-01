@@ -6585,7 +6585,7 @@ def bulk_archive_action(
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_admin)
 ):
-    if not auth.verify_password(req.password, current_user.hashed_password):
+    if not auth.verify_password(req.password, current_user.password_hash):
         raise HTTPException(status_code=400, detail="Invalid password verification")
 
     model_class = None
@@ -6695,10 +6695,10 @@ def bulk_archive_action(
     crud.log_detailed_activity(
         db=db,
         user_id=current_user.id,
-        entity_type="BulkAction",
+        module="BulkAction",
         action=f"bulk_{req.action}",
-        entity_id=req.entity_type,
-        details=f"Bulk {req.action} on {req.entity_type}. Successful: {processed_count}/{len(req.ids)}. Reason: {req.reason or 'None'}",
+        record_id=req.entity_type,
+        message=f"Bulk {req.action} on {req.entity_type}. Successful: {processed_count}/{len(req.ids)}. Reason: {req.reason or 'None'}",
         ip_address=ip_addr,
         device=user_agent
     )

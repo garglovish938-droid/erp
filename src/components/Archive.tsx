@@ -168,12 +168,8 @@ export default function Archive({ token, role }: ArchiveProps) {
       else if (activeTab === "staff") backendType = "employee";
       else if (activeTab === "clients") backendType = "client";
 
-      const res = await fetch(`/api/archive/bulk`, {
+      await apiRequest("/api/archive/bulk", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json"
-        },
         body: JSON.stringify({
           entity_type: backendType,
           action: bulkAction,
@@ -183,18 +179,13 @@ export default function Archive({ token, role }: ArchiveProps) {
         })
       });
 
-      if (res.ok) {
-        showToast(`Successfully performed bulk ${bulkAction} on ${selectedIds.length} records`, "success");
-        setSelectedIds([]);
-        setShowBulkConfirmModal(false);
-        fetchArchive();
+      showToast(`Successfully performed bulk ${bulkAction} on ${selectedIds.length} records`, "success");
+      setSelectedIds([]);
+      setShowBulkConfirmModal(false);
+      fetchArchive();
 
-        window.dispatchEvent(new CustomEvent("erp_websocket_event", { detail: { event: "project_change" } }));
-        window.dispatchEvent(new CustomEvent("erp_websocket_event", { detail: { event: "inventory_change" } }));
-      } else {
-        const err = await res.json();
-        throw new Error(err.detail || `Failed to perform bulk ${bulkAction}`);
-      }
+      window.dispatchEvent(new CustomEvent("erp_websocket_event", { detail: { event: "project_change" } }));
+      window.dispatchEvent(new CustomEvent("erp_websocket_event", { detail: { event: "inventory_change" } }));
     } catch (err: any) {
       setSubmitError(err.message || "Bulk operation failed");
       showToast(err.message || "Bulk operation failed", "error");
