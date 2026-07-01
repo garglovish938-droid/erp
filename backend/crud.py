@@ -17,7 +17,7 @@ from schemas import (
     ProjectUpdate, ProjectBOMCreate, MaterialRequestCreate, PurchaseOrderCreate, DailyExpenseCreate,
     StaffCreate, StaffUpdate, AttendanceCreate, CustomFieldDefinitionCreate, CustomFieldValueCreate,
     WorkflowDefinitionCreate, ApprovalRuleCreate, DashboardWidgetCreate, TaskCreate,
-    TaskUpdate, DocumentCreate, ShiftCreate, AttendanceRuleUpdate
+    TaskUpdate, DocumentCreate, ShiftCreate, AttendanceRuleUpdate, NewMaterialAndProjectUsageRequest
 )
 
 # Activity Logger Helper
