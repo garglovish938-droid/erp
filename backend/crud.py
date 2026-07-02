@@ -1979,11 +1979,11 @@ from models import ProjectMaterialHistory, AuditLog, ProjectBOM, StockTransactio
 
 def log_audit(
     db: Session,
-    user_id: Optional[str],
-    project_id: Optional[str],
-    inventory_id: Optional[str],
-    action: str,
-    details: Optional[str],
+    user_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    inventory_id: Optional[str] = None,
+    action: str = "",
+    details: Optional[str] = None,
     old_value: Optional[str] = None,
     new_value: Optional[str] = None,
     reason: Optional[str] = None,
