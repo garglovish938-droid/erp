@@ -9,7 +9,8 @@ from models import (
     StockTransaction, MaterialRequest, PurchaseOrder, Staff, Attendance,
     Notification, ActivityLog, CustomFieldDefinition, CustomFieldValue, DailyExpense,
     WorkflowDefinition, WorkflowStep, ApprovalRule, DashboardWidget, Task,
-    Document, VersionHistory, ProjectAssignment, DailyWorkLog, Shift, AttendanceRule
+    Document, VersionHistory, ProjectAssignment, DailyWorkLog, Shift, AttendanceRule,
+    ProjectDailyLog, ProjectMaterialHistory
 )
 from schemas import (
     UserCreate, UserUpdate, CategoryCreate, CategoryUpdate, InventoryItemCreate, InventoryItemUpdate,
