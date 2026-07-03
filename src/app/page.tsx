@@ -19,6 +19,8 @@ import ExpenseAnalytics from "@/components/ExpenseAnalytics";
 import ProjectProgress from "@/components/ProjectProgress";
 import DailyExpenses from "@/components/DailyExpenses";
 import Archive from "@/components/Archive";
+import FactoryFund from "@/components/FactoryFund";
+import ProjectPayments from "@/components/ProjectPayments";
 
 import { apiRequest } from "@/services/apiClient";
 import { API_BASE_URL } from "@/lib/api";
@@ -312,6 +314,8 @@ export default function Home() {
           {activeTab === "requests" && <MaterialRequests token={user.token} role={user.role} />}
           {activeTab === "purchasing" && <Purchasing token={user.token} role={user.role} />}
           {activeTab === "daily-expenses" && <DailyExpenses token={user.token} role={user.role} />}
+          {activeTab === "factory-fund" && <FactoryFund token={user.token} role={user.role} />}
+          {activeTab === "project-payments" && <ProjectPayments token={user.token} role={user.role} />}
           {activeTab === "expense-analytics" && <ExpenseAnalytics token={user.token} role={user.role} />}
           {activeTab === "crm" && <CRM token={user.token} role={user.role} />}
           {activeTab === "team" && <Team token={user.token} role={user.role} />}

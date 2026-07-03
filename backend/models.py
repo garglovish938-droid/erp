@@ -581,6 +581,8 @@ class DailyExpense(Base):
     project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     attachment_url = Column(String(255), nullable=True)
+    payment_mode = Column(String(50), nullable=True, default="Cash")
+    remarks = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     is_deleted = Column(Boolean, default=False, nullable=False)
     deleted_at = Column(DateTime, nullable=True)
@@ -647,5 +649,47 @@ class ProjectMaterialHistory(Base):
     inventory = relationship("InventoryItem")
     user = relationship("User", foreign_keys=[user_id])
     approved_by_user = relationship("User", foreign_keys=[approved_by])
+
+
+class FactoryFund(Base):
+    __tablename__ = "factory_funds"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    fund_id = Column(String(50), unique=True, index=True, nullable=False)
+    date = Column(Date, nullable=False, default=date.today)
+    amount = Column(Float, nullable=False)
+    payment_method = Column(String(50), nullable=False)
+    reference_number = Column(String(100), nullable=True)
+    added_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    remarks = Column(Text, nullable=True)
+    attachment_url = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User")
+
+
+class ProjectPayment(Base):
+    __tablename__ = "project_payments"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    payment_id = Column(String(50), unique=True, index=True, nullable=False)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    client_id = Column(String(36), ForeignKey("clients.id", ondelete="SET NULL"), nullable=True)
+    invoice_number = Column(String(100), nullable=True)
+    invoice_amount = Column(Float, nullable=False)
+    received_amount = Column(Float, nullable=False)
+    pending_amount = Column(Float, nullable=False)
+    payment_method = Column(String(50), nullable=False)
+    reference_number = Column(String(100), nullable=True)
+    bank_name = Column(String(100), nullable=True)
+    received_date = Column(Date, nullable=False, default=date.today)
+    received_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    attachment_url = Column(String(255), nullable=True)
+    remarks = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    project = relationship("Project")
+    client = relationship("Client")
+    receiver = relationship("User")
 
 

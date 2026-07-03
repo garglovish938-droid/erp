@@ -10,15 +10,17 @@ from models import (
     Notification, ActivityLog, CustomFieldDefinition, CustomFieldValue, DailyExpense,
     WorkflowDefinition, WorkflowStep, ApprovalRule, DashboardWidget, Task,
     Document, VersionHistory, ProjectAssignment, DailyWorkLog, Shift, AttendanceRule,
-    ProjectDailyLog, ProjectMaterialHistory
+    ProjectDailyLog, ProjectMaterialHistory, FactoryFund, ProjectPayment
 )
 from schemas import (
     UserCreate, UserUpdate, CategoryCreate, CategoryUpdate, InventoryItemCreate, InventoryItemUpdate,
     SupplierCreate, SupplierUpdate, ClientCreate, ClientUpdate, ProjectCreate,
     ProjectUpdate, ProjectBOMCreate, MaterialRequestCreate, PurchaseOrderCreate, DailyExpenseCreate,
+    DailyExpenseUpdate,
     StaffCreate, StaffUpdate, AttendanceCreate, CustomFieldDefinitionCreate, CustomFieldValueCreate,
     WorkflowDefinitionCreate, ApprovalRuleCreate, DashboardWidgetCreate, TaskCreate,
-    TaskUpdate, DocumentCreate, ShiftCreate, AttendanceRuleUpdate, NewMaterialAndProjectUsageRequest
+    TaskUpdate, DocumentCreate, ShiftCreate, AttendanceRuleUpdate, NewMaterialAndProjectUsageRequest,
+    FactoryFundCreate, ProjectPaymentCreate
 )
 
 # Activity Logger Helper
@@ -1937,12 +1939,85 @@ def create_daily_expense(db: Session, exp: DailyExpenseCreate, user_id: str) -> 
         vendor=exp.vendor,
         project_id=exp.project_id,
         created_by=user_id,
-        attachment_url=exp.attachment_url
+        attachment_url=exp.attachment_url,
+        payment_mode=exp.payment_mode,
+        remarks=exp.remarks
     )
     db.add(db_exp)
     db.commit()
     db.refresh(db_exp)
     log_detailed_activity(db, user_id, "DailyExpense", "create", db_exp.id, f"Created expense {db_exp.expense_id} of amount {db_exp.amount}")
+    return db_exp
+
+def update_daily_expense(
+    db: Session,
+    expense_id: str,
+    exp_in: DailyExpenseUpdate,
+    user_id: str,
+    ip_address: Optional[str] = None,
+    device: Optional[str] = None,
+    browser: Optional[str] = None
+) -> Optional[DailyExpense]:
+    db_exp = db.query(DailyExpense).filter(DailyExpense.id == expense_id, DailyExpense.is_deleted == False).first()
+    if not db_exp:
+        return None
+        
+    # Capture old values
+    changes = []
+    old_values = []
+    new_values = []
+    
+    fields_to_check = {
+        "amount": exp_in.amount,
+        "expense_category": exp_in.expense_category,
+        "description": exp_in.description,
+        "vendor": exp_in.vendor,
+        "project_id": exp_in.project_id,
+        "attachment_url": exp_in.attachment_url,
+        "payment_mode": exp_in.payment_mode,
+        "remarks": exp_in.remarks,
+        "expense_date": exp_in.expense_date
+    }
+    
+    for field, val in fields_to_check.items():
+        if val is not None:
+            old_val = getattr(db_exp, field)
+            if field == "project_id" and old_val != val:
+                old_p = db.query(Project).filter(Project.id == old_val).first() if old_val else None
+                new_p = db.query(Project).filter(Project.id == val).first() if val else None
+                old_val_name = old_p.name if old_p else "None"
+                new_val_name = new_p.name if new_p else "None"
+                changes.append(f"Project: {old_val_name} -> {new_val_name}")
+                old_values.append(f"Project: {old_val_name}")
+                new_values.append(f"Project: {new_val_name}")
+            elif old_val != val:
+                changes.append(f"{field.replace('_', ' ').capitalize()}: {old_val} -> {val}")
+                old_values.append(f"{field}: {old_val}")
+                new_values.append(f"{field}: {val}")
+            
+            setattr(db_exp, field, val)
+            
+    if changes:
+        db.flush()
+        # Log to Audit Log
+        log_audit(
+            db=db,
+            user_id=user_id,
+            project_id=db_exp.project_id,
+            inventory_id=None,
+            action="edit_expense",
+            details=f"Edited expense {db_exp.expense_id}. Changes: {', '.join(changes)}",
+            old_value=" | ".join(old_values),
+            new_value=" | ".join(new_values),
+            reason=exp_in.reason,
+            ip_address=ip_address,
+            device=device,
+            browser=browser
+        )
+        log_detailed_activity(db, user_id, "DailyExpense", "update", db_exp.id, f"Updated expense {db_exp.expense_id}: {', '.join(changes)}")
+        db.commit()
+        db.refresh(db_exp)
+        
     return db_exp
 
 def get_daily_expenses(
@@ -2974,8 +3049,9 @@ def permanently_delete_record(
         dep_count = db.query(Attendance).filter(Attendance.staff_id == entity_id).count()
         dep_count += db.query(Task).filter(Task.assigned_to == entity_id).count()
         dep_count += db.query(ProjectDailyLog).filter(ProjectDailyLog.staff_id == entity_id).count()
+        dep_count += db.query(ProjectAssignment).filter(ProjectAssignment.staff_id == entity_id).count()
         if dep_count > 0:
-            raise ValueError(f"Cannot permanently delete staff: they have {dep_count} linked attendance, task, or log records.")
+            raise ValueError(f"Cannot permanently delete staff: they have {dep_count} linked attendance, task, log, or project assignment records.")
             
     elif entity_type == "expense":
         record = db.query(DailyExpense).filter(DailyExpense.id == entity_id, DailyExpense.is_deleted == True).first()
@@ -3044,4 +3120,108 @@ def restore_user(db: Session, user_id_to_restore: str) -> bool:
     db_user.deleted_by = None
     db.commit()
     return True
+
+
+def create_factory_fund(db: Session, fund: FactoryFundCreate, user_id: str) -> FactoryFund:
+    target_date = fund.date or date.today()
+    date_str = target_date.strftime("%Y%m%d")
+    fund_count = db.query(func.count(FactoryFund.id)).filter(FactoryFund.date == target_date).scalar()
+    fund_id = f"FUND-{date_str}-{fund_count + 1:04d}"
+
+    db_fund = FactoryFund(
+        fund_id=fund_id,
+        date=target_date,
+        amount=fund.amount,
+        payment_method=fund.payment_method,
+        reference_number=fund.reference_number,
+        added_by=user_id,
+        remarks=fund.remarks,
+        attachment_url=fund.attachment_url
+    )
+    db.add(db_fund)
+    db.commit()
+    db.refresh(db_fund)
+    log_detailed_activity(db, user_id, "FactoryFund", "create", db_fund.id, f"Added factory fund {db_fund.fund_id} of amount {db_fund.amount}")
+    return db_fund
+
+def get_factory_funds(db: Session) -> List[FactoryFund]:
+    return db.query(FactoryFund).options(joinedload(FactoryFund.user)).order_by(FactoryFund.date.desc(), FactoryFund.created_at.desc()).all()
+
+def get_factory_financial_stats(db: Session) -> dict:
+    today = date.today()
+    today_fund = db.query(func.sum(FactoryFund.amount)).filter(FactoryFund.date == today).scalar() or 0.0
+    start_of_month = date(today.year, today.month, 1)
+    monthly_fund = db.query(func.sum(FactoryFund.amount)).filter(FactoryFund.date >= start_of_month).scalar() or 0.0
+    total_fund = db.query(func.sum(FactoryFund.amount)).scalar() or 0.0
+    total_expenses = db.query(func.sum(DailyExpense.amount)).filter(DailyExpense.is_deleted == False).scalar() or 0.0
+    available_balance = total_fund - total_expenses
+    
+    return {
+        "today_fund": round(today_fund, 2),
+        "monthly_fund": round(monthly_fund, 2),
+        "total_fund": round(total_fund, 2),
+        "total_expenses": round(total_expenses, 2),
+        "available_balance": round(available_balance, 2)
+    }
+
+def create_project_payment(db: Session, payment: ProjectPaymentCreate, user_id: str) -> ProjectPayment:
+    target_date = payment.received_date or date.today()
+    date_str = target_date.strftime("%Y%m%d")
+    pay_count = db.query(func.count(ProjectPayment.id)).filter(ProjectPayment.received_date == target_date).scalar()
+    payment_id = f"PAY-{date_str}-{pay_count + 1:04d}"
+    pending = payment.invoice_amount - payment.received_amount
+
+    db_pay = ProjectPayment(
+        payment_id=payment_id,
+        project_id=payment.project_id,
+        client_id=payment.client_id,
+        invoice_number=payment.invoice_number,
+        invoice_amount=payment.invoice_amount,
+        received_amount=payment.received_amount,
+        pending_amount=pending,
+        payment_method=payment.payment_method,
+        reference_number=payment.reference_number,
+        bank_name=payment.bank_name,
+        received_date=target_date,
+        received_by=user_id,
+        attachment_url=payment.attachment_url,
+        remarks=payment.remarks
+    )
+    db.add(db_pay)
+    db.commit()
+    db.refresh(db_pay)
+    log_detailed_activity(db, user_id, "ProjectPayment", "create", db_pay.id, f"Received project payment {db_pay.payment_id} of amount {db_pay.received_amount}")
+    return db_pay
+
+def get_project_payments(db: Session, project_id: Optional[str] = None) -> List[ProjectPayment]:
+    query = db.query(ProjectPayment).options(
+        joinedload(ProjectPayment.project),
+        joinedload(ProjectPayment.client),
+        joinedload(ProjectPayment.receiver)
+    )
+    if project_id:
+        query = query.filter(ProjectPayment.project_id == project_id)
+    return query.order_by(ProjectPayment.received_date.desc(), ProjectPayment.created_at.desc()).all()
+
+def get_financial_dashboard_stats(db: Session) -> dict:
+    factory_stats = get_factory_financial_stats(db)
+    today = date.today()
+    today_expenses = db.query(func.sum(DailyExpense.amount)).filter(DailyExpense.expense_date == today, DailyExpense.is_deleted == False).scalar() or 0.0
+    project_revenue = db.query(func.sum(ProjectPayment.received_amount)).scalar() or 0.0
+    pending_payments = db.query(func.sum(ProjectPayment.pending_amount)).scalar() or 0.0
+    cash_flow = factory_stats["total_fund"] + project_revenue - factory_stats["total_expenses"]
+    total_project_expense = db.query(func.sum(DailyExpense.amount)).filter(DailyExpense.project_id != None, DailyExpense.is_deleted == False).scalar() or 0.0
+    total_material_cost = db.query(func.sum(ProjectBOM.consumed_quantity * InventoryItem.unit_cost)).join(InventoryItem, ProjectBOM.inventory_id == InventoryItem.id).scalar() or 0.0
+    net_profit = project_revenue - (total_project_expense + total_material_cost)
+    
+    return {
+        "factory_balance": factory_stats["available_balance"],
+        "today_expenses": round(today_expenses, 2),
+        "today_fund": factory_stats["today_fund"],
+        "monthly_fund": factory_stats["monthly_fund"],
+        "project_revenue": round(project_revenue, 2),
+        "pending_client_payments": round(pending_payments, 2),
+        "cash_flow": round(cash_flow, 2),
+        "net_profit": round(net_profit, 2)
+    }
 

@@ -31,7 +31,7 @@ from models import (
     StockTransaction, MaterialRequest, PurchaseOrder, Staff, Attendance,
     Notification, ActivityLog, CustomFieldDefinition, CustomFieldValue,
     Shift, AttendanceRule, Task, DailyWorkLog, ProjectAssignment, ProjectDailyLog,
-    DailyExpense, LoginHistory
+    DailyExpense, LoginHistory, FactoryFund, ProjectPayment
 )
 import crud, schemas, auth
 from collections import defaultdict
@@ -175,7 +175,9 @@ try:
                 "ALTER TABLE inventory ADD COLUMN reserved_quantity FLOAT DEFAULT 0.0",
                 "ALTER TABLE inventory ADD COLUMN available_quantity FLOAT DEFAULT 0.0",
                 "ALTER TABLE daily_expenses ADD COLUMN deleted_at DATETIME",
-                "ALTER TABLE daily_expenses ADD COLUMN deleted_by TEXT"
+                "ALTER TABLE daily_expenses ADD COLUMN deleted_by TEXT",
+                "ALTER TABLE daily_expenses ADD COLUMN payment_mode TEXT DEFAULT 'Cash'",
+                "ALTER TABLE daily_expenses ADD COLUMN remarks TEXT"
             ]
         else:
             alters = [
@@ -201,7 +203,9 @@ try:
                 "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS reserved_quantity FLOAT DEFAULT 0.0",
                 "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS available_quantity FLOAT DEFAULT 0.0",
                 "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(36)"
+                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(36)",
+                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(50) DEFAULT 'Cash'",
+                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS remarks TEXT"
             ]
             
         for statement in alters:
@@ -5650,6 +5654,8 @@ async def create_expense(
     description: Optional[str] = Form(None),
     vendor: Optional[str] = Form(None),
     project_id: Optional[str] = Form(None),
+    payment_mode: Optional[str] = Form("Cash"),
+    remarks: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_any_authenticated)
@@ -5679,7 +5685,9 @@ async def create_expense(
         amount=amount,
         vendor=vendor,
         project_id=project_id,
-        attachment_url=attachment_url
+        attachment_url=attachment_url,
+        payment_mode=payment_mode,
+        remarks=remarks
     )
     db_exp = crud.create_daily_expense(db, exp_in, current_user.id)
     broadcast_sync({"event": "expense_change"})
@@ -5693,6 +5701,71 @@ async def create_expense(
             None,
             format_inr(amount)
         )
+    return db_exp
+
+
+@app.put("/api/expenses/{expense_id}", response_model=schemas.DailyExpenseResponse)
+async def update_expense(
+    expense_id: str,
+    reason: str = Form(...),
+    expense_category: Optional[str] = Form(None),
+    amount: Optional[float] = Form(None),
+    expense_date: Optional[date] = Form(None),
+    description: Optional[str] = Form(None),
+    vendor: Optional[str] = Form(None),
+    project_id: Optional[str] = Form(None),
+    payment_mode: Optional[str] = Form(None),
+    remarks: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    """Update an existing daily expense (Admins/Super Admins only) with auditing."""
+    attachment_url = None
+    if file and file.filename:
+        ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
+        filename = f"expense_{uuid.uuid4().hex[:8]}.{ext}"
+        try:
+            contents = await file.read()
+            attachment_url = storage_provider.upload_file(
+                file_data=contents,
+                filename=filename,
+                bucket="documents",
+                mime_type=file.content_type or "application/octet-stream",
+                subpath="expense_bills"
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save expense attachment: {str(e)}")
+
+    exp_in = schemas.DailyExpenseUpdate(
+        expense_date=expense_date,
+        expense_category=expense_category,
+        description=description,
+        amount=amount,
+        vendor=vendor,
+        project_id=project_id,
+        attachment_url=attachment_url,
+        payment_mode=payment_mode,
+        remarks=remarks,
+        reason=reason
+    )
+    
+    ip_addr = request.client.host if request and request.client else None
+    user_agent = request.headers.get("user-agent") if request else None
+    
+    db_exp = crud.update_daily_expense(
+        db=db,
+        expense_id=expense_id,
+        exp_in=exp_in,
+        user_id=current_user.id,
+        ip_address=ip_addr,
+        device=user_agent
+    )
+    if not db_exp:
+        raise HTTPException(status_code=404, detail="Expense record not found")
+        
+    broadcast_sync({"event": "expense_change"})
     return db_exp
 
 
@@ -6833,6 +6906,128 @@ def restore_document(doc_id: str, db: Session = Depends(get_db), current_user: U
     db.commit()
     broadcast_sync({"event": "document_change"})
     return {"status": "success", "message": "Document restored"}
+
+
+# --- FACTORY FUND & PROJECT PAYMENTS API ---
+@app.get("/api/factory-funds", response_model=List[schemas.FactoryFundResponse])
+def list_factory_funds(db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
+    """Retrieve all logged owner factory funding entries."""
+    return crud.get_factory_funds(db)
+
+@app.post("/api/factory-funds", response_model=schemas.FactoryFundResponse)
+async def add_factory_fund(
+    amount: float = Form(...),
+    payment_method: str = Form(...),
+    date: Optional[date] = Form(None),
+    reference_number: Optional[str] = Form(None),
+    remarks: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    """Add a new owner funding entry with optional receipt attachment (Admins only)."""
+    attachment_url = None
+    if file and file.filename:
+        ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
+        filename = f"fund_{uuid.uuid4().hex[:8]}.{ext}"
+        try:
+            contents = await file.read()
+            attachment_url = storage_provider.upload_file(
+                file_data=contents,
+                filename=filename,
+                bucket="documents",
+                mime_type=file.content_type or "application/octet-stream",
+                subpath="factory_funds"
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to upload attachment: {str(e)}")
+
+    fund_in = schemas.FactoryFundCreate(
+        date=date,
+        amount=amount,
+        payment_method=payment_method,
+        reference_number=reference_number,
+        remarks=remarks,
+        attachment_url=attachment_url
+    )
+    db_fund = crud.create_factory_fund(db, fund_in, current_user.id)
+    broadcast_sync({"event": "financial_change"})
+    return db_fund
+
+@app.get("/api/factory-funds/stats")
+def get_factory_fund_stats(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    """Fetch factory balance sheet summary metrics."""
+    return crud.get_factory_financial_stats(db)
+
+@app.get("/api/project-payments", response_model=List[schemas.ProjectPaymentResponse])
+def list_project_payments(project_id: Optional[str] = Query(None), db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
+    """Retrieve client payment records, optionally filtered by project."""
+    return crud.get_project_payments(db, project_id)
+
+@app.post("/api/project-payments", response_model=schemas.ProjectPaymentResponse)
+async def add_project_payment(
+    project_id: str = Form(...),
+    client_id: str = Form(...),
+    invoice_amount: float = Form(...),
+    received_amount: float = Form(...),
+    payment_method: str = Form(...),
+    invoice_number: Optional[str] = Form(None),
+    reference_number: Optional[str] = Form(None),
+    bank_name: Optional[str] = Form(None),
+    received_date: Optional[date] = Form(None),
+    remarks: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    """Log a new client payment milestone against a project (Admins only)."""
+    attachment_url = None
+    if file and file.filename:
+        ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
+        filename = f"payment_{uuid.uuid4().hex[:8]}.{ext}"
+        try:
+            contents = await file.read()
+            attachment_url = storage_provider.upload_file(
+                file_data=contents,
+                filename=filename,
+                bucket="documents",
+                mime_type=file.content_type or "application/octet-stream",
+                subpath="project_payments"
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to upload invoice attachment: {str(e)}")
+
+    pay_in = schemas.ProjectPaymentCreate(
+        project_id=project_id,
+        client_id=client_id,
+        invoice_number=invoice_number,
+        invoice_amount=invoice_amount,
+        received_amount=received_amount,
+        payment_method=payment_method,
+        reference_number=reference_number,
+        bank_name=bank_name,
+        received_date=received_date,
+        remarks=remarks,
+        attachment_url=attachment_url
+    )
+    db_pay = crud.create_project_payment(db, pay_in, current_user.id)
+    broadcast_sync({"event": "financial_change"})
+    
+    log_and_broadcast_activity_sync(
+        db,
+        current_user,
+        project_id,
+        "Payment Received",
+        f"Received payment of {format_inr(received_amount)} for project.",
+        None,
+        format_inr(received_amount)
+    )
+    return db_pay
+
+@app.get("/api/financials/dashboard-summary")
+def get_financials_summary(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    """Fetch financial summary cards overview statistics."""
+    return crud.get_financial_dashboard_stats(db)
 
 
 

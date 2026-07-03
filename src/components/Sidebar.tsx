@@ -3,7 +3,7 @@
 import { 
   LayoutDashboard, PackageSearch, FolderKanban, ShoppingCart, Users, 
   Settings, LogOut, ArrowLeftRight, Smile, Truck, FileText, BarChart3,
-  ClipboardCheck, Receipt, ChevronLeft, ChevronRight, X, Archive
+  ClipboardCheck, Receipt, ChevronLeft, ChevronRight, X, Archive, Landmark, IndianRupee
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -43,6 +43,8 @@ export default function Sidebar({
     { id: "requests", label: "Material Request", icon: ArrowLeftRight, roles: [...storeRoles, ...managerRoles] },
     { id: "purchasing", label: "Purchase Management", icon: ShoppingCart, roles: [...storeRoles, ...accountantRoles] },
     { id: "daily-expenses", label: "Daily Expenses", icon: Receipt, roles: workerRoles },
+    { id: "factory-fund", label: "Factory Fund", icon: Landmark, roles: accountantRoles },
+    { id: "project-payments", label: "Project Payments", icon: IndianRupee, roles: accountantRoles },
     { id: "projects", label: "Projects", icon: FolderKanban, roles: [...managerRoles, "store", "worker", "operator", "carpenter", "quality_inspector", "machine_operator"] },
     { id: "attendance", label: "Attendance", icon: ClipboardCheck, roles: workerRoles },
     { id: "team", label: "Employees", icon: Users, roles: workerRoles },

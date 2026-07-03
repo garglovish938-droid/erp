@@ -65,6 +65,7 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
   const [recentPurchases, setRecentPurchases] = useState<any[]>([]);
   const [recentExpenses, setRecentExpenses] = useState<any[]>([]);
   const [recentRequests, setRecentRequests] = useState<any[]>([]);
+  const [financialStats, setFinancialStats] = useState<any>(null);
 
   // Worker states
   const [attendanceStatus, setAttendanceStatus] = useState<any>(null);
@@ -208,7 +209,7 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
   const fetchData = async () => {
     try {
       const todayStr = new Date().toISOString().split("T")[0];
-      const [statsData, chartsData, notifData, widgetsData, attendanceData, purchasesData, expensesData, requestsData] = await Promise.all([
+      const [statsData, chartsData, notifData, widgetsData, attendanceData, purchasesData, expensesData, requestsData, financialData] = await Promise.all([
         fetchDataFromAPI("/api/dashboard/overview"),
         fetchDataFromAPI("/api/dashboard/charts"),
         fetchDataFromAPI("/api/notifications?unread_only=true"),
@@ -216,7 +217,8 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
         fetchDataFromAPI(`/api/attendance?target_date=${todayStr}`).catch(() => []),
         fetchDataFromAPI("/api/purchasing").catch(() => []),
         fetchDataFromAPI("/api/expenses").catch(() => []),
-        fetchDataFromAPI("/api/requests").catch(() => [])
+        fetchDataFromAPI("/api/requests").catch(() => []),
+        fetchDataFromAPI("/api/financials/dashboard-summary").catch(() => null)
       ]);
 
       setStats(statsData);
@@ -227,6 +229,7 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
       setRecentPurchases(purchasesData.slice(0, 5));
       setRecentExpenses(expensesData.slice(0, 5));
       setRecentRequests(requestsData.slice(0, 5));
+      setFinancialStats(financialData);
       setError("");
     } catch (err: any) {
       setError("Failed to sync dashboard layout and analytics from backend.");
@@ -1164,6 +1167,118 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
       {/* Redesigned Wireframe Dashboard Layout */}
       {!customizeMode ? (
         <div className="space-y-8">
+          {/* Executive Financial Dashboard Metrics */}
+          {financialStats && ["admin", "manager", "accountant", "accounts_manager"].includes(role) && (
+            <div className="space-y-4">
+              <h3 className="text-sm font-extrabold uppercase tracking-widest text-slate-400">
+                Live Factory Financial Summary
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {/* 1. Factory Balance */}
+                <div className="bg-gradient-to-br from-emerald-600 to-emerald-700 text-white rounded-3xl p-5 shadow-lg relative overflow-hidden group">
+                  <div className="absolute right-0 bottom-0 translate-x-3 translate-y-3 opacity-10 group-hover:scale-110 transition-transform duration-300">
+                    <IndianRupee className="w-28 h-28" />
+                  </div>
+                  <span className="text-[10px] font-bold text-emerald-100 uppercase tracking-widest block">Available Factory Balance</span>
+                  <span className="text-2xl font-black mt-2 block select-all">
+                    {formatCurrency(financialStats.factory_balance)}
+                  </span>
+                  <p className="text-[9px] text-emerald-100/80 mt-1">Ready capital for purchase orders & expenses</p>
+                </div>
+
+                {/* 2. Today's Expenses */}
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 shadow-sm flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Today's Factory Expenses</span>
+                    <span className="text-xl font-black text-rose-500 mt-1 block font-mono">
+                      {formatCurrency(financialStats.today_expenses)}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-rose-500 text-white rounded-2xl">
+                    <Receipt className="w-5 h-5" />
+                  </div>
+                </div>
+
+                {/* 3. Today's Fund Received */}
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 shadow-sm flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Today's Capital Injection</span>
+                    <span className="text-xl font-black text-slate-800 dark:text-white mt-1 block font-mono">
+                      {formatCurrency(financialStats.today_fund)}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-indigo-500 text-white rounded-2xl">
+                    <Calendar className="w-5 h-5" />
+                  </div>
+                </div>
+
+                {/* 4. Monthly Fund */}
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 shadow-sm flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Monthly Capital Funding</span>
+                    <span className="text-xl font-black text-slate-800 dark:text-white mt-1 block font-mono">
+                      {formatCurrency(financialStats.monthly_fund)}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-amber-500 text-white rounded-2xl">
+                    <Layers className="w-5 h-5" />
+                  </div>
+                </div>
+
+                {/* 5. Project Revenue */}
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 shadow-sm flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Project Revenue (Received)</span>
+                    <span className="text-xl font-black text-indigo-600 dark:text-indigo-400 mt-1 block font-mono">
+                      {formatCurrency(financialStats.project_revenue)}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-indigo-600 text-white rounded-2xl">
+                    <FolderKanban className="w-5 h-5" />
+                  </div>
+                </div>
+
+                {/* 6. Pending Client Payments */}
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 shadow-sm flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Pending Client Invoices</span>
+                    <span className="text-xl font-black text-rose-600 dark:text-rose-455 mt-1 block font-mono">
+                      {formatCurrency(financialStats.pending_client_payments)}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-orange-500 text-white rounded-2xl">
+                    <AlertCircle className="w-5 h-5" />
+                  </div>
+                </div>
+
+                {/* 7. Cash Flow */}
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 shadow-sm flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Net Liquid Cash Flow</span>
+                    <span className={`text-xl font-black mt-1 block font-mono ${financialStats.cash_flow >= 0 ? "text-emerald-650" : "text-rose-500"}`}>
+                      {formatCurrency(financialStats.cash_flow)}
+                    </span>
+                  </div>
+                  <div className={`p-3 text-white rounded-2xl ${financialStats.cash_flow >= 0 ? "bg-emerald-500" : "bg-rose-500"}`}>
+                    <TrendingUp className="w-5 h-5" />
+                  </div>
+                </div>
+
+                {/* 8. Net Profit */}
+                <div className="bg-gradient-to-br from-indigo-600 to-indigo-700 text-white rounded-3xl p-5 shadow-lg relative overflow-hidden group">
+                  <div className="absolute right-0 bottom-0 translate-x-3 translate-y-3 opacity-10 group-hover:scale-110 transition-transform duration-300">
+                    <Sparkles className="w-28 h-28" />
+                  </div>
+                  <span className="text-[10px] font-bold text-indigo-100 uppercase tracking-widest block">Calculated Net Profit</span>
+                  <span className="text-2xl font-black mt-2 block select-all font-mono">
+                    {formatCurrency(financialStats.net_profit)}
+                  </span>
+                  <p className="text-[9px] text-indigo-100/80 mt-1">Project Revenue minus (BOM consumed + project expenses)</p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Top KPI Cards Row */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-6">
             {/* Card 1: Inventory Value */}

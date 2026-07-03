@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
   DollarSign, Calendar, Tag, FileText, Upload, Plus, Trash2, 
   Download, RefreshCw, Layers, ExternalLink, Image as ImageIcon,
-  ChevronLeft, ChevronRight
+  ChevronLeft, ChevronRight, Edit2
 } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import { apiRequest } from "@/services/apiClient";
@@ -40,10 +40,29 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
     expense_date: new Date().toISOString().split("T")[0],
     description: "",
     vendor: "",
-    project_id: ""
+    project_id: "",
+    payment_mode: "Cash",
+    remarks: ""
   });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [exportFormat, setExportFormat] = useState("excel");
+
+  // Edit Modal State
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editForm, setEditForm] = useState({
+    id: "",
+    expense_category: "Miscellaneous",
+    amount: "",
+    expense_date: "",
+    description: "",
+    vendor: "",
+    project_id: "",
+    payment_mode: "Cash",
+    remarks: "",
+    reason: ""
+  });
+  const [editFile, setEditFile] = useState<File | null>(null);
+  const [editSubmitting, setEditSubmitting] = useState(false);
 
   const categories = ["Fuel", "Food", "Transport", "Courier", "Loading", "Labour", "Maintenance", "Electricity", "Internet", "Miscellaneous"];
 
@@ -80,6 +99,12 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
     }
   };
 
+  const handleEditFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setEditFile(e.target.files[0]);
+    }
+  };
+
   const handleAddExpense = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.amount || parseFloat(form.amount) <= 0) {
@@ -96,6 +121,8 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
       if (form.description) fd.append("description", form.description);
       if (form.vendor) fd.append("vendor", form.vendor);
       if (form.project_id) fd.append("project_id", form.project_id);
+      if (form.payment_mode) fd.append("payment_mode", form.payment_mode);
+      if (form.remarks) fd.append("remarks", form.remarks);
       if (selectedFile) fd.append("file", selectedFile);
 
       const savedUser = localStorage.getItem("allure_erp_user");
@@ -117,7 +144,9 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
         expense_date: new Date().toISOString().split("T")[0],
         description: "",
         vendor: "",
-        project_id: ""
+        project_id: "",
+        payment_mode: "Cash",
+        remarks: ""
       });
       setSelectedFile(null);
       setShowAddModal(false);
@@ -126,6 +155,70 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
       alert(err.message || "Failed to submit expense");
     }
     setSubmitting(false);
+  };
+
+  const handleEditExpenseSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editForm.amount || parseFloat(editForm.amount) <= 0) {
+      alert("Please enter a valid positive amount.");
+      return;
+    }
+    if (!editForm.reason.trim()) {
+      alert("Please specify a reason for modification.");
+      return;
+    }
+
+    setEditSubmitting(true);
+    try {
+      const fd = new FormData();
+      fd.append("reason", editForm.reason);
+      fd.append("expense_category", editForm.expense_category);
+      fd.append("amount", editForm.amount);
+      fd.append("expense_date", editForm.expense_date);
+      fd.append("description", editForm.description || "");
+      fd.append("vendor", editForm.vendor || "");
+      fd.append("project_id", editForm.project_id || "");
+      fd.append("payment_mode", editForm.payment_mode || "Cash");
+      fd.append("remarks", editForm.remarks || "");
+      if (editFile) fd.append("file", editFile);
+
+      const savedUser = localStorage.getItem("allure_erp_user");
+      const userToken = savedUser ? JSON.parse(savedUser).token : token;
+
+      const res = await fetch(`${API_BASE_URL}/api/expenses/${editForm.id}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${userToken}` },
+        body: fd
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Failed to edit expense");
+      }
+
+      setEditFile(null);
+      setShowEditModal(false);
+      await loadData();
+    } catch (err: any) {
+      alert(err.message || "Failed to edit expense");
+    }
+    setEditSubmitting(false);
+  };
+
+  const openEditModal = (exp: any) => {
+    setEditForm({
+      id: exp.id,
+      expense_category: exp.expense_category,
+      amount: exp.amount.toString(),
+      expense_date: exp.expense_date,
+      description: exp.description || "",
+      vendor: exp.vendor || "",
+      project_id: exp.project_id || "",
+      payment_mode: exp.payment_mode || "Cash",
+      remarks: exp.remarks || "",
+      reason: ""
+    });
+    setEditFile(null);
+    setShowEditModal(true);
   };
 
   const handleDeleteExpense = async (id: string) => {
@@ -382,9 +475,16 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
                       )}
                     </td>
                     <td className="py-3 px-4 text-center">
-                      <button onClick={() => handleDeleteExpense(exp.id)} className="p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-lg">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex justify-center gap-1.5">
+                        {role === "admin" && (
+                          <button onClick={() => openEditModal(exp)} className="p-1.5 text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-lg" title="Edit Expense">
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                        )}
+                        <button onClick={() => handleDeleteExpense(exp.id)} className="p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-lg">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -468,6 +568,24 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
                 </select>
               </div>
 
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-slate-400 uppercase">Payment Mode</label>
+                  <select value={form.payment_mode} onChange={e => setForm({...form, payment_mode: e.target.value})}
+                    className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 bg-slate-50 dark:bg-slate-950 outline-none" required>
+                    <option value="Cash">Cash</option>
+                    <option value="UPI">UPI</option>
+                    <option value="Bank Transfer">Bank Transfer</option>
+                    <option value="Cheque">Cheque</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-slate-400 uppercase">Remarks (Optional)</label>
+                  <input type="text" placeholder="e.g. Paid by cashier" value={form.remarks} onChange={e => setForm({...form, remarks: e.target.value})}
+                    className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 bg-slate-50 dark:bg-slate-950 outline-none" />
+                </div>
+              </div>
+
               <div className="space-y-1">
                 <label className="text-slate-400 uppercase">Description / Details</label>
                 <textarea placeholder="Specify reasons for the expense..." value={form.description} onChange={e => setForm({...form, description: e.target.value})}
@@ -486,6 +604,101 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
               <button type="submit" disabled={submitting}
                 className="w-full py-3 bg-gradient-to-r from-rose-600 to-amber-600 text-white rounded-xl font-bold hover:from-rose-750 hover:to-amber-750 shadow-md transition-all">
                 {submitting ? "Saving..." : "Submit Expense Record"}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Modal */}
+      {showEditModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-lg p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center border-b pb-3">
+              <h3 className="text-lg font-bold text-slate-800 dark:text-slate-200">Edit Operating Expense</h3>
+              <button onClick={() => setShowEditModal(false)} className="text-slate-400 hover:text-slate-600">✕</button>
+            </div>
+            
+            <form onSubmit={handleEditExpenseSubmit} className="space-y-4 text-xs font-semibold">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-slate-400 uppercase">Expense Date</label>
+                  <input type="date" value={editForm.expense_date} onChange={e => setEditForm({...editForm, expense_date: e.target.value})}
+                    className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 bg-slate-50 dark:bg-slate-950 outline-none" required />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-slate-400 uppercase">Expense Category</label>
+                  <select value={editForm.expense_category} onChange={e => setEditForm({...editForm, expense_category: e.target.value})}
+                    className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 bg-slate-50 dark:bg-slate-950 outline-none" required>
+                    {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-slate-400 uppercase">Amount (₹)</label>
+                  <input type="number" step="0.01" min="0.01" value={editForm.amount} onChange={e => setEditForm({...editForm, amount: e.target.value})}
+                    className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 bg-slate-50 dark:bg-slate-950 outline-none" required />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-slate-400 uppercase">Vendor/Payee</label>
+                  <input type="text" value={editForm.vendor} onChange={e => setEditForm({...editForm, vendor: e.target.value})}
+                    className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 bg-slate-50 dark:bg-slate-950 outline-none" />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-slate-400 uppercase">Project Link (Optional)</label>
+                <select value={editForm.project_id} onChange={e => setEditForm({...editForm, project_id: e.target.value})}
+                  className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 bg-slate-50 dark:bg-slate-950 outline-none">
+                  <option value="">— Select Associated Project —</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-slate-400 uppercase">Payment Mode</label>
+                  <select value={editForm.payment_mode} onChange={e => setEditForm({...editForm, payment_mode: e.target.value})}
+                    className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 bg-slate-50 dark:bg-slate-950 outline-none" required>
+                    <option value="Cash">Cash</option>
+                    <option value="UPI">UPI</option>
+                    <option value="Bank Transfer">Bank Transfer</option>
+                    <option value="Cheque">Cheque</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-slate-400 uppercase">Remarks (Optional)</label>
+                  <input type="text" value={editForm.remarks} onChange={e => setEditForm({...editForm, remarks: e.target.value})}
+                    className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2.5 bg-slate-50 dark:bg-slate-950 outline-none" />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-slate-400 uppercase">Description / Details</label>
+                <textarea value={editForm.description} onChange={e => setEditForm({...editForm, description: e.target.value})}
+                  rows={3} className="w-full border border-slate-200 dark:border-slate-800 rounded-xl p-3.5 bg-slate-50 dark:bg-slate-950 outline-none resize-none" />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-slate-400 uppercase block mb-1">Attachment / Bill Copy</label>
+                <label htmlFor="edit-bill-upload" className="flex items-center justify-center gap-2 border-2 border-dashed border-slate-350 dark:border-slate-700 hover:border-indigo-500 rounded-xl p-4 cursor-pointer">
+                  <Upload className="w-4 h-4 text-slate-450" />
+                  <span className="text-slate-500 text-xs">{editFile ? editFile.name : "Replace invoice/receipt image (optional)"}</span>
+                </label>
+                <input id="edit-bill-upload" type="file" accept="image/*,application/pdf" className="hidden" onChange={handleEditFileChange} />
+              </div>
+
+              <div className="space-y-1 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900 rounded-2xl p-4">
+                <label className="text-amber-800 dark:text-amber-300 uppercase block mb-1">Reason for Modification *</label>
+                <input type="text" placeholder="Specify why you are editing this expense..." value={editForm.reason} onChange={e => setEditForm({...editForm, reason: e.target.value})}
+                  className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 bg-white dark:bg-slate-900 outline-none" required />
+              </div>
+
+              <button type="submit" disabled={editSubmitting}
+                className="w-full py-3 bg-gradient-to-r from-indigo-650 to-indigo-600 text-white rounded-xl font-bold hover:from-indigo-700 hover:to-indigo-700 shadow-md transition-all">
+                {editSubmitting ? "Saving..." : "Update Expense Record"}
               </button>
             </form>
           </div>

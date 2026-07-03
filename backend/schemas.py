@@ -871,6 +871,7 @@ class CheckOutRequest(BaseModel):
 
 
 # Daily Expense
+# Daily Expense
 class DailyExpenseCreate(BaseModel):
     expense_date: Optional[date] = None
     expense_category: str
@@ -879,6 +880,8 @@ class DailyExpenseCreate(BaseModel):
     vendor: Optional[str] = None
     project_id: Optional[str] = None
     attachment_url: Optional[str] = None
+    payment_mode: Optional[str] = "Cash"
+    remarks: Optional[str] = None
 
     @field_validator('amount')
     @classmethod
@@ -895,6 +898,35 @@ class DailyExpenseCreate(BaseModel):
             raise ValueError(f"Category must be one of {allowed}")
         return v
 
+class DailyExpenseUpdate(BaseModel):
+    expense_date: Optional[date] = None
+    expense_category: Optional[str] = None
+    description: Optional[str] = None
+    amount: Optional[float] = None
+    vendor: Optional[str] = None
+    project_id: Optional[str] = None
+    attachment_url: Optional[str] = None
+    payment_mode: Optional[str] = None
+    remarks: Optional[str] = None
+    reason: str
+
+    @field_validator('amount')
+    @classmethod
+    def validate_positive_amount(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and v <= 0:
+            raise ValueError("Amount must be greater than 0")
+        return v
+
+    @field_validator('expense_category')
+    @classmethod
+    def validate_category(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        allowed = ["Fuel", "Food", "Transport", "Courier", "Loading", "Labour", "Maintenance", "Electricity", "Internet", "Miscellaneous"]
+        if v not in allowed:
+            raise ValueError(f"Category must be one of {allowed}")
+        return v
+
 class DailyExpenseResponse(BaseSchema):
     id: str
     expense_id: str
@@ -906,6 +938,8 @@ class DailyExpenseResponse(BaseSchema):
     project_id: Optional[str]
     created_by: Optional[str]
     attachment_url: Optional[str]
+    payment_mode: Optional[str]
+    remarks: Optional[str]
     created_at: datetime
     is_deleted: bool
     deleted_at: Optional[datetime] = None
@@ -1020,5 +1054,94 @@ class BulkActionRequest(BaseModel):
     ids: List[str]
     reason: Optional[str] = None
     password: Optional[str] = None
+
+
+class FactoryFundCreate(BaseModel):
+    date: Optional[date] = None
+    amount: float
+    payment_method: str
+    reference_number: Optional[str] = None
+    remarks: Optional[str] = None
+    attachment_url: Optional[str] = None
+
+    @field_validator('amount')
+    @classmethod
+    def validate_positive_amount(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("Amount must be greater than 0")
+        return v
+
+    @field_validator('payment_method')
+    @classmethod
+    def validate_payment_method(cls, v: str) -> str:
+        allowed = ["Cash", "UPI", "Bank Transfer", "Cheque"]
+        if v not in allowed:
+            raise ValueError(f"Payment method must be one of {allowed}")
+        return v
+
+
+class FactoryFundResponse(BaseSchema):
+    id: str
+    fund_id: str
+    date: date
+    amount: float
+    payment_method: str
+    reference_number: Optional[str]
+    added_by: Optional[str]
+    remarks: Optional[str]
+    attachment_url: Optional[str]
+    created_at: datetime
+    user: Optional[UserResponse] = None
+
+
+class ProjectPaymentCreate(BaseModel):
+    project_id: str
+    client_id: str
+    invoice_number: Optional[str] = None
+    invoice_amount: float
+    received_amount: float
+    payment_method: str
+    reference_number: Optional[str] = None
+    bank_name: Optional[str] = None
+    received_date: Optional[date] = None
+    remarks: Optional[str] = None
+    attachment_url: Optional[str] = None
+
+    @field_validator('invoice_amount', 'received_amount')
+    @classmethod
+    def validate_positive_amount(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("Amount must be greater than or equal to 0")
+        return v
+
+    @field_validator('payment_method')
+    @classmethod
+    def validate_payment_method(cls, v: str) -> str:
+        allowed = ["Cash", "UPI", "NEFT", "RTGS", "Cheque"]
+        if v not in allowed:
+            raise ValueError(f"Payment method must be one of {allowed}")
+        return v
+
+
+class ProjectPaymentResponse(BaseSchema):
+    id: str
+    payment_id: str
+    project_id: Optional[str]
+    client_id: Optional[str]
+    invoice_number: Optional[str]
+    invoice_amount: float
+    received_amount: float
+    pending_amount: float
+    payment_method: str
+    reference_number: Optional[str]
+    bank_name: Optional[str]
+    received_date: date
+    received_by: Optional[str]
+    attachment_url: Optional[str]
+    remarks: Optional[str]
+    created_at: datetime
+    project: Optional[ProjectResponse] = None
+    client: Optional[ClientResponse] = None
+    receiver: Optional[UserResponse] = None
 
 

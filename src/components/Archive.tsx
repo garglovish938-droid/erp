@@ -87,50 +87,13 @@ export default function Archive({ token, role }: ArchiveProps) {
     }
   };
 
-  const handlePermanentDelete = async (entityId: string, type: string) => {
-    // 1. Initial Confirmation
-    if (!window.confirm("WARNING: Permanent deletion cannot be undone. Are you sure you want to proceed?")) {
-      return;
-    }
-    
-    // 2. Reason Prompt
-    const reason = window.prompt("Reason Required: Please state the formal reason for permanent deletion audit trail:");
-    if (reason === null) return; // cancelled
-    if (!reason.trim()) {
-      showToast("Reason is required for permanent deletion audit trail.", "error");
-      return;
-    }
-    
-    // 3. Double Confirmation
-    if (!window.confirm(`FINAL CONFIRMATION: Are you absolutely certain you want to permanently delete this ${type} record? This will perform dependency validation.`)) {
-      return;
-    }
-
-    // Map frontend tab types to backend entity types
-    let backendType = type;
-    if (type === "projects") backendType = "project";
-    else if (type === "categories") backendType = "category";
-    else if (type === "inventory") backendType = "inventory";
-    else if (type === "staff") backendType = "staff";
-    else if (type === "clients") backendType = "client";
-    else if (type === "suppliers") backendType = "supplier";
-    else if (type === "users") backendType = "user";
-
-    try {
-      const data = await apiRequest(`/api/archive/${backendType}/${entityId}/permanent?reason=${encodeURIComponent(reason)}`, {
-        method: "DELETE"
-      });
-      showToast(data.message || "Record permanently deleted", "success");
-      setSelectedIds(prev => prev.filter(id => id !== entityId));
-      fetchArchive();
-      
-      // Dispatch local custom events to notify views
-      window.dispatchEvent(new CustomEvent("erp_websocket_event", { detail: { event: "project_change" } }));
-      window.dispatchEvent(new CustomEvent("erp_websocket_event", { detail: { event: "inventory_change" } }));
-      window.dispatchEvent(new CustomEvent("erp_websocket_event", { detail: { event: "attendance_change" } }));
-    } catch (err: any) {
-      showToast(err.message || "Failed to permanently delete record", "error");
-    }
+  const handlePermanentDelete = (entityId: string, type: string) => {
+    setSelectedIds([entityId]);
+    setBulkAction("delete_permanent");
+    setBulkPassword("");
+    setBulkReason("");
+    setSubmitError("");
+    setShowBulkConfirmModal(true);
   };
 
   const handleToggleSelectAll = (filteredItems: any[]) => {
@@ -404,7 +367,9 @@ export default function Archive({ token, role }: ArchiveProps) {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in zoom-in-95 duration-200">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
-              <h3 className="text-base font-bold capitalize text-slate-900 dark:text-white">Bulk {bulkAction.replace("_", " ")}</h3>
+              <h3 className="text-base font-bold capitalize text-slate-900 dark:text-white">
+                {selectedIds.length === 1 ? "" : "Bulk "}{bulkAction.replace("_", " ")}
+              </h3>
               <button title="Close" type="button" onClick={() => setShowBulkConfirmModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
@@ -412,7 +377,15 @@ export default function Archive({ token, role }: ArchiveProps) {
 
             <form onSubmit={handleExecuteBulkAction} className="space-y-4">
               <div className="text-xs text-slate-650 bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-100/50">
-                You are about to perform bulk <strong className="text-indigo-650">{bulkAction.replace("_", " ")}</strong> on <strong className="text-indigo-600">{selectedIds.length}</strong> items in tab <strong className="text-indigo-600">{activeTab}</strong>.
+                {selectedIds.length === 1 ? (
+                  <>
+                    You are about to <strong className="text-rose-600 dark:text-rose-455">{bulkAction === "restore" ? "restore" : "permanently delete"}</strong> the record of <strong>{archiveData[activeTab]?.find((item: any) => item.id === selectedIds[0])?.name || "this item"}</strong>. {bulkAction === "delete_permanent" && "This action is irreversible."}
+                  </>
+                ) : (
+                  <>
+                    You are about to perform bulk <strong className="text-indigo-650">{bulkAction.replace("_", " ")}</strong> on <strong className="text-indigo-600">{selectedIds.length}</strong> items in tab <strong className="text-indigo-600">{activeTab}</strong>.
+                  </>
+                )}
               </div>
 
               {bulkAction === "delete_permanent" && (
