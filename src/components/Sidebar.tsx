@@ -29,11 +29,11 @@ export default function Sidebar({
   setMobileOpen
 }: SidebarProps) {
   // All known roles grouped
-  const adminRoles = ["admin"];
-  const managerRoles = ["admin", "manager", "hr_manager", "factory_manager", "project_manager"];
-  const storeRoles = ["admin", "manager", "store", "store_assistant", "inventory_manager"];
-  const accountantRoles = ["admin", "manager", "accountant", "accounts_manager", "purchase_manager"];
-  const workerRoles = ["admin", "manager", "store", "accountant", "worker", "operator", "carpenter",
+  const adminRoles = ["admin", "super_admin"];
+  const managerRoles = ["admin", "super_admin", "manager", "hr_manager", "factory_manager", "project_manager"];
+  const storeRoles = ["admin", "super_admin", "manager", "store", "store_assistant", "inventory_manager"];
+  const accountantRoles = ["admin", "super_admin", "manager", "accountant", "accounts_manager", "purchase_manager"];
+  const workerRoles = ["admin", "super_admin", "manager", "store", "accountant", "worker", "operator", "carpenter",
     "hr_manager", "factory_manager", "project_manager", "inventory_manager",
     "purchase_manager", "accounts_manager", "quality_inspector", "store_assistant", "machine_operator"];
 
@@ -43,8 +43,8 @@ export default function Sidebar({
     { id: "requests", label: "Material Request", icon: ArrowLeftRight, roles: [...storeRoles, ...managerRoles] },
     { id: "purchasing", label: "Purchase Management", icon: ShoppingCart, roles: [...storeRoles, ...accountantRoles] },
     { id: "daily-expenses", label: "Daily Expenses", icon: Receipt, roles: workerRoles },
-    { id: "factory-fund", label: "Factory Fund", icon: Landmark, roles: accountantRoles },
-    { id: "project-payments", label: "Project Payments", icon: IndianRupee, roles: accountantRoles },
+    { id: "factory-fund", label: "Cash Book & Ledger", icon: Landmark, roles: accountantRoles },
+    { id: "project-payments", label: "Client Receipts", icon: IndianRupee, roles: accountantRoles },
     { id: "projects", label: "Projects", icon: FolderKanban, roles: [...managerRoles, "store", "worker", "operator", "carpenter", "quality_inspector", "machine_operator"] },
     { id: "attendance", label: "Attendance", icon: ClipboardCheck, roles: workerRoles },
     { id: "team", label: "Employees", icon: Users, roles: workerRoles },

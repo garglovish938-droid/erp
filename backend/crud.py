@@ -10,7 +10,7 @@ from models import (
     Notification, ActivityLog, CustomFieldDefinition, CustomFieldValue, DailyExpense,
     WorkflowDefinition, WorkflowStep, ApprovalRule, DashboardWidget, Task,
     Document, VersionHistory, ProjectAssignment, DailyWorkLog, Shift, AttendanceRule,
-    ProjectDailyLog, ProjectMaterialHistory, FactoryFund, ProjectPayment
+    ProjectDailyLog, ProjectMaterialHistory, FactoryFund, ProjectPayment, CashBook
 )
 from schemas import (
     UserCreate, UserUpdate, CategoryCreate, CategoryUpdate, InventoryItemCreate, InventoryItemUpdate,
@@ -20,7 +20,7 @@ from schemas import (
     StaffCreate, StaffUpdate, AttendanceCreate, CustomFieldDefinitionCreate, CustomFieldValueCreate,
     WorkflowDefinitionCreate, ApprovalRuleCreate, DashboardWidgetCreate, TaskCreate,
     TaskUpdate, DocumentCreate, ShiftCreate, AttendanceRuleUpdate, NewMaterialAndProjectUsageRequest,
-    FactoryFundCreate, ProjectPaymentCreate
+    FactoryFundCreate, ProjectPaymentCreate, CashBookCreate
 )
 
 # Activity Logger Helper
@@ -1930,23 +1930,61 @@ def create_daily_expense(db: Session, exp: DailyExpenseCreate, user_id: str) -> 
     exp_count = db.query(func.count(DailyExpense.id)).filter(DailyExpense.expense_date == target_date).scalar()
     expense_id = f"EXP-{date_str}-{exp_count + 1:04d}"
     
+    user = db.query(User).filter(User.id == user_id).first()
+    role = user.role if user else "worker"
+    is_worker = role in ["worker", "carpenter", "operator", "employee"]
+    status = "pending" if is_worker else "approved"
+    
+    # Calculate amount if cash received is specified
+    actual_amount = exp.amount
+    if exp.cash_received and exp.cash_received > 0:
+        actual_amount = exp.cash_received - (exp.returned_cash or 0.0)
+        if actual_amount < 0:
+            actual_amount = 0.0
+            
     db_exp = DailyExpense(
         expense_id=expense_id,
         expense_date=target_date,
         expense_category=exp.expense_category,
         description=exp.description,
-        amount=exp.amount,
+        amount=actual_amount,
         vendor=exp.vendor,
         project_id=exp.project_id,
         created_by=user_id,
         attachment_url=exp.attachment_url,
         payment_mode=exp.payment_mode,
-        remarks=exp.remarks
+        remarks=exp.remarks,
+        cash_received=exp.cash_received or 0.0,
+        returned_cash=exp.returned_cash or 0.0,
+        approval_status=status
     )
     db.add(db_exp)
     db.commit()
     db.refresh(db_exp)
+    
+    # Save Version 1 in Version History
+    exp_data = {
+        "expense_id": db_exp.expense_id,
+        "expense_date": str(db_exp.expense_date),
+        "expense_category": db_exp.expense_category,
+        "description": db_exp.description,
+        "amount": db_exp.amount,
+        "vendor": db_exp.vendor,
+        "project_id": db_exp.project_id,
+        "payment_mode": db_exp.payment_mode,
+        "remarks": db_exp.remarks,
+        "cash_received": db_exp.cash_received,
+        "returned_cash": db_exp.returned_cash,
+        "approval_status": db_exp.approval_status
+    }
+    save_version(db, "DailyExpense", db_exp.id, exp_data, user_id)
+    
     log_detailed_activity(db, user_id, "DailyExpense", "create", db_exp.id, f"Created expense {db_exp.expense_id} of amount {db_exp.amount}")
+    
+    # Sync to cash book if approved
+    if db_exp.approval_status == "approved":
+        sync_cash_book_entry(db, "daily_expense", db_exp.id)
+        
     return db_exp
 
 def update_daily_expense(
@@ -1967,8 +2005,21 @@ def update_daily_expense(
     old_values = []
     new_values = []
     
+    # Check if amount calculation needs to be updated based on cash received or returned
+    new_cash_received = exp_in.cash_received if exp_in.cash_received is not None else db_exp.cash_received
+    new_returned_cash = exp_in.returned_cash if exp_in.returned_cash is not None else db_exp.returned_cash
+    
+    calculated_amount = None
+    if exp_in.cash_received is not None or exp_in.returned_cash is not None:
+        if new_cash_received > 0:
+            calculated_amount = new_cash_received - new_returned_cash
+            if calculated_amount < 0:
+                calculated_amount = 0.0
+        else:
+            calculated_amount = exp_in.amount if exp_in.amount is not None else db_exp.amount
+
     fields_to_check = {
-        "amount": exp_in.amount,
+        "amount": calculated_amount if calculated_amount is not None else exp_in.amount,
         "expense_category": exp_in.expense_category,
         "description": exp_in.description,
         "vendor": exp_in.vendor,
@@ -1976,8 +2027,17 @@ def update_daily_expense(
         "attachment_url": exp_in.attachment_url,
         "payment_mode": exp_in.payment_mode,
         "remarks": exp_in.remarks,
-        "expense_date": exp_in.expense_date
+        "expense_date": exp_in.expense_date,
+        "cash_received": exp_in.cash_received,
+        "returned_cash": exp_in.returned_cash,
+        "approval_status": exp_in.approval_status,
+        "supervisor_comment": exp_in.supervisor_comment
     }
+    
+    # If approval_status changes to approved, set approved_by and approved_at
+    if exp_in.approval_status == "approved" and db_exp.approval_status != "approved":
+        db_exp.approved_by = user_id
+        db_exp.approved_at = datetime.utcnow()
     
     for field, val in fields_to_check.items():
         if val is not None:
@@ -1999,6 +2059,24 @@ def update_daily_expense(
             
     if changes:
         db.flush()
+        # Save new state to Version History
+        exp_data = {
+            "expense_id": db_exp.expense_id,
+            "expense_date": str(db_exp.expense_date),
+            "expense_category": db_exp.expense_category,
+            "description": db_exp.description,
+            "amount": db_exp.amount,
+            "vendor": db_exp.vendor,
+            "project_id": db_exp.project_id,
+            "payment_mode": db_exp.payment_mode,
+            "remarks": db_exp.remarks,
+            "cash_received": db_exp.cash_received,
+            "returned_cash": db_exp.returned_cash,
+            "approval_status": db_exp.approval_status,
+            "supervisor_comment": db_exp.supervisor_comment
+        }
+        save_version(db, "DailyExpense", db_exp.id, exp_data, user_id)
+        
         # Log to Audit Log
         log_audit(
             db=db,
@@ -2018,6 +2096,9 @@ def update_daily_expense(
         db.commit()
         db.refresh(db_exp)
         
+        # Sync Cash Book!
+        sync_cash_book_entry(db, "daily_expense", db_exp.id)
+        
     return db_exp
 
 def get_daily_expenses(
@@ -2027,7 +2108,7 @@ def get_daily_expenses(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None
 ) -> List[DailyExpense]:
-    query = db.query(DailyExpense).filter(DailyExpense.is_deleted == False)
+    query = db.query(DailyExpense).options(joinedload(DailyExpense.creator), joinedload(DailyExpense.project)).filter(DailyExpense.is_deleted == False)
     if project_id:
         query = query.filter(DailyExpense.project_id == project_id)
     if category:
@@ -2043,8 +2124,14 @@ def delete_daily_expense(db: Session, expense_id: str, user_id: str) -> Optional
     if not db_exp:
         return None
     db_exp.is_deleted = True
+    db_exp.deleted_at = datetime.utcnow()
+    db_exp.deleted_by = user_id
+    log_detailed_activity(db, user_id, "DailyExpense", "delete", db_exp.id, f"Deleted expense {db_exp.expense_id}")
     db.commit()
-    log_detailed_activity(db, user_id, "DailyExpense", "delete", expense_id, f"Soft-deleted expense {db_exp.expense_id}")
+    
+    # Sync Cash Book!
+    sync_cash_book_entry(db, "daily_expense", db_exp.id)
+    
     return db_exp
 
 
@@ -3141,6 +3228,10 @@ def create_factory_fund(db: Session, fund: FactoryFundCreate, user_id: str) -> F
     db.add(db_fund)
     db.commit()
     db.refresh(db_fund)
+    
+    # Sync to cash book!
+    sync_cash_book_entry(db, "factory_fund", db_fund.id)
+    
     log_detailed_activity(db, user_id, "FactoryFund", "create", db_fund.id, f"Added factory fund {db_fund.fund_id} of amount {db_fund.amount}")
     return db_fund
 
@@ -3185,11 +3276,16 @@ def create_project_payment(db: Session, payment: ProjectPaymentCreate, user_id: 
         received_date=target_date,
         received_by=user_id,
         attachment_url=payment.attachment_url,
-        remarks=payment.remarks
+        remarks=payment.remarks,
+        receipt_type=payment.receipt_type or "Project Payment"
     )
     db.add(db_pay)
     db.commit()
     db.refresh(db_pay)
+    
+    # Sync to cash book!
+    sync_cash_book_entry(db, "project_payment", db_pay.id)
+    
     log_detailed_activity(db, user_id, "ProjectPayment", "create", db_pay.id, f"Received project payment {db_pay.payment_id} of amount {db_pay.received_amount}")
     return db_pay
 
@@ -3204,24 +3300,390 @@ def get_project_payments(db: Session, project_id: Optional[str] = None) -> List[
     return query.order_by(ProjectPayment.received_date.desc(), ProjectPayment.created_at.desc()).all()
 
 def get_financial_dashboard_stats(db: Session) -> dict:
-    factory_stats = get_factory_financial_stats(db)
+    # Use CashBook totals for factory balance
+    cash_stats = get_cash_book_stats(db)
+    
     today = date.today()
     today_expenses = db.query(func.sum(DailyExpense.amount)).filter(DailyExpense.expense_date == today, DailyExpense.is_deleted == False).scalar() or 0.0
     project_revenue = db.query(func.sum(ProjectPayment.received_amount)).scalar() or 0.0
     pending_payments = db.query(func.sum(ProjectPayment.pending_amount)).scalar() or 0.0
-    cash_flow = factory_stats["total_fund"] + project_revenue - factory_stats["total_expenses"]
+    
+    # Calculate cash flow and profit using CashBook totals
+    cash_flow = cash_stats["available_balance"]
     total_project_expense = db.query(func.sum(DailyExpense.amount)).filter(DailyExpense.project_id != None, DailyExpense.is_deleted == False).scalar() or 0.0
     total_material_cost = db.query(func.sum(ProjectBOM.consumed_quantity * InventoryItem.unit_cost)).join(InventoryItem, ProjectBOM.inventory_id == InventoryItem.id).scalar() or 0.0
     net_profit = project_revenue - (total_project_expense + total_material_cost)
     
     return {
-        "factory_balance": factory_stats["available_balance"],
+        "factory_balance": cash_stats["available_balance"],
         "today_expenses": round(today_expenses, 2),
-        "today_fund": factory_stats["today_fund"],
-        "monthly_fund": factory_stats["monthly_fund"],
+        "today_fund": cash_stats["yearly_in"],  # capitalize/yearly indicators
+        "monthly_fund": cash_stats["monthly_in"],
         "project_revenue": round(project_revenue, 2),
         "pending_client_payments": round(pending_payments, 2),
         "cash_flow": round(cash_flow, 2),
         "net_profit": round(net_profit, 2)
     }
+
+
+# ============================================================
+# CASH BOOK & VERSION HISTORY CORE LOGIC (NEW)
+# ============================================================
+
+def save_version(db: Session, entity_type: str, entity_id: str, data: dict, user_id: Optional[str]) -> VersionHistory:
+    max_ver = db.query(func.max(VersionHistory.version_num)).filter(
+        VersionHistory.entity_type == entity_type,
+        VersionHistory.entity_id == entity_id
+    ).scalar() or 0
+    
+    def custom_serializer(obj):
+        if isinstance(obj, (date, datetime)):
+            return obj.isoformat()
+        raise TypeError(f"Type {type(obj)} not serializable")
+        
+    serialized = json.dumps(data, default=custom_serializer)
+    
+    db_history = VersionHistory(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        version_num=max_ver + 1,
+        serialized_data=serialized,
+        created_by=user_id,
+        created_at=datetime.utcnow()
+    )
+    db.add(db_history)
+    db.commit()
+    db.refresh(db_history)
+    return db_history
+
+def get_entity_history(db: Session, entity_type: str, entity_id: str) -> List[VersionHistory]:
+    return db.query(VersionHistory).filter(
+        VersionHistory.entity_type == entity_type,
+        VersionHistory.entity_id == entity_id
+    ).order_by(VersionHistory.version_num.desc()).all()
+
+def create_cash_book_entry(db: Session, entry: CashBookCreate, added_by: Optional[str], ref_type: Optional[str] = None, ref_id: Optional[str] = None) -> CashBook:
+    target_date = entry.date or date.today()
+    date_str = target_date.strftime("%Y%m%d")
+    txn_count = db.query(func.count(CashBook.id)).filter(CashBook.date == target_date).scalar()
+    txn_id = f"TXN-{date_str}-{txn_count + 1:04d}"
+    
+    db_entry = CashBook(
+        transaction_id=txn_id,
+        date=target_date,
+        transaction_type=entry.transaction_type.upper(),
+        category=entry.category,
+        amount=entry.amount,
+        payment_method=entry.payment_method or "Cash",
+        reference_number=entry.reference_number,
+        reference_type=ref_type,
+        reference_id=ref_id,
+        added_by=added_by,
+        remarks=entry.remarks,
+        attachment_url=entry.attachment_url,
+        created_at=datetime.utcnow()
+    )
+    db.add(db_entry)
+    db.commit()
+    db.refresh(db_entry)
+    log_detailed_activity(db, added_by, "CashBook", "create", db_entry.id, f"Added cash transaction {db_entry.transaction_id} of {db_entry.amount} ({db_entry.transaction_type})")
+    return db_entry
+
+def get_cash_book_entries(
+    db: Session,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    category: Optional[str] = None,
+    payment_method: Optional[str] = None,
+    transaction_type: Optional[str] = None,
+    search: Optional[str] = None
+) -> List[CashBook]:
+    query = db.query(CashBook).options(joinedload(CashBook.user)).filter(CashBook.is_deleted == False)
+    
+    if start_date:
+        query = query.filter(CashBook.date >= start_date)
+    if end_date:
+        query = query.filter(CashBook.date <= end_date)
+    if category:
+        query = query.filter(CashBook.category == category)
+    if payment_method:
+        query = query.filter(CashBook.payment_method == payment_method)
+    if transaction_type:
+        query = query.filter(CashBook.transaction_type == transaction_type.upper())
+    if search:
+        q = f"%{search}%"
+        query = query.filter(
+            (CashBook.transaction_id.like(q)) |
+            (CashBook.remarks.like(q)) |
+            (CashBook.reference_number.like(q))
+        )
+        
+    return query.order_by(CashBook.date.asc(), CashBook.created_at.asc()).all()
+
+def get_cash_book_stats(db: Session, start_date: Optional[date] = None, end_date: Optional[date] = None) -> dict:
+    total_in = db.query(func.sum(CashBook.amount)).filter(CashBook.transaction_type == "IN", CashBook.is_deleted == False).scalar() or 0.0
+    total_out = db.query(func.sum(CashBook.amount)).filter(CashBook.transaction_type == "OUT", CashBook.is_deleted == False).scalar() or 0.0
+    available_balance = total_in - total_out
+    
+    opening_balance = 0.0
+    if start_date:
+        pre_in = db.query(func.sum(CashBook.amount)).filter(
+            CashBook.transaction_type == "IN",
+            CashBook.date < start_date,
+            CashBook.is_deleted == False
+        ).scalar() or 0.0
+        pre_out = db.query(func.sum(CashBook.amount)).filter(
+            CashBook.transaction_type == "OUT",
+            CashBook.date < start_date,
+            CashBook.is_deleted == False
+        ).scalar() or 0.0
+        opening_balance = pre_in - pre_out
+        
+    period_in_q = db.query(func.sum(CashBook.amount)).filter(
+        CashBook.transaction_type == "IN",
+        CashBook.is_deleted == False
+    )
+    period_out_q = db.query(func.sum(CashBook.amount)).filter(
+        CashBook.transaction_type == "OUT",
+        CashBook.is_deleted == False
+    )
+    
+    if start_date:
+        period_in_q = period_in_q.filter(CashBook.date >= start_date)
+        period_out_q = period_out_q.filter(CashBook.date >= start_date)
+    if end_date:
+        period_in_q = period_in_q.filter(CashBook.date <= end_date)
+        period_out_q = period_out_q.filter(CashBook.date <= end_date)
+        
+    period_in = period_in_q.scalar() or 0.0
+    period_out = period_out_q.scalar() or 0.0
+    closing_balance = opening_balance + period_in - period_out
+    
+    today = date.today()
+    start_of_month = date(today.year, today.month, 1)
+    start_of_year = date(today.year, 1, 1)
+    
+    monthly_in = db.query(func.sum(CashBook.amount)).filter(
+        CashBook.transaction_type == "IN",
+        CashBook.date >= start_of_month,
+        CashBook.is_deleted == False
+    ).scalar() or 0.0
+    monthly_out = db.query(func.sum(CashBook.amount)).filter(
+        CashBook.transaction_type == "OUT",
+        CashBook.date >= start_of_month,
+        CashBook.is_deleted == False
+    ).scalar() or 0.0
+    
+    yearly_in = db.query(func.sum(CashBook.amount)).filter(
+        CashBook.transaction_type == "IN",
+        CashBook.date >= start_of_year,
+        CashBook.is_deleted == False
+    ).scalar() or 0.0
+    yearly_out = db.query(func.sum(CashBook.amount)).filter(
+        CashBook.transaction_type == "OUT",
+        CashBook.date >= start_of_year,
+        CashBook.is_deleted == False
+    ).scalar() or 0.0
+    
+    return {
+        "available_balance": round(available_balance, 2),
+        "opening_balance": round(opening_balance, 2),
+        "period_in": round(period_in, 2),
+        "period_out": round(period_out, 2),
+        "closing_balance": round(closing_balance, 2),
+        "monthly_in": round(monthly_in, 2),
+        "monthly_out": round(monthly_out, 2),
+        "yearly_in": round(yearly_in, 2),
+        "yearly_out": round(yearly_out, 2)
+    }
+
+def sync_cash_book_entry(db: Session, ref_type: str, ref_id: str, action: str = "upsert") -> None:
+    if ref_type == "factory_fund":
+        fund = db.query(FactoryFund).filter(FactoryFund.id == ref_id).first()
+        if not fund:
+            return
+        amount = fund.amount
+        txn_date = fund.date
+        payment_method = fund.payment_method
+        category = "Owner Investment"
+        txn_type = "IN"
+        remarks = fund.remarks
+        attachment_url = fund.attachment_url
+        added_by = fund.added_by
+        ref_num = fund.reference_number
+    elif ref_type == "project_payment":
+        payment = db.query(ProjectPayment).filter(ProjectPayment.id == ref_id).first()
+        if not payment:
+            return
+        amount = payment.received_amount
+        txn_date = payment.received_date
+        payment_method = payment.payment_method
+        category = payment.receipt_type or "Client Payment"
+        txn_type = "IN"
+        remarks = payment.remarks
+        attachment_url = payment.attachment_url
+        added_by = payment.received_by
+        ref_num = payment.reference_number
+    elif ref_type == "daily_expense":
+        expense = db.query(DailyExpense).filter(DailyExpense.id == ref_id).first()
+        if not expense or expense.is_deleted or expense.approval_status != "approved":
+            db.query(CashBook).filter(
+                (CashBook.reference_id == ref_id) |
+                (CashBook.reference_id == f"{ref_id}-out") |
+                (CashBook.reference_id == f"{ref_id}-in")
+            ).update({"is_deleted": True, "deleted_at": datetime.utcnow()})
+            db.commit()
+            return
+            
+        if expense.cash_received > 0:
+            db.query(CashBook).filter(CashBook.reference_id == ref_id).update({"is_deleted": True, "deleted_at": datetime.utcnow()})
+            
+            db_out = db.query(CashBook).filter(CashBook.reference_id == f"{ref_id}-out").first()
+            if not db_out:
+                target_date = expense.expense_date or date.today()
+                date_str = target_date.strftime("%Y%m%d")
+                txn_count = db.query(func.count(CashBook.id)).filter(CashBook.date == target_date).scalar()
+                txn_id = f"TXN-{date_str}-{txn_count + 1:04d}"
+                db_out = CashBook(
+                    transaction_id=txn_id,
+                    date=target_date,
+                    transaction_type="OUT",
+                    category=expense.expense_category,
+                    amount=expense.cash_received,
+                    payment_method=expense.payment_mode or "Cash",
+                    reference_number=expense.expense_id,
+                    reference_type="daily_expense_advance",
+                    reference_id=f"{ref_id}-out",
+                    added_by=expense.created_by,
+                    remarks=f"Cash Advance issued: {expense.description or ''}",
+                    attachment_url=expense.attachment_url,
+                    created_at=datetime.utcnow()
+                )
+                db.add(db_out)
+            else:
+                db_out.amount = expense.cash_received
+                db_out.category = expense.expense_category
+                db_out.date = expense.expense_date
+                db_out.is_deleted = False
+                db_out.deleted_at = None
+                
+            db_in = db.query(CashBook).filter(CashBook.reference_id == f"{ref_id}-in").first()
+            if expense.returned_cash > 0:
+                if not db_in:
+                    target_date = expense.expense_date or date.today()
+                    date_str = target_date.strftime("%Y%m%d")
+                    txn_count = db.query(func.count(CashBook.id)).filter(CashBook.date == target_date).scalar()
+                    txn_id = f"TXN-{date_str}-{txn_count + 1:04d}"
+                    db_in = CashBook(
+                        transaction_id=txn_id,
+                        date=target_date,
+                        transaction_type="IN",
+                        category="Cash Returned",
+                        amount=expense.returned_cash,
+                        payment_method="Cash",
+                        reference_number=expense.expense_id,
+                        reference_type="daily_expense_return",
+                        reference_id=f"{ref_id}-in",
+                        added_by=expense.created_by,
+                        remarks=f"Cash Returned from advance: {expense.remarks or ''}",
+                        attachment_url=expense.attachment_url,
+                        created_at=datetime.utcnow()
+                    )
+                    db.add(db_in)
+                else:
+                    db_in.amount = expense.returned_cash
+                    db_in.date = expense.expense_date
+                    db_in.is_deleted = False
+                    db_in.deleted_at = None
+            else:
+                if db_in:
+                    db_in.is_deleted = True
+                    db_in.deleted_at = datetime.utcnow()
+        else:
+            db.query(CashBook).filter(
+                (CashBook.reference_id == f"{ref_id}-out") |
+                (CashBook.reference_id == f"{ref_id}-in")
+            ).update({"is_deleted": True, "deleted_at": datetime.utcnow()})
+            
+            db_entry = db.query(CashBook).filter(CashBook.reference_id == ref_id).first()
+            if not db_entry:
+                target_date = expense.expense_date or date.today()
+                date_str = target_date.strftime("%Y%m%d")
+                txn_count = db.query(func.count(CashBook.id)).filter(CashBook.date == target_date).scalar()
+                txn_id = f"TXN-{date_str}-{txn_count + 1:04d}"
+                db_entry = CashBook(
+                    transaction_id=txn_id,
+                    date=target_date,
+                    transaction_type="OUT",
+                    category=expense.expense_category,
+                    amount=expense.amount,
+                    payment_method=expense.payment_mode or "Cash",
+                    reference_number=expense.expense_id,
+                    reference_type="daily_expense",
+                    reference_id=ref_id,
+                    added_by=expense.created_by,
+                    remarks=expense.description or "",
+                    attachment_url=expense.attachment_url,
+                    created_at=datetime.utcnow()
+                )
+                db.add(db_entry)
+            else:
+                db_entry.amount = expense.amount
+                db_entry.category = expense.expense_category
+                db_entry.date = expense.expense_date
+                db_entry.is_deleted = False
+                db_entry.deleted_at = None
+                
+        db.commit()
+        return
+        
+    db_entry = db.query(CashBook).filter(
+        CashBook.reference_type == ref_type,
+        CashBook.reference_id == ref_id
+    ).first()
+    
+    if action == "delete":
+        if db_entry:
+            db_entry.is_deleted = True
+            db_entry.deleted_at = datetime.utcnow()
+            db.commit()
+        return
+        
+    if db_entry:
+        db_entry.date = txn_date
+        db_entry.amount = amount
+        db_entry.payment_method = payment_method
+        db_entry.category = category
+        db_entry.transaction_type = txn_type
+        db_entry.remarks = remarks
+        db_entry.attachment_url = attachment_url
+        db_entry.added_by = added_by
+        db_entry.reference_number = ref_num
+        db_entry.is_deleted = False
+        db_entry.deleted_at = None
+    else:
+        target_date = txn_date or date.today()
+        date_str = target_date.strftime("%Y%m%d")
+        txn_count = db.query(func.count(CashBook.id)).filter(CashBook.date == target_date).scalar()
+        txn_id = f"TXN-{date_str}-{txn_count + 1:04d}"
+        
+        db_entry = CashBook(
+            transaction_id=txn_id,
+            date=target_date,
+            transaction_type=txn_type,
+            category=category,
+            amount=amount,
+            payment_method=payment_method,
+            reference_number=ref_num,
+            reference_type=ref_type,
+            reference_id=ref_id,
+            added_by=added_by,
+            remarks=remarks,
+            attachment_url=attachment_url,
+            created_at=datetime.utcnow()
+        )
+        db.add(db_entry)
+        
+    db.commit()
+
 

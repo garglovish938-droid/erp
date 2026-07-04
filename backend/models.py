@@ -163,8 +163,8 @@ class ProjectBOM(Base):
     __tablename__ = "project_bom"
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
-    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False, index=True)
     required_quantity = Column(Float, nullable=False)
     used_quantity = Column(Float, default=0.0, nullable=False)
     consumed_quantity = Column(Float, default=0.0, nullable=False)
@@ -179,11 +179,11 @@ class StockTransaction(Base):
     __tablename__ = "stock_transactions"
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False)
+    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False, index=True)
     transaction_type = Column(String(20), nullable=False)  # in, out, adjustment, return, damaged, transfer
     quantity = Column(Float, nullable=False)
-    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
-    user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -196,12 +196,12 @@ class MaterialRequest(Base):
     __tablename__ = "material_requests"
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
-    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False)
-    requested_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
+    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False, index=True)
+    requested_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     quantity = Column(Float, nullable=False)
     status = Column(String(20), default="pending", nullable=False)  # pending, approved, rejected, issued
-    approved_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    approved_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -222,13 +222,13 @@ class PurchaseOrder(Base):
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
     po_number = Column(String(50), unique=True, index=True, nullable=False)
-    supplier_id = Column(String(36), ForeignKey("suppliers.id", ondelete="RESTRICT"), nullable=False)
-    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False)
+    supplier_id = Column(String(36), ForeignKey("suppliers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="RESTRICT"), nullable=False, index=True)
     quantity = Column(Float, nullable=False)
     unit_cost = Column(Float, nullable=False)
     total_cost = Column(Float, nullable=False)
     status = Column(String(20), default="pending", nullable=False)  # pending, approved, ordered, delivered, received
-    requested_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    requested_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     category = Column(String(50), default="Raw Material", nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -290,8 +290,8 @@ class Attendance(Base):
     )
     
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    staff_id = Column(String(36), ForeignKey("staff.id", ondelete="CASCADE"), nullable=False)
-    date = Column(Date, nullable=False)
+    staff_id = Column(String(36), ForeignKey("staff.id", ondelete="CASCADE"), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
     status = Column(String(20), nullable=False)  # present, absent, leave, half_day
     check_in = Column(String(10), nullable=True)  # HH:MM format
     check_out = Column(String(10), nullable=True)  # HH:MM format
@@ -316,7 +316,7 @@ class Attendance(Base):
     suspicious_reason = Column(Text, nullable=True)
     
     # Project-linked updates
-    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
     task = Column(String(200), nullable=True)
     work_photo = Column(String(255), nullable=True)
     remarks = Column(Text, nullable=True)
@@ -573,13 +573,13 @@ class DailyExpense(Base):
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     expense_id = Column(String(50), unique=True, index=True, nullable=False)
-    expense_date = Column(Date, nullable=False, default=date.today)
+    expense_date = Column(Date, nullable=False, default=date.today, index=True)
     expense_category = Column(String(50), nullable=False)
     description = Column(Text, nullable=True)
     amount = Column(Float, nullable=False)
     vendor = Column(String(100), nullable=True)
-    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
-    created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     attachment_url = Column(String(255), nullable=True)
     payment_mode = Column(String(50), nullable=True, default="Cash")
     remarks = Column(Text, nullable=True)
@@ -587,9 +587,20 @@ class DailyExpense(Base):
     is_deleted = Column(Boolean, default=False, nullable=False)
     deleted_at = Column(DateTime, nullable=True)
     deleted_by = Column(String(36), nullable=True)
+    
+    # Cash received reconciliation columns
+    cash_received = Column(Float, default=0.0, nullable=False)
+    returned_cash = Column(Float, default=0.0, nullable=False)
+    
+    # Expense approval columns
+    approval_status = Column(String(20), default="approved", nullable=False)
+    approved_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    approved_at = Column(DateTime, nullable=True)
+    supervisor_comment = Column(Text, nullable=True)
 
     project = relationship("Project")
-    creator = relationship("User")
+    creator = relationship("User", foreign_keys=[created_by])
+    approver = relationship("User", foreign_keys=[approved_by])
 
 
 class LoginHistory(Base):
@@ -673,8 +684,8 @@ class ProjectPayment(Base):
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     payment_id = Column(String(50), unique=True, index=True, nullable=False)
-    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
-    client_id = Column(String(36), ForeignKey("clients.id", ondelete="SET NULL"), nullable=True)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
+    client_id = Column(String(36), ForeignKey("clients.id", ondelete="SET NULL"), nullable=True, index=True)
     invoice_number = Column(String(100), nullable=True)
     invoice_amount = Column(Float, nullable=False)
     received_amount = Column(Float, nullable=False)
@@ -682,14 +693,41 @@ class ProjectPayment(Base):
     payment_method = Column(String(50), nullable=False)
     reference_number = Column(String(100), nullable=True)
     bank_name = Column(String(100), nullable=True)
-    received_date = Column(Date, nullable=False, default=date.today)
-    received_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    received_date = Column(Date, nullable=False, default=date.today, index=True)
+    received_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     attachment_url = Column(String(255), nullable=True)
     remarks = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    # Client Receipts payment types
+    receipt_type = Column(String(50), default="Project Payment", nullable=False)
 
     project = relationship("Project")
     client = relationship("Client")
     receiver = relationship("User")
+
+
+class CashBook(Base):
+    __tablename__ = "cash_book"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    transaction_id = Column(String(50), unique=True, index=True, nullable=False)
+    date = Column(Date, nullable=False, default=date.today, index=True)
+    transaction_type = Column(String(20), nullable=False, index=True)  # IN, OUT
+    category = Column(String(50), nullable=False, index=True)
+    amount = Column(Float, nullable=False)
+    payment_method = Column(String(50), nullable=False, default="Cash")  # Cash, UPI, Bank, Cheque
+    reference_number = Column(String(100), nullable=True)
+    reference_type = Column(String(50), nullable=True)  # factory_fund, project_payment, daily_expense, direct
+    reference_id = Column(String(36), nullable=True, index=True)
+    added_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    remarks = Column(Text, nullable=True)
+    attachment_url = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    is_deleted = Column(Boolean, default=False, nullable=False)
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by = Column(String(36), nullable=True)
+
+    user = relationship("User")
 
 

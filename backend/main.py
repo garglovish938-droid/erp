@@ -31,7 +31,7 @@ from models import (
     StockTransaction, MaterialRequest, PurchaseOrder, Staff, Attendance,
     Notification, ActivityLog, CustomFieldDefinition, CustomFieldValue,
     Shift, AttendanceRule, Task, DailyWorkLog, ProjectAssignment, ProjectDailyLog,
-    DailyExpense, LoginHistory, FactoryFund, ProjectPayment
+    DailyExpense, LoginHistory, FactoryFund, ProjectPayment, CashBook
 )
 import crud, schemas, auth
 from collections import defaultdict
@@ -177,7 +177,21 @@ try:
                 "ALTER TABLE daily_expenses ADD COLUMN deleted_at DATETIME",
                 "ALTER TABLE daily_expenses ADD COLUMN deleted_by TEXT",
                 "ALTER TABLE daily_expenses ADD COLUMN payment_mode TEXT DEFAULT 'Cash'",
-                "ALTER TABLE daily_expenses ADD COLUMN remarks TEXT"
+                "ALTER TABLE daily_expenses ADD COLUMN remarks TEXT",
+                "ALTER TABLE daily_expenses ADD COLUMN cash_received FLOAT DEFAULT 0.0",
+                "ALTER TABLE daily_expenses ADD COLUMN returned_cash FLOAT DEFAULT 0.0",
+                "ALTER TABLE daily_expenses ADD COLUMN approval_status TEXT DEFAULT 'approved'",
+                "ALTER TABLE daily_expenses ADD COLUMN approved_by TEXT",
+                "ALTER TABLE daily_expenses ADD COLUMN approved_at TIMESTAMP",
+                "ALTER TABLE daily_expenses ADD COLUMN supervisor_comment TEXT",
+                "ALTER TABLE project_payments ADD COLUMN receipt_type TEXT DEFAULT 'Project Payment'",
+                "CREATE INDEX IF NOT EXISTS idx_attendance_staff ON attendance (staff_id)",
+                "CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance (date)",
+                "CREATE INDEX IF NOT EXISTS idx_daily_expenses_project ON daily_expenses (project_id)",
+                "CREATE INDEX IF NOT EXISTS idx_daily_expenses_date ON daily_expenses (expense_date)",
+                "CREATE INDEX IF NOT EXISTS idx_project_payments_project ON project_payments (project_id)",
+                "CREATE INDEX IF NOT EXISTS idx_project_bom_project ON project_bom (project_id)",
+                "CREATE INDEX IF NOT EXISTS idx_stock_transactions_inventory ON stock_transactions (inventory_id)"
             ]
         else:
             alters = [
@@ -205,7 +219,21 @@ try:
                 "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
                 "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(36)",
                 "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(50) DEFAULT 'Cash'",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS remarks TEXT"
+                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS remarks TEXT",
+                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS cash_received FLOAT DEFAULT 0.0",
+                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS returned_cash FLOAT DEFAULT 0.0",
+                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) DEFAULT 'approved'",
+                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS approved_by VARCHAR(36)",
+                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP",
+                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS supervisor_comment TEXT",
+                "ALTER TABLE project_payments ADD COLUMN IF NOT EXISTS receipt_type VARCHAR(50) DEFAULT 'Project Payment'",
+                "CREATE INDEX IF NOT EXISTS idx_attendance_staff ON attendance (staff_id)",
+                "CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance (date)",
+                "CREATE INDEX IF NOT EXISTS idx_daily_expenses_project ON daily_expenses (project_id)",
+                "CREATE INDEX IF NOT EXISTS idx_daily_expenses_date ON daily_expenses (expense_date)",
+                "CREATE INDEX IF NOT EXISTS idx_project_payments_project ON project_payments (project_id)",
+                "CREATE INDEX IF NOT EXISTS idx_project_bom_project ON project_bom (project_id)",
+                "CREATE INDEX IF NOT EXISTS idx_stock_transactions_inventory ON stock_transactions (inventory_id)"
             ]
             
         for statement in alters:
@@ -3138,7 +3166,15 @@ def remove_widget(widget_id: str, db: Session = Depends(get_db), current_user: U
 
 @app.get("/api/tasks", response_model=List[schemas.TaskResponse])
 def get_tasks(include_deleted: bool = False, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
-    return crud.get_tasks(db, include_deleted)
+    tasks = crud.get_tasks(db, include_deleted)
+    is_worker = current_user.role in ["worker", "carpenter", "operator", "employee"]
+    if is_worker:
+        staff = db.query(Staff).filter(Staff.user_id == current_user.id).first()
+        if staff:
+            tasks = [t for t in tasks if t.assigned_to == staff.id]
+        else:
+            tasks = []
+    return tasks
 
 @app.post("/api/tasks", response_model=schemas.TaskResponse)
 def create_task(task_in: schemas.TaskCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
@@ -3791,6 +3827,8 @@ def permanently_delete_archived_record(
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_admin)
 ):
+    if current_user.role != "super_admin":
+        raise HTTPException(status_code=403, detail="Only Super Admins can permanently delete records.")
     try:
         ip_addr = request.client.host if request and request.client else None
         user_agent = request.headers.get("user-agent") if request else None
@@ -5643,7 +5681,11 @@ def read_expenses(
     current_user: User = Depends(auth.require_any_authenticated)
 ):
     """Retrieve daily expenses list."""
-    return crud.get_daily_expenses(db, project_id, category, start_date, end_date)
+    expenses = crud.get_daily_expenses(db, project_id, category, start_date, end_date)
+    is_worker = current_user.role in ["worker", "carpenter", "operator", "employee"]
+    if is_worker:
+        expenses = [e for e in expenses if e.created_by == current_user.id]
+    return expenses
 
 
 @app.post("/api/expenses", response_model=schemas.DailyExpenseResponse)
@@ -5656,6 +5698,8 @@ async def create_expense(
     project_id: Optional[str] = Form(None),
     payment_mode: Optional[str] = Form("Cash"),
     remarks: Optional[str] = Form(None),
+    cash_received: Optional[float] = Form(0.0),
+    returned_cash: Optional[float] = Form(0.0),
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_any_authenticated)
@@ -5687,19 +5731,25 @@ async def create_expense(
         project_id=project_id,
         attachment_url=attachment_url,
         payment_mode=payment_mode,
-        remarks=remarks
+        remarks=remarks,
+        cash_received=cash_received,
+        returned_cash=returned_cash
     )
     db_exp = crud.create_daily_expense(db, exp_in, current_user.id)
     broadcast_sync({"event": "expense_change"})
+    
+    # Broadcast financial change as well
+    broadcast_sync({"event": "financial_change"})
+    
     if project_id:
         log_and_broadcast_activity_sync(
             db,
             current_user,
             project_id,
             "Expense Added",
-            f"Expense of {format_inr(amount)} added for category: {expense_category}",
+            f"Expense of {format_inr(db_exp.amount)} added for category: {expense_category}",
             None,
-            format_inr(amount)
+            format_inr(db_exp.amount)
         )
     return db_exp
 
@@ -5716,6 +5766,8 @@ async def update_expense(
     project_id: Optional[str] = Form(None),
     payment_mode: Optional[str] = Form(None),
     remarks: Optional[str] = Form(None),
+    cash_received: Optional[float] = Form(None),
+    returned_cash: Optional[float] = Form(None),
     file: Optional[UploadFile] = File(None),
     request: Request = None,
     db: Session = Depends(get_db),
@@ -5748,7 +5800,9 @@ async def update_expense(
         attachment_url=attachment_url,
         payment_mode=payment_mode,
         remarks=remarks,
-        reason=reason
+        reason=reason,
+        cash_received=cash_received,
+        returned_cash=returned_cash
     )
     
     ip_addr = request.client.host if request and request.client else None
@@ -6799,6 +6853,8 @@ def bulk_archive_action(
                 processed_count += 1
                 
             elif req.action == "delete_permanent":
+                if current_user.role != "super_admin":
+                    raise HTTPException(status_code=403, detail="Only Super Admins can permanently delete records.")
                 entity_name = req.entity_type
                 if entity_name == "inventory":
                     entity_name = "inventory_item"
@@ -6966,7 +7022,7 @@ def list_project_payments(project_id: Optional[str] = Query(None), db: Session =
 
 @app.post("/api/project-payments", response_model=schemas.ProjectPaymentResponse)
 async def add_project_payment(
-    project_id: str = Form(...),
+    project_id: Optional[str] = Form(None),
     client_id: str = Form(...),
     invoice_amount: float = Form(...),
     received_amount: float = Form(...),
@@ -6976,11 +7032,12 @@ async def add_project_payment(
     bank_name: Optional[str] = Form(None),
     received_date: Optional[date] = Form(None),
     remarks: Optional[str] = Form(None),
+    receipt_type: Optional[str] = Form("Project Payment"),
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_admin)
 ):
-    """Log a new client payment milestone against a project (Admins only)."""
+    """Log a new client payment milestone (Admins only)."""
     attachment_url = None
     if file and file.filename:
         ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
@@ -7008,7 +7065,8 @@ async def add_project_payment(
         bank_name=bank_name,
         received_date=received_date,
         remarks=remarks,
-        attachment_url=attachment_url
+        attachment_url=attachment_url,
+        receipt_type=receipt_type
     )
     db_pay = crud.create_project_payment(db, pay_in, current_user.id)
     broadcast_sync({"event": "financial_change"})
@@ -7018,7 +7076,7 @@ async def add_project_payment(
         current_user,
         project_id,
         "Payment Received",
-        f"Received payment of {format_inr(received_amount)} for project.",
+        f"Received payment of {format_inr(received_amount)} for client ({receipt_type}).",
         None,
         format_inr(received_amount)
     )
@@ -7028,6 +7086,268 @@ async def add_project_payment(
 def get_financials_summary(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
     """Fetch financial summary cards overview statistics."""
     return crud.get_financial_dashboard_stats(db)
+
+
+# --- CASH BOOK & LEDGER ENDPOINTS ---
+
+@app.get("/api/cash-book", response_model=List[schemas.CashBookResponse])
+def list_cash_book_entries(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    category: Optional[str] = Query(None),
+    payment_method: Optional[str] = Query(None),
+    transaction_type: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    """Retrieve all company cash movements, with running balance calculated dynamically."""
+    return crud.get_cash_book_entries(db, start_date, end_date, category, payment_method, transaction_type, search)
+
+@app.get("/api/cash-book/stats")
+def get_cash_book_stats_api(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Retrieve opening balance, money in/out, and closing balance statistics."""
+    return crud.get_cash_book_stats(db, start_date, end_date)
+
+@app.post("/api/cash-book", response_model=schemas.CashBookResponse)
+async def add_cash_book_entry(
+    transaction_type: str = Form(...),
+    category: str = Form(...),
+    amount: float = Form(...),
+    date: Optional[date] = Form(None),
+    payment_method: Optional[str] = Form("Cash"),
+    reference_number: Optional[str] = Form(None),
+    remarks: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    """Log a manual cash book transaction (owner injection, direct sale, petrol, etc. Admins only)."""
+    attachment_url = None
+    if file and file.filename:
+        ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
+        filename = f"cash_{uuid.uuid4().hex[:8]}.{ext}"
+        try:
+            contents = await file.read()
+            attachment_url = storage_provider.upload_file(
+                file_data=contents,
+                filename=filename,
+                bucket="documents",
+                mime_type=file.content_type or "application/octet-stream",
+                subpath="cash_book"
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to upload attachment: {str(e)}")
+
+    entry_in = schemas.CashBookCreate(
+        date=date,
+        transaction_type=transaction_type,
+        category=category,
+        amount=amount,
+        payment_method=payment_method,
+        reference_number=reference_number,
+        remarks=remarks,
+        attachment_url=attachment_url
+    )
+    db_entry = crud.create_cash_book_entry(db, entry_in, current_user.id, ref_type="direct_txn")
+    broadcast_sync({"event": "financial_change"})
+    return db_entry
+
+@app.put("/api/cash-book/{txn_id}", response_model=schemas.CashBookResponse)
+async def update_cash_book_entry(
+    txn_id: str,
+    category: Optional[str] = Form(None),
+    amount: Optional[float] = Form(None),
+    date: Optional[date] = Form(None),
+    payment_method: Optional[str] = Form(None),
+    reference_number: Optional[str] = Form(None),
+    remarks: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    """Edit a manual cash book entry."""
+    db_entry = db.query(CashBook).filter(CashBook.id == txn_id, CashBook.is_deleted == False).first()
+    if not db_entry:
+        raise HTTPException(status_code=404, detail="Cash book entry not found")
+        
+    if file and file.filename:
+        ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
+        filename = f"cash_{uuid.uuid4().hex[:8]}.{ext}"
+        try:
+            contents = await file.read()
+            db_entry.attachment_url = storage_provider.upload_file(
+                file_data=contents,
+                filename=filename,
+                bucket="documents",
+                mime_type=file.content_type or "application/octet-stream",
+                subpath="cash_book"
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to upload attachment: {str(e)}")
+            
+    if date is not None:
+        db_entry.date = date
+    if category is not None:
+        db_entry.category = category
+    if amount is not None:
+        db_entry.amount = amount
+    if payment_method is not None:
+        db_entry.payment_method = payment_method
+    if reference_number is not None:
+        db_entry.reference_number = reference_number
+    if remarks is not None:
+        db_entry.remarks = remarks
+        
+    db.commit()
+    db.refresh(db_entry)
+    broadcast_sync({"event": "financial_change"})
+    return db_entry
+
+@app.delete("/api/cash-book/{txn_id}")
+def delete_cash_book_entry(txn_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    """Soft delete a cash book entry."""
+    db_entry = db.query(CashBook).filter(CashBook.id == txn_id, CashBook.is_deleted == False).first()
+    if not db_entry:
+        raise HTTPException(status_code=404, detail="Cash book entry not found")
+    db_entry.is_deleted = True
+    db_entry.deleted_at = datetime.utcnow()
+    db_entry.deleted_by = current_user.id
+    db.commit()
+    broadcast_sync({"event": "financial_change"})
+    return {"status": "success", "message": "Transaction deleted successfully"}
+
+@app.get("/api/cash-book/export")
+def export_cash_book(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    category: Optional[str] = Query(None),
+    payment_method: Optional[str] = Query(None),
+    transaction_type: Optional[str] = Query(None),
+    format: str = Query("excel"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    """Export Cash Book ledger to CSV, Excel, or PDF."""
+    txns = crud.get_cash_book_entries(db, start_date, end_date, category, payment_method, transaction_type)
+    stats = crud.get_cash_book_stats(db, start_date, end_date)
+    running = stats["opening_balance"]
+    
+    headers = ["Transaction ID", "Date", "Type", "Category", "Amount", "Running Balance", "Method", "Reference", "Added By", "Remarks"]
+    rows = []
+    for t in txns:
+        if t.transaction_type == "IN":
+            running += t.amount
+        else:
+            running -= t.amount
+            
+        added_by_name = t.user.full_name if t.user else "System"
+        rows.append([
+            t.transaction_id,
+            str(t.date),
+            t.transaction_type,
+            t.category,
+            t.amount,
+            round(running, 2),
+            t.payment_method,
+            t.reference_number or "N/A",
+            added_by_name,
+            t.remarks or ""
+        ])
+        
+    if format == "csv":
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(headers)
+        writer.writerows(rows)
+        buffer.seek(0)
+        return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv",
+                                 headers={"Content-Disposition": "attachment; filename=cash_book.csv"})
+                                 
+    if format == "pdf":
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        styles = getSampleStyleSheet()
+        elements = [
+            Paragraph("Allure Living ERP – Cash Book Ledger Report", styles['Title']),
+            Spacer(1, 12)
+        ]
+        table_data = [headers] + rows
+        tbl = Table(table_data)
+        tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10B981')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F9FAFB')]),
+        ]))
+        elements.append(tbl)
+        doc.build(elements)
+        buffer.seek(0)
+        return StreamingResponse(buffer, media_type="application/pdf",
+                                 headers={"Content-Disposition": "attachment; filename=cash_book.pdf"})
+                                 
+    # Excel default
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Cash Book"
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="10B981", end_color="10B981", fill_type="solid")
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+    for row_idx, row in enumerate(rows, 2):
+        for col_idx, val in enumerate(row, 1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return StreamingResponse(buffer, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": "attachment; filename=cash_book.xlsx"})
+
+
+# --- DAILY EXPENSE RECONCILIATION & APPROVAL FLOW ---
+
+@app.get("/api/expenses/{expense_id}/history")
+def get_expense_history(expense_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    """Retrieve the edit history of an expense."""
+    return crud.get_entity_history(db, "DailyExpense", expense_id)
+
+@app.post("/api/expenses/{expense_id}/approve")
+def approve_expense(
+    expense_id: str,
+    status: str = Query(..., description="approved or rejected"),
+    comment: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    """Approve or reject a daily expense request (Supervisors/Managers/Admins only)."""
+    if status not in ["approved", "rejected"]:
+        raise HTTPException(status_code=400, detail="Invalid status. Must be approved or rejected.")
+        
+    db_exp = db.query(DailyExpense).filter(DailyExpense.id == expense_id, DailyExpense.is_deleted == False).first()
+    if not db_exp:
+        raise HTTPException(status_code=404, detail="Expense not found")
+        
+    exp_in = schemas.DailyExpenseUpdate(
+        approval_status=status,
+        supervisor_comment=comment,
+        reason=f"Expense approval transition: {status}"
+    )
+    
+    updated = crud.update_daily_expense(db, expense_id, exp_in, current_user.id)
+    broadcast_sync({"event": "expense_change"})
+    broadcast_sync({"event": "financial_change"})
+    return updated
+
 
 
 

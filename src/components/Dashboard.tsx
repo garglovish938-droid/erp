@@ -6,7 +6,8 @@ import {
   ShieldAlert, Layers, Bell, LayoutGrid, Settings, Plus, Trash2, 
   ChevronLeft, ChevronRight, Maximize2, Minimize2, Save, Loader2,
   Clock, ClipboardList, CheckSquare, Sparkles, MapPin, Laptop, Calendar,
-  LogOut, Camera, ShoppingCart, Receipt, Users, FolderKanban
+  LogOut, Camera, ShoppingCart, Receipt, Users, FolderKanban,
+  ClipboardCheck, ArrowLeftRight, User, Briefcase, Landmark, ShieldCheck
 } from "lucide-react";
 import { 
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, 
@@ -82,6 +83,7 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
   const [attActionLoading, setAttActionLoading] = useState(false);
   const [workLogPhoto, setWorkLogPhoto] = useState<File | null>(null);
   const [todayAttendance, setTodayAttendance] = useState<any[]>([]);
+  const [assignedTasks, setAssignedTasks] = useState<any[]>([]);
 
   // Attendance camera state
   const [showCameraModal, setShowCameraModal] = useState(false);
@@ -241,14 +243,20 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
   const fetchWorkerData = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [attRes, projectsRes, logsRes] = await Promise.all([
+      const [attRes, projectsRes, logsRes, expensesRes, requestsRes, tasksRes] = await Promise.all([
         fetch(`${API_BASE_URL}/api/attendance/status`, { headers }).then(r => r.json()),
         fetch(`${API_BASE_URL}/api/projects`, { headers }).then(r => r.json()),
-        fetch(`${API_BASE_URL}/api/work-logs`, { headers }).then(r => r.json())
+        fetch(`${API_BASE_URL}/api/work-logs`, { headers }).then(r => r.json()),
+        fetch(`${API_BASE_URL}/api/expenses`, { headers }).then(r => r.json()).catch(() => []),
+        fetch(`${API_BASE_URL}/api/requests`, { headers }).then(r => r.json()).catch(() => []),
+        fetch(`${API_BASE_URL}/api/tasks`, { headers }).then(r => r.json()).catch(() => [])
       ]);
       setAttendanceStatus(attRes);
-      setAssignedProjects(projectsRes);
-      setWorkLogs(logsRes);
+      setAssignedProjects(projectsRes || []);
+      setWorkLogs(logsRes || []);
+      setRecentExpenses(expensesRes || []);
+      setRecentRequests(requestsRes || []);
+      setAssignedTasks(tasksRes || []);
       setError("");
     } catch (err: any) {
       setError("Failed to sync worker data from backend.");
@@ -837,6 +845,104 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
                 <ClipboardList className="w-12 h-12 mx-auto mb-3 opacity-30 text-indigo-500" />
                 <p className="font-semibold text-sm">No work logs submitted yet.</p>
                 <p className="text-xs text-slate-500 mt-1">Select a project and task above to report your progress today.</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Assigned Tasks, Material Requests, & Expenses Summary for workers */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
+          
+          {/* Assigned Tasks Widget */}
+          <div className="glass rounded-3xl p-6 space-y-4">
+            <h3 className="text-lg font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
+              <ClipboardCheck className="w-5 h-5 text-indigo-500" />
+              Assigned Tasks ({assignedTasks.length})
+            </h3>
+            {assignedTasks.length === 0 ? (
+              <p className="text-slate-400 text-xs py-4 text-center">No active tasks assigned to you.</p>
+            ) : (
+              <div className="space-y-3 max-h-[280px] overflow-y-auto pr-1">
+                {assignedTasks.map((t) => (
+                  <div key={t.id} className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-150 dark:border-slate-850 space-y-1.5 shadow-sm">
+                    <div className="flex justify-between items-start gap-2">
+                      <span className="font-semibold text-xs text-slate-805 dark:text-slate-200 line-clamp-2">{t.title}</span>
+                      <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                        t.status === "completed" ? "bg-emerald-50 text-emerald-700" :
+                        t.status === "in_progress" ? "bg-indigo-50 text-indigo-700" : "bg-amber-55 text-amber-700"
+                      }`}>{t.status || "pending"}</span>
+                    </div>
+                    {t.project_name && (
+                      <div className="text-[10px] text-slate-400 font-semibold">Project: {t.project_name}</div>
+                    )}
+                    {t.due_date && (
+                      <div className="text-[10px] text-slate-405">Due: {new Date(t.due_date).toLocaleDateString()}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Material Requests Status Widget */}
+          <div className="glass rounded-3xl p-6 space-y-4">
+            <h3 className="text-lg font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
+              <ArrowLeftRight className="w-5 h-5 text-purple-505" />
+              Material Requests Status
+            </h3>
+            {recentRequests.length === 0 ? (
+              <p className="text-slate-400 text-xs py-4 text-center">No material requests logged.</p>
+            ) : (
+              <div className="space-y-3 max-h-[280px] overflow-y-auto pr-1">
+                {recentRequests.map((r) => (
+                  <div key={r.id} className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-150 dark:border-slate-850 space-y-1.5 shadow-sm">
+                    <div className="flex justify-between items-start gap-2">
+                      <span className="font-semibold text-xs text-slate-805 dark:text-slate-200 line-clamp-1">{r.inventory?.name || "Material Item"}</span>
+                      <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                        r.status === "approved" ? "bg-emerald-50 text-emerald-700" :
+                        r.status === "rejected" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"
+                      }`}>{r.status || "pending"}</span>
+                    </div>
+                    <div className="flex justify-between text-[10px] text-slate-400 font-semibold">
+                      <span>Quantity: {r.quantity}</span>
+                      {r.project?.name && <span className="truncate max-w-[120px]">{r.project.name}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Logged Expenses Summary */}
+          <div className="glass rounded-3xl p-6 space-y-4">
+            <h3 className="text-lg font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
+              <Receipt className="w-5 h-5 text-indigo-505" />
+              Logged Expenses Summary
+            </h3>
+            {recentExpenses.length === 0 ? (
+              <p className="text-slate-400 text-xs py-4 text-center">No expenses logged recently.</p>
+            ) : (
+              <div className="space-y-3 max-h-[280px] overflow-y-auto pr-1">
+                {recentExpenses.map((e) => (
+                  <div key={e.id} className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-150 dark:border-slate-850 space-y-1.5 shadow-sm">
+                    <div className="flex justify-between items-start gap-2">
+                      <span className="font-semibold text-xs text-slate-805 dark:text-slate-200">{e.expense_category}</span>
+                      <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                        e.approval_status === "approved" ? "bg-emerald-50 text-emerald-700" :
+                        e.approval_status === "rejected" ? "bg-rose-50 text-rose-700" : "bg-amber-55 text-amber-700"
+                      }`}>{e.approval_status || "pending"}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-slate-405">{e.expense_date}</span>
+                      <span className="font-bold text-slate-900 dark:text-white">{formatCurrency(e.amount)}</span>
+                    </div>
+                    {e.supervisor_comment && (
+                      <div className="text-[10px] bg-white dark:bg-slate-950 p-1.5 rounded text-slate-400 italic">
+                        Comment: {e.supervisor_comment}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>

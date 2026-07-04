@@ -882,20 +882,25 @@ class DailyExpenseCreate(BaseModel):
     attachment_url: Optional[str] = None
     payment_mode: Optional[str] = "Cash"
     remarks: Optional[str] = None
+    
+    # Cash received reconciliation fields
+    cash_received: Optional[float] = 0.0
+    returned_cash: Optional[float] = 0.0
 
     @field_validator('amount')
     @classmethod
     def validate_positive_amount(cls, v: float) -> float:
-        if v <= 0:
-            raise ValueError("Amount must be greater than 0")
+        if v < 0:
+            raise ValueError("Amount must be greater than or equal to 0")
         return v
 
     @field_validator('expense_category')
     @classmethod
     def validate_category(cls, v: str) -> str:
-        allowed = ["Fuel", "Food", "Transport", "Courier", "Loading", "Labour", "Maintenance", "Electricity", "Internet", "Miscellaneous"]
+        allowed = ["Fuel", "Petrol", "Food", "Transport", "Courier", "Loading", "Labour", "Maintenance", "Electricity", "Internet", "Miscellaneous", "Material Purchase", "Office Expense", "Salary", "Misc Expense", "Cash Returned", "Daily Expenses", "Other"]
         if v not in allowed:
-            raise ValueError(f"Category must be one of {allowed}")
+            # Add fallback to allow custom categories dynamically
+            return v
         return v
 
 class DailyExpenseUpdate(BaseModel):
@@ -909,12 +914,18 @@ class DailyExpenseUpdate(BaseModel):
     payment_mode: Optional[str] = None
     remarks: Optional[str] = None
     reason: str
+    
+    # Cash received reconciliation fields
+    cash_received: Optional[float] = None
+    returned_cash: Optional[float] = None
+    approval_status: Optional[str] = None
+    supervisor_comment: Optional[str] = None
 
     @field_validator('amount')
     @classmethod
     def validate_positive_amount(cls, v: Optional[float]) -> Optional[float]:
-        if v is not None and v <= 0:
-            raise ValueError("Amount must be greater than 0")
+        if v is not None and v < 0:
+            raise ValueError("Amount must be greater than or equal to 0")
         return v
 
     @field_validator('expense_category')
@@ -922,9 +933,9 @@ class DailyExpenseUpdate(BaseModel):
     def validate_category(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
-        allowed = ["Fuel", "Food", "Transport", "Courier", "Loading", "Labour", "Maintenance", "Electricity", "Internet", "Miscellaneous"]
+        allowed = ["Fuel", "Petrol", "Food", "Transport", "Courier", "Loading", "Labour", "Maintenance", "Electricity", "Internet", "Miscellaneous", "Material Purchase", "Office Expense", "Salary", "Misc Expense", "Cash Returned", "Daily Expenses", "Other"]
         if v not in allowed:
-            raise ValueError(f"Category must be one of {allowed}")
+            return v
         return v
 
 class DailyExpenseResponse(BaseSchema):
@@ -944,8 +955,20 @@ class DailyExpenseResponse(BaseSchema):
     is_deleted: bool
     deleted_at: Optional[datetime] = None
     deleted_by: Optional[str] = None
+    
+    # Cash received reconciliation fields
+    cash_received: float
+    returned_cash: float
+    
+    # Expense approval fields
+    approval_status: str
+    approved_by: Optional[str]
+    approved_at: Optional[datetime]
+    supervisor_comment: Optional[str]
+    
     project: Optional[ProjectResponse] = None
     creator: Optional[UserResponse] = None
+    approver: Optional[UserResponse] = None
 
 class AuditLogResponse(BaseSchema):
     id: str
@@ -1095,7 +1118,7 @@ class FactoryFundResponse(BaseSchema):
 
 
 class ProjectPaymentCreate(BaseModel):
-    project_id: str
+    project_id: Optional[str] = None
     client_id: str
     invoice_number: Optional[str] = None
     invoice_amount: float
@@ -1106,6 +1129,7 @@ class ProjectPaymentCreate(BaseModel):
     received_date: Optional[date] = None
     remarks: Optional[str] = None
     attachment_url: Optional[str] = None
+    receipt_type: Optional[str] = "Project Payment"
 
     @field_validator('invoice_amount', 'received_amount')
     @classmethod
@@ -1117,7 +1141,10 @@ class ProjectPaymentCreate(BaseModel):
     @field_validator('payment_method')
     @classmethod
     def validate_payment_method(cls, v: str) -> str:
-        allowed = ["Cash", "UPI", "NEFT", "RTGS", "Cheque"]
+        allowed = ["Cash", "UPI", "NEFT", "RTGS", "Cheque", "Bank"]
+        if v not in allowed:
+            return v
+        return v
         if v not in allowed:
             raise ValueError(f"Payment method must be one of {allowed}")
         return v
@@ -1140,8 +1167,47 @@ class ProjectPaymentResponse(BaseSchema):
     attachment_url: Optional[str]
     remarks: Optional[str]
     created_at: datetime
+    receipt_type: str
     project: Optional[ProjectResponse] = None
     client: Optional[ClientResponse] = None
     receiver: Optional[UserResponse] = None
+
+
+class CashBookCreate(BaseModel):
+    date: Optional[date] = None
+    transaction_type: str  # IN, OUT
+    category: str
+    amount: float
+    payment_method: Optional[str] = "Cash"
+    reference_number: Optional[str] = None
+    remarks: Optional[str] = None
+    attachment_url: Optional[str] = None
+
+    @field_validator('amount')
+    @classmethod
+    def validate_positive_amount(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("Amount must be greater than or equal to 0")
+        return v
+
+
+class CashBookResponse(BaseSchema):
+    id: str
+    transaction_id: str
+    date: date
+    transaction_type: str
+    category: str
+    amount: float
+    payment_method: str
+    reference_number: Optional[str]
+    reference_type: Optional[str]
+    reference_id: Optional[str]
+    added_by: Optional[str]
+    remarks: Optional[str]
+    attachment_url: Optional[str]
+    created_at: datetime
+    is_deleted: bool
+    user: Optional[UserResponse] = None
+
 
 
