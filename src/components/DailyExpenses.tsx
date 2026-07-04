@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
   DollarSign, Calendar, Tag, FileText, Upload, Plus, Trash2, 
   Download, RefreshCw, Layers, ExternalLink, Image as ImageIcon,
-  ChevronLeft, ChevronRight, Edit2, ShieldCheck, History, X, Paperclip
+  ChevronLeft, ChevronRight, Edit2, ShieldCheck, History, X, Paperclip, Search
 } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import { apiRequest } from "@/services/apiClient";

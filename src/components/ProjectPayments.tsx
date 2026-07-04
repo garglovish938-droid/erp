@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
   IndianRupee, Calendar, Tag, FileText, Upload, Plus, RefreshCw, 
   ExternalLink, Paperclip, ChevronLeft, ChevronRight,
-  User, Briefcase, Landmark, ShieldCheck, X
+  User, Briefcase, Landmark, ShieldCheck, X, Search
 } from "lucide-react";
 import { apiRequest } from "@/services/apiClient";
 import { API_BASE_URL } from "@/lib/api";
