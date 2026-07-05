@@ -11,7 +11,7 @@ from models import (
     WorkflowDefinition, WorkflowStep, ApprovalRule, DashboardWidget, Task,
     Document, VersionHistory, ProjectAssignment, DailyWorkLog, Shift, AttendanceRule,
     ProjectDailyLog, ProjectMaterialHistory, FactoryFund, ProjectPayment, CashBook,
-    FactoryWallet, FactoryWalletTransaction
+    FactoryWallet, FactoryWalletTransaction, ProjectPaymentVersion
 )
 from schemas import (
     UserCreate, UserUpdate, CategoryCreate, CategoryUpdate, InventoryItemCreate, InventoryItemUpdate,
