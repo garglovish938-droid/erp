@@ -267,6 +267,13 @@ class StockAdjustment(BaseModel):
     quantity: float
     notes: Optional[str] = None
     transaction_type: str = "adjustment"  # adjustment, return, damaged, transfer
+    grn_number: Optional[str] = None
+    supplier_id: Optional[str] = None
+    purchase_order_id: Optional[str] = None
+    warehouse: Optional[str] = None
+    unit_cost: Optional[float] = None
+    invoice_number: Optional[str] = None
+    attachment_url: Optional[str] = None
 
 class BarcodeLookup(BaseModel):
     barcode: str
@@ -1240,9 +1247,45 @@ class ProjectPaymentResponse(BaseSchema):
     remarks: Optional[str]
     created_at: datetime
     receipt_type: str
+    is_deleted: bool = False
+    deleted_at: Optional[datetime] = None
+    deleted_by: Optional[str] = None
     project: Optional[ProjectResponse] = None
     client: Optional[ClientResponse] = None
     receiver: Optional[UserResponse] = None
+
+
+class ProjectPaymentVersionResponse(BaseSchema):
+    id: str
+    payment_id: str
+    old_values: Optional[str]
+    new_values: Optional[str]
+    user_id: Optional[str]
+    updated_at: datetime
+    reason: Optional[str]
+    user: Optional[UserResponse] = None
+
+
+class StockTransactionResponse(BaseSchema):
+    id: str
+    inventory_id: str
+    transaction_type: str
+    quantity: float
+    project_id: Optional[str]
+    user_id: Optional[str]
+    notes: Optional[str]
+    created_at: datetime
+    grn_number: Optional[str] = None
+    supplier_id: Optional[str] = None
+    purchase_order_id: Optional[str] = None
+    warehouse: Optional[str] = None
+    unit_cost: Optional[float] = None
+    invoice_number: Optional[str] = None
+    attachment_url: Optional[str] = None
+    project: Optional[ProjectResponse] = None
+    user: Optional[UserResponse] = None
+    supplier: Optional[SupplierResponse] = None
+    inventory: Optional[InventoryItemResponse] = None
 
 
 class CashBookCreate(BaseModel):

@@ -674,13 +674,20 @@ def adjust_stock(
     transaction_type: str, 
     user_id: str, 
     project_id: Optional[str] = None, 
-    notes: Optional[str] = None
+    notes: Optional[str] = None,
+    grn_number: Optional[str] = None,
+    supplier_id: Optional[str] = None,
+    purchase_order_id: Optional[str] = None,
+    warehouse: Optional[str] = None,
+    unit_cost: Optional[float] = None,
+    invoice_number: Optional[str] = None,
+    attachment_url: Optional[str] = None
 ) -> InventoryItem:
     db_item = db.query(InventoryItem).filter(InventoryItem.id == inventory_id, InventoryItem.is_deleted == False).with_for_update().first()
     if not db_item:
         raise ValueError("Inventory item not found")
         
-    if transaction_type in ["out", "damaged", "transfer"] or (transaction_type == "adjustment" and quantity < 0):
+    if transaction_type in ["out", "damaged", "transfer", "issue"] or (transaction_type in ["adjustment", "manual_entry"] and quantity < 0):
         # We are reducing stock
         abs_qty = abs(quantity)
         if db_item.quantity < abs_qty:
@@ -702,7 +709,14 @@ def adjust_stock(
         quantity=abs_qty,  # Store positive quantity in transaction log
         project_id=project_id,
         user_id=user_id,
-        notes=notes
+        notes=notes,
+        grn_number=grn_number,
+        supplier_id=supplier_id,
+        purchase_order_id=purchase_order_id,
+        warehouse=warehouse,
+        unit_cost=unit_cost,
+        invoice_number=invoice_number,
+        attachment_url=attachment_url
     )
     db.add(transaction)
     db.commit()
@@ -1104,13 +1118,20 @@ def update_purchase_order(
     db_po.updated_at = datetime.utcnow()
     
     if stock_adj > 0.0:
+        # Generate a unique GRN number
+        grn_number = f"GRN-{db_po.po_number}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
         adjust_stock(
             db=db,
             inventory_id=db_po.inventory_id,
             quantity=stock_adj,
             transaction_type="in",
             user_id=user_id,
-            notes=f"Goods received from Purchase Order {db_po.po_number}"
+            notes=f"Goods received from Purchase Order {db_po.po_number}",
+            grn_number=grn_number,
+            supplier_id=db_po.supplier_id,
+            purchase_order_id=db_po.id,
+            unit_cost=db_po.unit_cost,
+            invoice_number=db_po.invoice_number
         )
     elif stock_adj < 0.0:
         adjust_stock(
@@ -3516,7 +3537,7 @@ def get_project_payments(db: Session, project_id: Optional[str] = None) -> List[
         joinedload(ProjectPayment.project),
         joinedload(ProjectPayment.client),
         joinedload(ProjectPayment.receiver)
-    )
+    ).filter(ProjectPayment.is_deleted == False)
     if project_id:
         query = query.filter(ProjectPayment.project_id == project_id)
     return query.order_by(ProjectPayment.received_date.desc(), ProjectPayment.created_at.desc()).all()
@@ -4079,5 +4100,243 @@ def sync_cash_book_entry(db: Session, ref_type: str, ref_id: str, action: str = 
         db.add(db_entry)
         
     db.commit()
+
+
+def get_project_payment(db: Session, payment_id: str) -> Optional[ProjectPayment]:
+    return db.query(ProjectPayment).filter(ProjectPayment.id == payment_id, ProjectPayment.is_deleted == False).first()
+
+def get_deleted_project_payments(db: Session) -> List[ProjectPayment]:
+    return db.query(ProjectPayment).filter(ProjectPayment.is_deleted == True).order_by(ProjectPayment.created_at.desc()).all()
+
+def get_project_payment_versions(db: Session, payment_id: str) -> List[ProjectPaymentVersion]:
+    return db.query(ProjectPaymentVersion).filter(ProjectPaymentVersion.payment_id == payment_id).order_by(ProjectPaymentVersion.updated_at.desc()).all()
+
+def update_project_payment(
+    db: Session,
+    payment_id: str,
+    invoice_amount: Optional[float],
+    received_amount: Optional[float],
+    payment_method: Optional[str],
+    invoice_number: Optional[str],
+    reference_number: Optional[str],
+    bank_name: Optional[str],
+    received_date: Optional[date],
+    remarks: Optional[str],
+    receipt_type: Optional[str],
+    project_id: Optional[str],
+    client_id: Optional[str],
+    attachment_url: Optional[str],
+    user_id: str,
+    reason: str
+) -> Optional[ProjectPayment]:
+    db_pay = db.query(ProjectPayment).filter(ProjectPayment.id == payment_id, ProjectPayment.is_deleted == False).first()
+    if not db_pay:
+        return None
+        
+    import json
+    old_vals = {
+        "invoice_number": db_pay.invoice_number,
+        "invoice_amount": db_pay.invoice_amount,
+        "received_amount": db_pay.received_amount,
+        "payment_method": db_pay.payment_method,
+        "reference_number": db_pay.reference_number,
+        "bank_name": db_pay.bank_name,
+        "received_date": str(db_pay.received_date) if db_pay.received_date else None,
+        "remarks": db_pay.remarks,
+        "receipt_type": db_pay.receipt_type,
+        "project_id": db_pay.project_id,
+        "client_id": db_pay.client_id,
+        "attachment_url": db_pay.attachment_url
+    }
+    
+    if invoice_number is not None: db_pay.invoice_number = invoice_number
+    if invoice_amount is not None: db_pay.invoice_amount = invoice_amount
+    if received_amount is not None: db_pay.received_amount = received_amount
+    if payment_method is not None: db_pay.payment_method = payment_method
+    if reference_number is not None: db_pay.reference_number = reference_number
+    if bank_name is not None: db_pay.bank_name = bank_name
+    if received_date is not None: db_pay.received_date = received_date
+    if remarks is not None: db_pay.remarks = remarks
+    if receipt_type is not None: db_pay.receipt_type = receipt_type
+    if project_id is not None: db_pay.project_id = project_id
+    if client_id is not None: db_pay.client_id = client_id
+    if attachment_url is not None: db_pay.attachment_url = attachment_url
+    
+    db_pay.pending_amount = db_pay.invoice_amount - db_pay.received_amount
+    
+    new_vals = {
+        "invoice_number": db_pay.invoice_number,
+        "invoice_amount": db_pay.invoice_amount,
+        "received_amount": db_pay.received_amount,
+        "payment_method": db_pay.payment_method,
+        "reference_number": db_pay.reference_number,
+        "bank_name": db_pay.bank_name,
+        "received_date": str(db_pay.received_date) if db_pay.received_date else None,
+        "remarks": db_pay.remarks,
+        "receipt_type": db_pay.receipt_type,
+        "project_id": db_pay.project_id,
+        "client_id": db_pay.client_id,
+        "attachment_url": db_pay.attachment_url
+    }
+    
+    version_log = ProjectPaymentVersion(
+        payment_id=db_pay.id,
+        old_values=json.dumps(old_vals),
+        new_values=json.dumps(new_vals),
+        user_id=user_id,
+        reason=reason
+    )
+    db.add(version_log)
+    
+    sync_cash_book_entry(
+        db=db,
+        ref_type="project_payment",
+        ref_id=db_pay.id,
+        txn_date=db_pay.received_date,
+        amount=db_pay.received_amount,
+        payment_method=db_pay.payment_method,
+        category="Project Payment" if db_pay.receipt_type == "Project Payment" else "Other",
+        txn_type="IN",
+        remarks=db_pay.remarks or f"Updated receipt {db_pay.payment_id}",
+        attachment_url=db_pay.attachment_url,
+        added_by=user_id,
+        ref_num=db_pay.reference_number
+    )
+    
+    db.commit()
+    db.refresh(db_pay)
+    return db_pay
+
+def delete_project_payment(db: Session, payment_id: str, user_id: str, reason: str) -> bool:
+    db_pay = db.query(ProjectPayment).filter(ProjectPayment.id == payment_id, ProjectPayment.is_deleted == False).first()
+    if not db_pay:
+        return False
+        
+    import json
+    old_vals = {
+        "invoice_number": db_pay.invoice_number,
+        "invoice_amount": db_pay.invoice_amount,
+        "received_amount": db_pay.received_amount,
+        "payment_method": db_pay.payment_method,
+        "remarks": db_pay.remarks,
+        "receipt_type": db_pay.receipt_type,
+        "is_deleted": False
+    }
+    new_vals = {
+        "is_deleted": True,
+        "deleted_at": datetime.utcnow().isoformat(),
+        "deleted_by": user_id
+    }
+    
+    db_pay.is_deleted = True
+    db_pay.deleted_at = datetime.utcnow()
+    db_pay.deleted_by = user_id
+    
+    version_log = ProjectPaymentVersion(
+        payment_id=db_pay.id,
+        old_values=json.dumps(old_vals),
+        new_values=json.dumps(new_vals),
+        user_id=user_id,
+        reason=reason
+    )
+    db.add(version_log)
+    
+    sync_cash_book_entry(
+        db=db,
+        ref_type="project_payment",
+        ref_id=db_pay.id,
+        txn_date=db_pay.received_date,
+        amount=db_pay.received_amount,
+        payment_method=db_pay.payment_method,
+        category="Project Payment",
+        txn_type="IN",
+        remarks=reason,
+        added_by=user_id,
+        action="delete"
+    )
+    db.commit()
+    return True
+
+def restore_project_payment(db: Session, payment_id: str, user_id: str, reason: str) -> bool:
+    db_pay = db.query(ProjectPayment).filter(ProjectPayment.id == payment_id, ProjectPayment.is_deleted == True).first()
+    if not db_pay:
+        return False
+        
+    import json
+    old_vals = {
+        "is_deleted": True
+    }
+    new_vals = {
+        "is_deleted": False
+    }
+    
+    db_pay.is_deleted = False
+    db_pay.deleted_at = None
+    db_pay.deleted_by = None
+    
+    version_log = ProjectPaymentVersion(
+        payment_id=db_pay.id,
+        old_values=json.dumps(old_vals),
+        new_values=json.dumps(new_vals),
+        user_id=user_id,
+        reason=reason
+    )
+    db.add(version_log)
+    
+    sync_cash_book_entry(
+        db=db,
+        ref_type="project_payment",
+        ref_id=db_pay.id,
+        txn_date=db_pay.received_date,
+        amount=db_pay.received_amount,
+        payment_method=db_pay.payment_method,
+        category="Project Payment" if db_pay.receipt_type == "Project Payment" else "Other",
+        txn_type="IN",
+        remarks=db_pay.remarks or f"Restored receipt {db_pay.payment_id}",
+        attachment_url=db_pay.attachment_url,
+        added_by=user_id,
+        ref_num=db_pay.reference_number
+    )
+    db.commit()
+    return True
+
+def get_inventory_receiving_history(
+    db: Session,
+    inventory_id: str,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    supplier_id: Optional[str] = None,
+    warehouse: Optional[str] = None,
+    project_id: Optional[str] = None,
+    grn_number: Optional[str] = None
+) -> List[StockTransaction]:
+    query = db.query(StockTransaction).filter(
+        StockTransaction.inventory_id == inventory_id,
+        StockTransaction.transaction_type == "in"
+    )
+    if start_date:
+        query = query.filter(func.date(StockTransaction.created_at) >= start_date)
+    if end_date:
+        query = query.filter(func.date(StockTransaction.created_at) <= end_date)
+    if supplier_id:
+        query = query.filter(StockTransaction.supplier_id == supplier_id)
+    if warehouse:
+        query = query.filter(StockTransaction.warehouse == warehouse)
+    if project_id:
+        query = query.filter(StockTransaction.project_id == project_id)
+    if grn_number:
+        query = query.filter(StockTransaction.grn_number.ilike(f"%{grn_number}%"))
+        
+    return query.order_by(StockTransaction.created_at.desc()).all()
+
+def get_inventory_timeline(
+    db: Session,
+    inventory_id: str,
+    transaction_type: Optional[str] = None
+) -> List[StockTransaction]:
+    query = db.query(StockTransaction).filter(StockTransaction.inventory_id == inventory_id)
+    if transaction_type:
+        query = query.filter(StockTransaction.transaction_type == transaction_type)
+    return query.order_by(StockTransaction.created_at.desc()).all()
 
 

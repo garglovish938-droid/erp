@@ -3,7 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import { 
   Plus, Search, ScanLine, X, Loader2, ArrowUpRight, Trash2, Edit2, 
-  RotateCcw, CheckSquare, Square, AlertTriangle, ChevronLeft, ChevronRight, FileText, Barcode 
+  RotateCcw, CheckSquare, Square, AlertTriangle, ChevronLeft, ChevronRight, FileText, Barcode,
+  History, Eye, Paperclip, Download, Calendar, Upload, RefreshCw
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "./Toast";
@@ -19,13 +20,13 @@ export default function Inventory({ token, role }: { token: string; role: string
   const [items, setItems] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
+  const [projects, setProjects] = useState<any[]>([]);
   const [customFields, setCustomFields] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [selectedCat, setSelectedCat] = useState("All");
-  const [statusFilter, setStatusFilter] = useState("active"); // active, archived
+  const [statusFilter, setStatusFilter] = useState("active");
 
-  // Selection checkbox
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   // Modals state
@@ -35,7 +36,26 @@ export default function Inventory({ token, role }: { token: string; role: string
   const [showImportModal, setShowImportModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [currentItem, setCurrentItem] = useState<any>(null);
-  
+
+  // Receiving History modal
+  const [showReceivingModal, setShowReceivingModal] = useState(false);
+  const [receivingHistory, setReceivingHistory] = useState<any[]>([]);
+  const [recLoading, setRecLoading] = useState(false);
+  const [recFilters, setRecFilters] = useState({
+    start_date: "",
+    end_date: "",
+    supplier_id: "",
+    warehouse: "",
+    project_id: "",
+    grn_number: ""
+  });
+
+  // Stock Timeline modal
+  const [showTimelineModal, setShowTimelineModal] = useState(false);
+  const [timelineData, setTimelineData] = useState<any[]>([]);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineTypeFilter, setTimelineTypeFilter] = useState("");
+
   // File upload state
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [importLoading, setImportLoading] = useState(false);
@@ -49,7 +69,23 @@ export default function Inventory({ token, role }: { token: string; role: string
     minimum_stock_level: 5, unit_cost: 0
   });
   const [formCustomValues, setFormCustomValues] = useState<Record<string, string>>({});
-  const [adjustment, setAdjustment] = useState({ quantity: 0, transaction_type: "adjustment", notes: "" });
+  
+  // Custom manual stock adjustment fields
+  const [adjustment, setAdjustment] = useState<any>({
+    quantity: 0,
+    transaction_type: "adjustment",
+    notes: "",
+    grn_number: "",
+    supplier_id: "",
+    purchase_order_id: "",
+    warehouse: "",
+    unit_cost: 0,
+    invoice_number: "",
+    attachment_url: ""
+  });
+  const [adjustmentFile, setAdjustmentFile] = useState<File | null>(null);
+  const [adjustUploading, setAdjustUploading] = useState(false);
+
   const [scanResult, setScanResult] = useState<any>(null);
   const [scanBarcode, setScanBarcode] = useState("");
   const [submitError, setSubmitError] = useState("");
@@ -59,14 +95,6 @@ export default function Inventory({ token, role }: { token: string; role: string
   const [confirmAction, setConfirmAction] = useState<() => void>(() => {});
   const [confirmMessage, setConfirmMessage] = useState("");
 
-  // Pagination & Sorting
-  const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage, setItemsPerPage] = useState<number | "ALL">(25);
-  const [sortField, setSortField] = useState("name");
-  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [scrollTop, setScrollTop] = useState(0);
-
   // Bulk confirmation modal states
   const [showBulkConfirmModal, setShowBulkConfirmModal] = useState(false);
   const [bulkAction, setBulkAction] = useState<"archive" | "restore" | "delete_permanent">("archive");
@@ -74,26 +102,38 @@ export default function Inventory({ token, role }: { token: string; role: string
   const [bulkReason, setBulkReason] = useState("");
   const [submitLoading, setSubmitLoading] = useState(false);
 
-  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    setScrollTop(e.currentTarget.scrollTop);
-  };
+  // Pagination & Sorting
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState<number | "ALL">(25);
+  const [sortField, setSortField] = useState("name");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const isStoreOrHigher = ["admin", "manager", "store"].includes(role);
   const isAdmin = role === "admin";
 
+  const getAuthToken = () => {
+    const savedUser = localStorage.getItem("allure_erp_user");
+    return savedUser ? JSON.parse(savedUser).token : token;
+  };
+
   const fetchData = async () => {
     try {
+      setLoading(true);
       const includeDeleted = statusFilter === "archived";
-      const [itemsData, catData, supData, fieldsData] = await Promise.all([
+      const [itemsData, catData, supData, projData, fieldsData] = await Promise.all([
         inventoryService.getInventory(includeDeleted),
         inventoryService.getCategories(),
-        supplierService.getSuppliers(),       // Bug Fix #1: was calling getCustomFields twice
+        supplierService.getSuppliers(),
+        apiRequest("/api/projects").catch(() => []),
         inventoryService.getCustomFields("InventoryItem").catch(() => [])
       ]);
 
-      setItems(itemsData);
-      setCategories(catData);
-      setSuppliers(supData);
+      setItems(itemsData || []);
+      setCategories(catData || []);
+      setSuppliers(supData || []);
+      setProjects(projData || []);
       setCustomFields(Array.isArray(fieldsData) ? fieldsData : []);
     } catch (e: any) {
       console.error(e);
@@ -106,205 +146,147 @@ export default function Inventory({ token, role }: { token: string; role: string
   useEffect(() => {
     fetchData();
 
-    const handleWebsocketEvent = (e: Event) => {
-      const customEvent = e as CustomEvent;
-      if (customEvent.detail?.event === "inventory_change") {
+    const handleSync = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail && detail.event === "inventory_change") {
         fetchData();
       }
     };
+    window.addEventListener("erp_websocket_event", handleSync);
+    return () => window.removeEventListener("erp_websocket_event", handleSync);
+  }, [statusFilter]);
 
-    window.addEventListener("erp_websocket_event", handleWebsocketEvent);
-
-    // Fallback polling (every 30 seconds)
-    const pollInterval = setInterval(() => {
-      fetchData();
-    }, 30000);
-
-    return () => {
-      window.removeEventListener("erp_websocket_event", handleWebsocketEvent);
-      clearInterval(pollInterval);
-    };
-  }, [token, statusFilter]);
-
-  useEffect(() => {
-    setScrollTop(0);
-    if (containerRef.current) {
-      containerRef.current.scrollTop = 0;
-    }
-  }, [search, selectedCat, statusFilter]);
-
-  const handleOpenAdd = () => {
-    setEditMode(false);
-    setCurrentItem(null);
-    setFormData({
-      name: "", sku: "", barcode: "", category_id: "", supplier_id: "", 
-      brand: "", size_variant: "", quantity: 0, unit: "Sheets", 
-      minimum_stock_level: 5, unit_cost: 0
-    });
-    setFormCustomValues({});
-    setSubmitError("");
-    setShowFormModal(true);
-  };
-
-  const handleOpenEdit = async (item: any) => {
-    setEditMode(true);
+  const handleOpenReceivingHistory = async (item: any) => {
     setCurrentItem(item);
-    setFormData({
-      name: item.name,
-      sku: item.sku,
-      barcode: item.barcode,
-      category_id: item.category_id || "",
-      supplier_id: item.supplier_id || "",
-      brand: item.brand || "",
-      size_variant: item.size_variant || "",
-      quantity: item.quantity,
-      unit: item.unit,
-      minimum_stock_level: item.minimum_stock_level,
-      unit_cost: item.unit_cost
-    });
+    setShowReceivingModal(true);
+    await loadReceivingHistory(item.id, recFilters);
+  };
 
-    setSubmitError("");
+  const loadReceivingHistory = async (itemId: string, filters: any) => {
+    setRecLoading(true);
     try {
-      const vals = await inventoryService.getEntityFieldValues(item.id);
-      const valMap: Record<string, string> = {};
-      vals.forEach((v: any) => {
-        valMap[v.field_definition_id] = v.value_text;
-      });
-      setFormCustomValues(valMap);
+      const q = new URLSearchParams();
+      if (filters.start_date) q.set("start_date", filters.start_date);
+      if (filters.end_date) q.set("end_date", filters.end_date);
+      if (filters.supplier_id) q.set("supplier_id", filters.supplier_id);
+      if (filters.warehouse) q.set("warehouse", filters.warehouse);
+      if (filters.project_id) q.set("project_id", filters.project_id);
+      if (filters.grn_number) q.set("grn_number", filters.grn_number);
+
+      const data = await apiRequest(`/api/inventory/${itemId}/receiving-history?${q}`);
+      setReceivingHistory(data || []);
     } catch (e) {
-      setFormCustomValues({});
-    }
-
-    setShowFormModal(true);
-  };
-
-  const handleFormSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSubmitError("");
-
-    // Validate quantities
-    if (formData.quantity < 0 || formData.minimum_stock_level < 0 || formData.unit_cost < 0) {
-      setSubmitError("Material quantity, valuation unit cost, and alert levels must be non-negative values.");
-      return;
-    }
-
-    // Required Custom fields check
-    for (const field of customFields) {
-      if (field.is_required && !formCustomValues[field.id]) {
-        setSubmitError(`Custom field '${field.label}' is required.`);
-        return;
-      }
-    }
-
-    try {
-      let savedItem;
-      if (editMode && currentItem) {
-        savedItem = await inventoryService.updateInventoryItem(currentItem.id, formData);
-        showToast("Material parameters updated", "success");
-      } else {
-        savedItem = await inventoryService.createInventoryItem(formData);
-        showToast("New material stock added successfully", "success");
-      }
-
-      // Save custom fields
-      await Promise.all(
-        Object.entries(formCustomValues).map(([defId, val]) =>
-          inventoryService.saveFieldValue({
-            field_definition_id: defId,
-            entity_id: savedItem.id,
-            value_text: val
-          })
-        )
-      );
-
-      setShowFormModal(false);
-      fetchData();
-    } catch (err: any) {
-      setSubmitError(err.message || "Failed to save item details");
-      showToast(err.message || "Error saving material record", "error");
-    }
-  };
-
-  const handleConfirmDelete = (id: string, name: string) => {
-    setConfirmMessage(`Are you sure you want to delete Material item: "${name}"? This record can be restored later from the Archive panel.`);
-    setConfirmAction(() => async () => {
-      try {
-        await inventoryService.deleteInventoryItem(id);
-        showToast("Material item soft deleted successfully", "success");
-        fetchData();
-        setSelectedIds(prev => prev.filter(item => item !== id));
-      } catch (e: any) {
-        showToast(e.message || "Error deleting item", "error");
-      }
-      setShowConfirmModal(false);
-    });
-    setShowConfirmModal(true);
-  };
-
-  const handleConfirmRestore = (id: string, name: string) => {
-    setConfirmMessage(`Are you sure you want to restore Material item: "${name}" back to active inventory valuation lists?`);
-    setConfirmAction(() => async () => {
-      try {
-        await inventoryService.restoreInventoryItem(id);
-        showToast("Material restored successfully", "success");
-        fetchData();
-        setSelectedIds(prev => prev.filter(item => item !== id));
-      } catch (e: any) {
-        showToast(e.message || "Failed to restore material item", "error");
-      }
-      setShowConfirmModal(false);
-    });
-    setShowConfirmModal(true);
-  };
-
-  const triggerBulkAction = (action: "archive" | "restore" | "delete_permanent") => {
-    setBulkAction(action);
-    setBulkPassword("");
-    setBulkReason("");
-    setSubmitError("");
-    setShowBulkConfirmModal(true);
-  };
-
-  const handleExecuteBulkAction = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (selectedIds.length === 0) return;
-    setSubmitLoading(true);
-    setSubmitError("");
-    try {
-      const data = await apiRequest("/api/archive/bulk", {
-        method: "POST",
-        body: JSON.stringify({
-          entity_type: "inventory",
-          action: bulkAction,
-          ids: selectedIds,
-          reason: bulkReason,
-          password: bulkPassword
-        })
-      });
-
-      showToast(`Successfully performed bulk ${bulkAction} on ${selectedIds.length} materials`, "success");
-      setSelectedIds([]);
-      setShowBulkConfirmModal(false);
-      fetchData();
-    } catch (err: any) {
-      setSubmitError(err.message || "Bulk operation failed");
-      showToast(err.message || "Bulk operation failed", "error");
+      showToast("Error loading receiving history logs.", "error");
     } finally {
-      setSubmitLoading(false);
+      setRecLoading(false);
+    }
+  };
+
+  const handleOpenTimeline = async (item: any) => {
+    setCurrentItem(item);
+    setShowTimelineModal(true);
+    await loadTimeline(item.id, timelineTypeFilter);
+  };
+
+  const loadTimeline = async (itemId: string, typeFilter: string) => {
+    setTimelineLoading(true);
+    try {
+      const q = new URLSearchParams();
+      if (typeFilter) q.set("transaction_type", typeFilter);
+      const data = await apiRequest(`/api/inventory/${itemId}/timeline?${q}`);
+      setTimelineData(data || []);
+    } catch (e) {
+      showToast("Error loading stock timeline.", "error");
+    } finally {
+      setTimelineLoading(false);
+    }
+  };
+
+  const handleExportReceiving = (format: "csv" | "excel" | "pdf") => {
+    if (!currentItem) return;
+    const q = new URLSearchParams();
+    q.set("format", format);
+    if (recFilters.start_date) q.set("start_date", recFilters.start_date);
+    if (recFilters.end_date) q.set("end_date", recFilters.end_date);
+    if (recFilters.supplier_id) q.set("supplier_id", recFilters.supplier_id);
+    if (recFilters.warehouse) q.set("warehouse", recFilters.warehouse);
+    if (recFilters.project_id) q.set("project_id", recFilters.project_id);
+    if (recFilters.grn_number) q.set("grn_number", recFilters.grn_number);
+
+    window.open(`${API_BASE_URL}/api/inventory/${currentItem.id}/receiving-history/export?${q}`);
+  };
+
+  const handleExportTimeline = (format: "csv" | "excel" | "pdf") => {
+    if (!currentItem) return;
+    const q = new URLSearchParams();
+    q.set("format", format);
+    if (timelineTypeFilter) q.set("transaction_type", timelineTypeFilter);
+
+    window.open(`${API_BASE_URL}/api/inventory/${currentItem.id}/timeline/export?${q}`);
+  };
+
+  const handleAdjustFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setAdjustmentFile(e.target.files[0]);
     }
   };
 
   const handleAdjustStock = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitError("");
+    setAdjustUploading(true);
+
     try {
-      await inventoryService.adjustStock(currentItem.id, adjustment);
-      showToast("Stock level adjusted successfully", "success");
+      let attachmentUrl = adjustment.attachment_url;
+      if (adjustmentFile) {
+        const userToken = getAuthToken();
+        const fd = new FormData();
+        fd.append("file", adjustmentFile);
+
+        const res = await fetch(`${API_BASE_URL}/api/upload`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${userToken}` },
+          body: fd
+        });
+
+        if (!res.ok) {
+          throw new Error("Failed to upload adjustment attachment slip");
+        }
+        const data = await res.json();
+        attachmentUrl = data.url;
+      }
+
+      const payload = {
+        ...adjustment,
+        attachment_url: attachmentUrl,
+        unit_cost: parseFloat(adjustment.unit_cost) || 0
+      };
+
+      await apiRequest(`/api/inventory/${currentItem.id}/adjust`, {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+
+      showToast("Stock movement adjustment saved successfully", "success");
       setShowAdjustModal(false);
-      setAdjustment({ quantity: 0, transaction_type: "adjustment", notes: "" });
+      setAdjustment({
+        quantity: 0,
+        transaction_type: "adjustment",
+        notes: "",
+        grn_number: "",
+        supplier_id: "",
+        purchase_order_id: "",
+        warehouse: "",
+        unit_cost: 0,
+        invoice_number: "",
+        attachment_url: ""
+      });
+      setAdjustmentFile(null);
       fetchData();
     } catch (err: any) {
       setSubmitError(err.message || "Stock adjustment error");
+    } finally {
+      setAdjustUploading(false);
     }
   };
 
@@ -336,247 +318,406 @@ export default function Inventory({ token, role }: { token: string; role: string
   const handleBarcodeLookup = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitError("");
-    setScanResult(null);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/inventory/lookup/${scanBarcode}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (!response.ok) throw new Error("Barcode not registered");
-      const item = await response.json();
-      setScanResult(item);
-      setCurrentItem(item);
+      const res = await apiRequest(`/api/inventory/lookup/${scanBarcode}`);
+      setScanResult(res);
+      showToast("Barcode resolved successfully", "success");
     } catch (err: any) {
-      setSubmitError(err.message || "Material lookup failed");
+      setSubmitError(err.message || "Barcode not found");
+      setScanResult(null);
     }
   };
 
-  // Checkbox selection helpers
-  const handleToggleSelectAll = (filteredItems: any[]) => {
-    const allSelected = filteredItems.length > 0 && filteredItems.every(item => selectedIds.includes(item.id));
-    if (allSelected) {
-      const filteredIds = filteredItems.map(item => item.id);
-      setSelectedIds(prev => prev.filter(id => !filteredIds.includes(id)));
-    } else {
-      const filteredIds = filteredItems.map(item => item.id);
-      setSelectedIds(prev => Array.from(new Set([...prev, ...filteredIds])));
+  const handleOpenAdd = () => {
+    setEditMode(false);
+    setCurrentItem(null);
+    setFormData({
+      name: "", sku: "", barcode: "", category_id: "", supplier_id: "", 
+      brand: "", size_variant: "", quantity: 0, unit: "Sheets", 
+      minimum_stock_level: 5, unit_cost: 0
+    });
+    setFormCustomValues({});
+    setSubmitError("");
+    setShowFormModal(true);
+  };
+
+  const handleOpenEdit = async (item: any) => {
+    setEditMode(true);
+    setCurrentItem(item);
+    setFormData({
+      name: item.name,
+      sku: item.sku,
+      barcode: item.barcode,
+      category_id: item.category_id || "",
+      supplier_id: item.supplier_id || "",
+      brand: item.brand || "",
+      size_variant: item.size_variant || "",
+      quantity: item.quantity,
+      unit: item.unit,
+      minimum_stock_level: item.minimum_stock_level,
+      unit_cost: item.unit_cost
+    });
+
+    const valMap: Record<string, string> = {};
+    if (Array.isArray(item.custom_field_values)) {
+      item.custom_field_values.forEach((v: any) => {
+        valMap[v.field_definition_id] = v.value;
+      });
+    }
+    setFormCustomValues(valMap);
+    setSubmitError("");
+    setShowFormModal(true);
+  };
+
+  const handleFormSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitError("");
+    try {
+      const pData = {
+        ...formData,
+        quantity: parseFloat(formData.quantity) || 0,
+        unit_cost: parseFloat(formData.unit_cost) || 0,
+        minimum_stock_level: parseFloat(formData.minimum_stock_level) || 0
+      };
+
+      let savedItem: any;
+      if (editMode && currentItem) {
+        savedItem = await inventoryService.updateInventoryItem(currentItem.id, pData);
+        showToast("Material specs updated successfully", "success");
+      } else {
+        savedItem = await inventoryService.createInventoryItem(pData);
+        showToast("New material added to master inventory", "success");
+      }
+
+      const customArray = Object.entries(formCustomValues).map(([fid, val]) => ({
+        field_definition_id: fid,
+        value: val
+      }));
+
+      if (customArray.length > 0) {
+        await apiRequest(`/api/custom-fields/values/InventoryItem/${savedItem.id}`, {
+          method: "POST",
+          body: JSON.stringify(customArray)
+        });
+      }
+
+      setShowFormModal(false);
+      fetchData();
+    } catch (err: any) {
+      setSubmitError(err.message || "Form submission failed");
     }
   };
 
-  const handleToggleSelect = (id: string) => {
-    setSelectedIds(prev =>
-      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+  const handleArchiveItem = (item: any) => {
+    setConfirmMessage(`Are you sure you want to archive "${item.name}"?`);
+    setConfirmAction(() => async () => {
+      try {
+        await apiRequest(`/api/inventory/${item.id}`, { method: "DELETE" });
+        showToast("Material item archived successfully", "success");
+        setShowConfirmModal(false);
+        fetchData();
+      } catch (err: any) {
+        showToast(err.message || "Failed to archive item", "error");
+      }
+    });
+    setShowConfirmModal(true);
+  };
+
+  const handleRestoreItem = (item: any) => {
+    setConfirmMessage(`Are you sure you want to restore "${item.name}" to active stock?`);
+    setConfirmAction(() => async () => {
+      try {
+        await apiRequest(`/api/inventory/${item.id}/restore`, { method: "POST" });
+        showToast("Material item restored successfully", "success");
+        setShowConfirmModal(false);
+        fetchData();
+      } catch (err: any) {
+        showToast(err.message || "Failed to restore item", "error");
+      }
+    });
+    setShowConfirmModal(true);
+  };
+
+  const handleOpenBulkAction = (actionType: "archive" | "restore" | "delete_permanent") => {
+    if (selectedIds.length === 0) {
+      showToast("Please select at least one material row first.", "error");
+      return;
+    }
+    setBulkAction(actionType);
+    setBulkPassword("");
+    setBulkReason("");
+    setSubmitError("");
+    setShowBulkConfirmModal(true);
+  };
+
+  const handleExecuteBulkAction = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bulkPassword) return;
+
+    setSubmitLoading(true);
+    try {
+      const userToken = getAuthToken();
+      const endpoint = bulkAction === "archive" 
+        ? "/api/inventory/bulk-archive" 
+        : bulkAction === "restore" 
+        ? "/api/inventory/bulk-restore" 
+        : "/api/inventory/bulk-delete";
+
+      const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${userToken}`
+        },
+        body: JSON.stringify({
+          ids: selectedIds,
+          password: bulkPassword,
+          reason: bulkReason
+        })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Failed to execute bulk action");
+      }
+
+      showToast(`Bulk ${bulkAction} action completed successfully!`, "success");
+      setShowBulkConfirmModal(false);
+      setSelectedIds([]);
+      fetchData();
+    } catch (e: any) {
+      setSubmitError(e.message || "Bulk operation error");
+    } finally {
+      setSubmitLoading(false);
+    }
+  };
+
+  const handleSelectRow = (id: string) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
     );
   };
 
-  const handleSort = (field: string) => {
-    if (sortField === field) {
-      setSortOrder(prev => (prev === "asc" ? "desc" : "asc"));
+  const handleSelectAll = () => {
+    if (selectedIds.length === items.length) {
+      setSelectedIds([]);
     } else {
-      setSortField(field);
-      setSortOrder("asc");
+      setSelectedIds(items.map(x => x.id));
     }
   };
 
+  // Filter & Sort
   const processedItems = items
-    .filter(item => {
-      const matchesSearch = 
-        item.name.toLowerCase().includes(search.toLowerCase()) || 
-        item.sku.toLowerCase().includes(search.toLowerCase()) ||
-        (item.barcode || "").includes(search) ||
-        (item.brand || "").toLowerCase().includes(search.toLowerCase()) ||
-        (item.category?.name || "").toLowerCase().includes(search.toLowerCase());
-      const matchesCat = selectedCat === "All" || item.category?.name === selectedCat;
-      return matchesSearch && matchesCat;
+    .filter(x => selectedCat === "All" || x.category_id === selectedCat)
+    .filter(x => {
+      if (!search) return true;
+      const query = search.toLowerCase();
+      return x.name.toLowerCase().includes(query) || 
+             x.sku.toLowerCase().includes(query) || 
+             x.barcode.toLowerCase().includes(query) ||
+             x.brand?.toLowerCase().includes(query);
     })
-    .sort((a, b) => {
-      let valA = a[sortField] || "";
-      let valB = b[sortField] || "";
-      if (typeof valA === "string") valA = valA.toLowerCase();
-      if (typeof valB === "string") valB = valB.toLowerCase();
-      if (valA < valB) return sortOrder === "asc" ? -1 : 1;
-      if (valA > valB) return sortOrder === "asc" ? 1 : -1;
-      return 0;
+    .sort((a: any, b: any) => {
+      let valA = a[sortField];
+      let valB = b[sortField];
+      if (sortField === "category") {
+        valA = a.category?.name || "";
+        valB = b.category?.name || "";
+      }
+      if (typeof valA === "string") {
+        return sortOrder === "asc" 
+          ? valA.localeCompare(valB) 
+          : valB.localeCompare(valA);
+      }
+      return sortOrder === "asc" ? valA - valB : valB - valA;
     });
 
-  const rowHeight = 72;
-  const visibleHeight = 600;
-  const totalPages = typeof itemsPerPage === "number" ? Math.ceil(processedItems.length / itemsPerPage) : 1;
-  const startIndex = itemsPerPage === "ALL" ? Math.max(0, Math.floor(scrollTop / rowHeight) - 5) : 0;
-  const endIndex = itemsPerPage === "ALL" ? Math.min(processedItems.length, Math.floor((scrollTop + visibleHeight) / rowHeight) + 5) : processedItems.length;
-
-  const paginatedItems = itemsPerPage === "ALL"
-    ? processedItems.slice(startIndex, endIndex)
+  const paginatedItems = itemsPerPage === "ALL" 
+    ? processedItems 
     : processedItems.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
 
+  const totalPages = itemsPerPage === "ALL" ? 1 : Math.ceil(processedItems.length / itemsPerPage);
+
   return (
-    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-7xl mx-auto space-y-8">
+    <div className="p-6 space-y-6">
       {/* Header */}
-      <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white">Warehouse Inventory</h2>
-          <p className="text-slate-500 mt-1">Configure custom parameters and monitor stock balances and valuations.</p>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
+            <FileText className="h-7 w-7 text-indigo-500" />
+            Materials & Master Inventory
+          </h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            Monitor raw material stock levels, inward receiving transactions history, and chronological stock timeline.
+          </p>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <select
-            value={statusFilter}
-            onChange={(e) => { setStatusFilter(e.target.value); setCurrentPage(1); }}
-            className="p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl text-sm font-semibold text-slate-750 shadow-sm"
-          >
-            <option value="active">Active valuation</option>
-            <option value="archived">Archived registry</option>
-          </select>
-          <button 
-            onClick={() => { setShowScanModal(true); setScanResult(null); setScanBarcode(""); setSubmitError(""); }}
-            className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-slate-900 text-white hover:bg-slate-800 transition-colors shadow-lg text-sm font-semibold"
-          >
-            <ScanLine className="w-4 h-4" />
-            Lookup Barcode
-          </button>
-          
-          {isStoreOrHigher && statusFilter === "active" && (
-            <>
-              <button 
-                onClick={() => { setShowImportModal(true); setSubmitError(""); setImportSuccess(""); setCsvFile(null); }}
-                className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-slate-100 hover:bg-slate-250 dark:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors shadow-sm text-sm font-semibold border"
-              >
-                <ArrowUpRight className="w-4 h-4" />
-                Import CSV
-              </button>
-              
-              <button 
-                onClick={() => setShowCategoryModal(true)}
-                className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors shadow-sm text-sm font-semibold border"
-              >
-                Manage Categories
-              </button>
-              
-              <button 
-                onClick={handleOpenAdd}
-                className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-indigo-600 text-white hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-150 text-sm font-semibold"
-              >
-                <Plus className="w-4 h-4" />
-                Add Material
-              </button>
-            </>
+        <div className="flex gap-2">
+          {isStoreOrHigher && (
+            <button
+              onClick={handleOpenAdd}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-xs font-bold shadow transition-all duration-200 animate-in fade-in"
+            >
+              <Plus className="h-4 w-4" />
+              Add Material Specs
+            </button>
           )}
-        </div>
-      </header>
-
-      {/* Filter and Search */}
-      <div className="flex flex-col lg:flex-row gap-4 items-center justify-between">
-        <div className="relative flex-1 w-full">
-          <Search className="absolute left-3.5 top-3.5 w-4 h-4 text-slate-400" />
-          <input 
-            type="text" 
-            placeholder="Search material SKU, name, barcode..." 
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setCurrentPage(1); }}
-            className="w-full pl-10 pr-4 py-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl text-xs font-semibold shadow-sm"
-          />
-        </div>
-
-        <div className="flex gap-1.5 overflow-x-auto py-1 w-full lg:w-auto">
-          {["All", ...categories.map(c => c.name)].map((cat) => {
-            const count = cat === "All" ? items.length : items.filter(item => item.category?.name === cat).length;
-            return (
-              <button
-                key={cat}
-                onClick={() => { setSelectedCat(cat); setCurrentPage(1); }}
-                className={cn(
-                  "px-4 py-2.5 rounded-xl text-xs font-semibold whitespace-nowrap border transition-all cursor-pointer",
-                  selectedCat === cat
-                    ? "bg-indigo-600 border-indigo-600 text-white shadow"
-                    : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-500"
-                )}
-              >
-                {cat} ({count})
-              </button>
-            );
-          })}
+          <button
+            onClick={() => setShowScanModal(true)}
+            className="border dark:border-slate-800 p-2.5 rounded-xl text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
+            title="Scan code resolver"
+          >
+            <ScanLine className="h-4 w-4" />
+          </button>
+          <button
+            onClick={() => setShowImportModal(true)}
+            className="border dark:border-slate-800 p-2.5 rounded-xl text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
+            title="Import Excel data file"
+          >
+            <Upload className="h-4 w-4" />
+          </button>
+          <button
+            onClick={fetchData}
+            className="border dark:border-slate-800 p-2.5 rounded-xl text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
+          >
+            <RefreshCw className="h-4 w-4 animate-spin-hover" />
+          </button>
         </div>
       </div>
 
-      {/* Bulk operations display */}
-      {selectedIds.length > 0 && isStoreOrHigher && (
-        <div className="flex items-center gap-3 p-3 bg-white dark:bg-slate-900 rounded-2xl border animate-in slide-in-from-top-3 duration-250">
-          <span className="text-xs font-bold text-indigo-650">{selectedIds.length} Materials Selected</span>
-          {statusFilter === "active" ? (
-            <button
-              onClick={() => triggerBulkAction("archive")}
-              className="px-4.5 py-2 bg-rose-50 text-rose-600 hover:bg-rose-100 text-xs font-bold rounded-xl border border-rose-200 cursor-pointer"
-              title="Archive Selected Materials"
-            >
-              Archive Selected
-            </button>
-          ) : (
-            <>
-              <button
-                onClick={() => triggerBulkAction("restore")}
-                className="px-4.5 py-2 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 text-xs font-bold rounded-xl border border-emerald-200 cursor-pointer"
-                title="Restore Selected Materials"
-              >
-                Restore Selected
-              </button>
-              {isAdmin && (
-                <button
-                  onClick={() => triggerBulkAction("delete_permanent")}
-                  className="px-4.5 py-2 bg-rose-50 text-rose-600 hover:bg-rose-100 text-xs font-bold rounded-xl border border-rose-200 cursor-pointer"
-                  title="Permanently Delete Selected Materials"
-                >
-                  Permanently Delete Selected
-                </button>
-              )}
-            </>
-          )}
+      {/* Tabs / Bulk Actions Row */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b dark:border-slate-800 pb-2">
+        <div className="flex gap-4">
+          <button
+            onClick={() => { setStatusFilter("active"); setCurrentPage(1); }}
+            className={cn(
+              "pb-2 text-sm font-semibold border-b-2 transition-all",
+              statusFilter === "active" ? "border-indigo-600 text-indigo-600 dark:text-indigo-400" : "border-transparent text-slate-400"
+            )}
+          >
+            Active Stock ({items.filter(x => !x.is_deleted).length})
+          </button>
+          <button
+            onClick={() => { setStatusFilter("archived"); setCurrentPage(1); }}
+            className={cn(
+              "pb-2 text-sm font-semibold border-b-2 transition-all",
+              statusFilter === "archived" ? "border-rose-600 text-rose-600 dark:text-rose-400" : "border-transparent text-slate-400"
+            )}
+          >
+            Archived Stock ({items.filter(x => x.is_deleted).length})
+          </button>
         </div>
-      )}
 
-      {/* Materials Table */}
-      <div className="glass rounded-3xl overflow-hidden border border-slate-202 dark:border-slate-800 shadow-xl">
-        <div ref={containerRef} onScroll={handleScroll} className="overflow-x-auto max-h-[60vh] overflow-y-auto scrollbar-thin">
-          <table className="w-full text-left border-collapse">
-            <thead className="sticky top-0 z-10 bg-slate-55 dark:bg-slate-900">
-              <tr className="border-b border-slate-200 dark:border-slate-800/80">
-                {isStoreOrHigher && (
-                  <th className="p-5 w-12 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">
-                    <button onClick={() => handleToggleSelectAll(processedItems)} className="text-slate-400" title="Select All">
-                      {processedItems.length > 0 && processedItems.every(item => selectedIds.includes(item.id)) ? (
-                        <CheckSquare className="w-4 h-4 text-indigo-600" />
-                      ) : (
-                        <Square className="w-4 h-4" />
-                      )}
-                    </button>
-                  </th>
+        {selectedIds.length > 0 && (
+          <div className="flex gap-2 bg-indigo-50 dark:bg-indigo-950/20 px-3 py-1.5 rounded-xl border border-indigo-100 dark:border-indigo-900/30 animate-in fade-in">
+            <span className="text-xs text-indigo-700 dark:text-indigo-300 font-bold self-center mr-2">{selectedIds.length} items selected</span>
+            {statusFilter === "active" ? (
+              <button
+                onClick={() => handleOpenBulkAction("archive")}
+                className="bg-rose-500 hover:bg-rose-600 text-white text-[10px] px-2.5 py-1 rounded-lg font-bold shadow"
+              >
+                Archive Selected
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={() => handleOpenBulkAction("restore")}
+                  className="bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] px-2.5 py-1 rounded-lg font-bold shadow"
+                >
+                  Restore Selected
+                </button>
+                {isAdmin && (
+                  <button
+                    onClick={() => handleOpenBulkAction("delete_permanent")}
+                    className="bg-red-600 hover:bg-red-700 text-white text-[10px] px-2.5 py-1 rounded-lg font-bold shadow"
+                  >
+                    Purge Selected
+                  </button>
                 )}
-                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 cursor-pointer sticky top-0 bg-slate-55 dark:bg-slate-900 z-10" onClick={() => handleSort("name")}>Material SKU & Details</th>
-                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Category</th>
-                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Barcode</th>
-                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 cursor-pointer sticky top-0 bg-slate-55 dark:bg-slate-900 z-10" onClick={() => handleSort("quantity")}>Stock Qty</th>
-                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 cursor-pointer sticky top-0 bg-slate-55 dark:bg-slate-900 z-10" onClick={() => handleSort("unit_cost")}>Unit Cost</th>
-                <th className="p-5 font-bold text-xs uppercase tracking-wider text-slate-400 text-right sticky top-0 bg-slate-55 dark:bg-slate-900 z-10">Actions</th>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Filter and Search Panels */}
+      <div className="bg-white dark:bg-slate-950 p-4 rounded-3xl border border-slate-100 dark:border-slate-900 grid grid-cols-1 md:grid-cols-4 gap-3 shadow-sm">
+        {/* Category Filter */}
+        <select
+          value={selectedCat}
+          onChange={(e) => { setSelectedCat(e.target.value); setCurrentPage(1); }}
+          className="px-3 py-2 text-sm border dark:border-slate-800 rounded-xl focus:outline-none dark:bg-slate-900"
+        >
+          <option value="All">All Categories</option>
+          {categories.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+
+        {/* Search Input */}
+        <div className="relative md:col-span-3">
+          <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setCurrentPage(1); }}
+            className="pl-9 pr-3 py-2 w-full text-sm border dark:border-slate-800 rounded-xl focus:outline-none dark:bg-slate-900"
+            placeholder="Search material description name, brand spec or SKU barcode..."
+          />
+        </div>
+      </div>
+
+      {/* Master Inventory Grid */}
+      <div className="bg-white dark:bg-slate-950 border border-slate-100 dark:border-slate-900 rounded-3xl shadow-sm overflow-hidden animate-in fade-in duration-300">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse text-sm">
+            <thead>
+              <tr className="bg-slate-50 dark:bg-slate-900 text-slate-500 font-bold border-b dark:border-slate-950">
+                <th className="p-5 text-center w-12">
+                  <button onClick={handleSelectAll} className="p-1 text-slate-400 hover:text-slate-600">
+                    {selectedIds.length === items.length && items.length > 0 ? (
+                      <CheckSquare className="w-4 h-4 text-indigo-500" />
+                    ) : (
+                      <Square className="w-4 h-4" />
+                    )}
+                  </button>
+                </th>
+                <th className="p-5">Material Item Specs</th>
+                <th className="p-5">Category</th>
+                <th className="p-5">Barcode</th>
+                <th className="p-5">Current Qty</th>
+                <th className="p-5">Unit Cost</th>
+                <th className="p-5 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50 text-sm font-medium">
-              {itemsPerPage === "ALL" && startIndex > 0 && (
-                <tr style={{ height: `${startIndex * rowHeight}px` }}>
-                  <td colSpan={isStoreOrHigher ? 7 : 6} style={{ padding: 0, border: 0 }} />
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={7} className="p-12 text-center text-slate-400">
+                    <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2 text-indigo-500" />
+                    Loading master stock items database...
+                  </td>
                 </tr>
-              )}
-              {paginatedItems.length > 0 ? (
+              ) : paginatedItems.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="p-12 text-center text-slate-400">
+                    No material stock specifications resolved for this filter.
+                  </td>
+                </tr>
+              ) : (
                 paginatedItems.map((item) => {
-                  const isLow = item.quantity <= item.minimum_stock_level && item.quantity > 0;
-                  const isOut = item.quantity === 0;
-                  const isSelected = selectedIds.includes(item.id);
-
+                  const isOut = item.quantity <= 0;
+                  const isLow = item.quantity <= item.minimum_stock_level && !isOut;
                   return (
-                    <tr key={item.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/20 transition-colors">
-                      {isStoreOrHigher && (
-                        <td className="p-5">
-                          <button onClick={() => handleToggleSelect(item.id)} className="text-slate-400" title={isSelected ? "Deselect item" : "Select item"}>
-                            {isSelected ? <CheckSquare className="w-4 h-4 text-indigo-600" /> : <Square className="w-4 h-4" />}
-                          </button>
-                        </td>
-                      )}
+                    <tr key={item.id} className="border-b dark:border-slate-900 hover:bg-slate-50/50 dark:hover:bg-slate-900/10 transition-colors">
+                      <td className="p-5 text-center">
+                        <button onClick={() => handleSelectRow(item.id)} className="p-1 text-slate-400 hover:text-indigo-500">
+                          {selectedIds.includes(item.id) ? (
+                            <CheckSquare className="w-4 h-4 text-indigo-500" />
+                          ) : (
+                            <Square className="w-4 h-4" />
+                          )}
+                        </button>
+                      </td>
                       <td className="p-5">
                         <div className="font-semibold text-slate-900 dark:text-white">{item.name}</div>
                         <div className="text-xs text-slate-400 font-mono mt-0.5">{item.sku} {item.brand ? `• ${item.brand}` : ""}</div>
@@ -600,13 +741,43 @@ export default function Inventory({ token, role }: { token: string; role: string
                             <>
                               {isStoreOrHigher && (
                                 <button
-                                  onClick={() => { setCurrentItem(item); setAdjustment({ quantity: 0, transaction_type: "adjustment", notes: "" }); setSubmitError(""); setShowAdjustModal(true); }}
+                                  onClick={() => { 
+                                    setCurrentItem(item); 
+                                    setAdjustment({ 
+                                      quantity: 0, 
+                                      transaction_type: "adjustment", 
+                                      notes: "",
+                                      grn_number: "",
+                                      supplier_id: "",
+                                      purchase_order_id: "",
+                                      warehouse: "",
+                                      unit_cost: item.unit_cost,
+                                      invoice_number: "",
+                                      attachment_url: ""
+                                    }); 
+                                    setSubmitError(""); 
+                                    setShowAdjustModal(true); 
+                                  }}
                                   className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg text-xs font-bold shadow-sm"
                                   title="Adjust stock flow / record transactions"
                                 >
                                   Stock Flow
                                 </button>
                               )}
+                              <button
+                                onClick={() => handleOpenReceivingHistory(item)}
+                                className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:hover:bg-emerald-900/40 rounded-lg text-xs font-bold shadow-sm"
+                                title="View Inward Goods Receiving History"
+                              >
+                                Receiving History
+                              </button>
+                              <button
+                                onClick={() => handleOpenTimeline(item)}
+                                className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/30 dark:hover:bg-indigo-900/40 rounded-lg text-xs font-bold shadow-sm animate-in fade-in"
+                                title="View Chronological Movement Timeline"
+                              >
+                                Timeline
+                              </button>
                               <a
                                 href={`${API_BASE_URL}/api/inventory/${item.id}/barcode/pdf`}
                                 target="_blank"
@@ -625,7 +796,7 @@ export default function Inventory({ token, role }: { token: string; role: string
                               </button>
                               {isAdmin && (
                                 <button 
-                                  onClick={() => handleConfirmDelete(item.id, item.name)} 
+                                  onClick={() => handleArchiveItem(item)} 
                                   className="text-slate-400 hover:text-rose-600 p-1.5"
                                   title="Archive material"
                                 >
@@ -634,256 +805,279 @@ export default function Inventory({ token, role }: { token: string; role: string
                               )}
                             </>
                           ) : (
-                            isAdmin && (
+                            <>
                               <button 
-                                onClick={() => handleConfirmRestore(item.id, item.name)} 
-                                className="flex items-center gap-1 text-indigo-600 dark:text-indigo-400 hover:underline text-xs font-bold"
+                                onClick={() => handleRestoreItem(item)} 
+                                className="text-slate-400 hover:text-emerald-600 p-1.5"
                                 title="Restore archived material"
                               >
-                                <RotateCcw className="w-3.5 h-3.5" />
-                                Restore
+                                <RotateCcw className="w-4 h-4" />
                               </button>
-                            )
+                              {isAdmin && (
+                                <button
+                                  onClick={() => {
+                                    setConfirmMessage(`Are you sure you want to permanently delete "${item.name}"? This action is irreversible.`);
+                                    setConfirmAction(() => async () => {
+                                      try {
+                                        await apiRequest(`/api/inventory/${item.id}/permanent`, { method: "DELETE" });
+                                        showToast("Material item purged successfully", "success");
+                                        setShowConfirmModal(false);
+                                        fetchData();
+                                      } catch (err: any) {
+                                        showToast(err.message || "Failed to purge item", "error");
+                                      }
+                                    });
+                                    setShowConfirmModal(true);
+                                  }}
+                                  className="text-slate-400 hover:text-rose-600 p-1.5"
+                                  title="Permanently delete from database"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              )}
+                            </>
                           )}
                         </div>
                       </td>
                     </tr>
                   );
                 })
-              ) : (
-                <tr>
-                  <td colSpan={7} className="text-center p-8 text-slate-400">
-                    <FileText className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-                    <p className="font-semibold text-slate-500">No Materials Registered</p>
-                  </td>
-                </tr>
-              )}
-              {itemsPerPage === "ALL" && endIndex < processedItems.length && (
-                <tr style={{ height: `${(processedItems.length - endIndex) * rowHeight}px` }}>
-                  <td colSpan={isStoreOrHigher ? 7 : 6} style={{ padding: 0, border: 0 }} />
-                </tr>
               )}
             </tbody>
           </table>
         </div>
-
-        {/* Pagination bounds */}
-        {(totalPages > 1 || itemsPerPage === "ALL" || processedItems.length > 0) && (
-          <div className="flex items-center justify-between p-5 border-t border-slate-100 dark:border-slate-800/80 bg-slate-50/50 flex-wrap gap-4">
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400 font-semibold">Show items:</span>
-              <select
-                value={itemsPerPage}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setItemsPerPage(val === "ALL" ? "ALL" : parseInt(val));
-                  setCurrentPage(1);
-                  setScrollTop(0);
-                  if (containerRef.current) {
-                    containerRef.current.scrollTop = 0;
-                  }
-                }}
-                className="p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-xs font-bold outline-none cursor-pointer"
-              >
-                <option value="25">25</option>
-                <option value="50">50</option>
-                <option value="100">100</option>
-                <option value="250">250</option>
-                <option value="500">500</option>
-                <option value="1000">1000</option>
-                <option value="ALL">ALL (Virtual Scroll)</option>
-              </select>
-              <span className="text-xs text-slate-400 font-semibold">
-                Showing {itemsPerPage === "ALL" ? `all ${processedItems.length}` : `${Math.min(processedItems.length, (currentPage - 1) * itemsPerPage + 1)}-${Math.min(processedItems.length, currentPage * itemsPerPage)} of ${processedItems.length}`} items
-              </span>
-            </div>
-            
-            {itemsPerPage !== "ALL" && totalPages > 1 && (
-              <div className="flex gap-2">
-                <button
-                  disabled={currentPage === 1}
-                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                  className="p-1.5 border rounded-lg hover:bg-slate-100 disabled:opacity-50"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-                <button
-                  disabled={currentPage === totalPages}
-                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                  className="p-1.5 border rounded-lg hover:bg-slate-100 disabled:opacity-50"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
-      {/* FORM MODAL */}
+      {/* Pagination control */}
+      {totalPages > 1 && (
+        <div className="flex justify-between items-center bg-slate-50 dark:bg-slate-900 p-4 rounded-2xl text-xs font-semibold">
+          <span className="text-slate-400">Page {currentPage} of {totalPages} ({processedItems.length} total materials)</span>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+              disabled={currentPage === 1}
+              className="border p-1.5 rounded-lg disabled:opacity-50 hover:bg-white dark:hover:bg-slate-800"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+              disabled={currentPage === totalPages}
+              className="border p-1.5 rounded-lg disabled:opacity-50 hover:bg-white dark:hover:bg-slate-800"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ADD/EDIT FORM MODAL */}
       {showFormModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-lg p-6 shadow-2xl max-h-[90vh] overflow-y-auto animate-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-4 mb-4">
-              <h3 className="text-lg font-bold">{editMode ? "Edit Material Specs" : "Add Material Item"}</h3>
-              <button title="Close" onClick={() => setShowFormModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-xl p-6 shadow-2xl my-8">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                {editMode ? `Edit Specifications: ${currentItem?.name}` : "Create Master Material Specs"}
+              </h3>
+              <button onClick={() => setShowFormModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
-            {submitError && <div className="bg-rose-500/10 text-rose-500 border border-rose-500/25 p-3 rounded-xl text-xs mb-4">{submitError}</div>}
+            {submitError && <div className="bg-rose-500/10 text-rose-500 p-3 border rounded-xl text-xs mb-4">{submitError}</div>}
 
             <form onSubmit={handleFormSubmit} className="space-y-4">
-              <div>
-                <label className="text-xs font-semibold text-slate-400 block mb-1">Material Name*</label>
-                <input type="text" required value={formData.name} onChange={e=>setFormData({...formData, name: e.target.value})} placeholder="Plywood Board 18mm" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
-              </div>
-
               <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Material Name*</label>
+                  <input type="text" required value={formData.name} onChange={e=>setFormData({...formData, name: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                </div>
                 <div>
                   <label className="text-xs font-semibold text-slate-400 block mb-1">SKU Code*</label>
-                  <input type="text" required disabled={editMode} value={formData.sku} onChange={e=>setFormData({...formData, sku: e.target.value.toUpperCase()})} placeholder="PLY-18-B" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Barcode Value*</label>
-                  <input type="text" required value={formData.barcode} onChange={e=>setFormData({...formData, barcode: e.target.value})} placeholder="789012" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                  <input type="text" required value={formData.sku} onChange={e=>setFormData({...formData, sku: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Quantity*</label>
-                  <input type="number" required min="0" value={formData.quantity || ""} onChange={e=>setFormData({...formData, quantity: parseFloat(e.target.value) || 0})} placeholder="10" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Unit Type*</label>
-                  <input type="text" required value={formData.unit} onChange={e=>setFormData({...formData, unit: e.target.value})} placeholder="Sheets" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Alert Level*</label>
-                  <input type="number" required min="0" value={formData.minimum_stock_level || ""} onChange={e=>setFormData({...formData, minimum_stock_level: parseFloat(e.target.value) || 0})} placeholder="5" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Unit Cost (₹)*</label>
-                  <input type="number" required min="0" step="any" value={formData.unit_cost || ""} onChange={e=>setFormData({...formData, unit_cost: parseFloat(e.target.value) || 0})} placeholder="45" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-955 border border-slate-200 dark:border-slate-800 rounded-xl" />
-                </div>
-                <div className="hidden">
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Supplier mapping</label>
-                  <select value={formData.supplier_id} onChange={e=>setFormData({...formData, supplier_id: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-955 border border-slate-200 dark:border-slate-800 rounded-xl">
-                    <option value="">Select Supplier</option>
-                    {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Brand Name</label>
-                  <input type="text" value={formData.brand} onChange={e=>setFormData({...formData, brand: e.target.value})} placeholder="Century Plywood" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Size / Dimension variant</label>
-                  <input type="text" value={formData.size_variant} onChange={e=>setFormData({...formData, size_variant: e.target.value})} placeholder="8x4 Ft" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-955 border border-slate-200 dark:border-slate-800 rounded-xl" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 gap-4">
+              <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="text-xs font-semibold text-slate-400 block mb-1">Category*</label>
                   <select required value={formData.category_id} onChange={e=>setFormData({...formData, category_id: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl">
-                    <option value="">Select Category</option>
-                    {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    <option value="">Select</option>
+                    {categories.map(c=>(
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
                   </select>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Supplier (Optional)</label>
+                  <select value={formData.supplier_id} onChange={e=>setFormData({...formData, supplier_id: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl">
+                    <option value="">Select Supplier</option>
+                    {suppliers.map(s=>(
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Stock Unit*</label>
+                  <input type="text" required value={formData.unit} onChange={e=>setFormData({...formData, unit: e.target.value})} placeholder="e.g. Sheets, Kgs" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
                 </div>
               </div>
 
-              {/* RENDER DYNAMIC CUSTOM FIELDS */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Barcode Value*</label>
+                  <input type="text" required value={formData.barcode} onChange={e=>setFormData({...formData, barcode: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Brand Name</label>
+                  <input type="text" value={formData.brand} onChange={e=>setFormData({...formData, brand: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Size / Variant</label>
+                  <input type="text" value={formData.size_variant} onChange={e=>setFormData({...formData, size_variant: e.target.value})} placeholder="e.g. 8x4, 12mm" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Initial Qty</label>
+                  <input type="number" disabled={editMode} value={formData.quantity} onChange={e=>setFormData({...formData, quantity: parseFloat(e.target.value) || 0})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl disabled:opacity-50" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Minimum Alert Qty*</label>
+                  <input type="number" required value={formData.minimum_stock_level} onChange={e=>setFormData({...formData, minimum_stock_level: parseFloat(e.target.value) || 0})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-400 block mb-1">Standard Purchase Unit Cost (INR)*</label>
+                <input type="number" step="0.01" required value={formData.unit_cost} onChange={e=>setFormData({...formData, unit_cost: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+              </div>
+
+              {/* Dynamic Custom Fields */}
               {customFields.length > 0 && (
-                <div className="pt-4 border-t border-slate-105 dark:border-slate-800/80 space-y-4">
-                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Dynamic Fields</h4>
-                  {customFields.map((field) => (
-                    <div key={field.id}>
-                      <label className="text-xs font-semibold text-slate-400 block mb-1">
-                        {field.label}{field.is_required && "*"}
-                      </label>
-                      {field.field_type === "dropdown" ? (
-                        <select
-                          required={field.is_required}
-                          value={formCustomValues[field.id] || ""}
-                          onChange={(e) => setFormCustomValues({...formCustomValues, [field.id]: e.target.value})}
-                          className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-955 border border-slate-200 dark:border-slate-800 rounded-xl"
-                        >
-                          <option value="">Select Option</option>
-                          {field.choices?.split(",").map((c: string) => (
-                            <option key={c.trim()} value={c.trim()}>{c.trim()}</option>
-                          ))}
-                        </select>
-                      ) : field.field_type === "checkbox" ? (
+                <div className="border-t border-slate-100 dark:border-slate-800 pt-4 space-y-3">
+                  <h4 className="text-xs font-bold text-slate-400">Custom Attributes</h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    {customFields.map((f) => (
+                      <div key={f.id}>
+                        <label className="text-xs font-semibold text-slate-400 block mb-1">{f.field_name}</label>
                         <input
-                          type="checkbox"
-                          checked={formCustomValues[field.id] === "true"}
-                          onChange={(e) => setFormCustomValues({...formCustomValues, [field.id]: e.target.checked ? "true" : "false"})}
-                          className="w-4 h-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded"
-                        />
-                      ) : (
-                        <input
-                          type={field.field_type === "number" ? "number" : "text"}
-                          required={field.is_required}
-                          value={formCustomValues[field.id] || ""}
-                          onChange={(e) => setFormCustomValues({...formCustomValues, [field.id]: e.target.value})}
-                          placeholder={field.label}
+                          type="text"
+                          value={formCustomValues[f.id] || ""}
+                          onChange={(e) => setFormCustomValues({ ...formCustomValues, [f.id]: e.target.value })}
                           className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl"
                         />
-                      )}
-                    </div>
-                  ))}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
               <div className="flex gap-3 justify-end pt-4 border-t border-slate-100 dark:border-slate-800 mt-6">
-                <button title="Close" type="button" onClick={() => setShowFormModal(false)} className="px-5 py-2.5 text-sm border border-slate-200 dark:border-slate-800 rounded-xl hover:bg-slate-50 transition-colors">Cancel</button>
-                <button type="submit" className="px-5 py-2.5 text-sm bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-medium transition-colors shadow-lg">Save Record</button>
+                <button type="button" onClick={() => setShowFormModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
+                <button type="submit" className="px-4 py-2 bg-indigo-650 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow">
+                  {editMode ? "Update specs" : "Register Material"}
+                </button>
               </div>
             </form>
           </div>
         </div>
       )}
 
-      {/* ADJUST STOCK MODAL */}
+      {/* ADJUST STOCK / LOG STOCK FLOW MODAL */}
       {showAdjustModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in zoom-in-95 duration-200">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-6 shadow-2xl my-8">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
-              <h3 className="text-base font-bold">Log Stock Flow In/Out</h3>
+              <h3 className="text-base font-bold">Log Stock Flow Movement</h3>
               <button title="Close" onClick={() => setShowAdjustModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
             {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
 
             <form onSubmit={handleAdjustStock} className="space-y-4">
-              <div>
-                <label className="text-xs font-semibold text-slate-400 block mb-1">Adjustment Type*</label>
-                <select value={adjustment.transaction_type} onChange={e=>setAdjustment({...adjustment, transaction_type: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 border rounded-xl">
-                  <option value="in">Stock Inward (+)</option>
-                  <option value="out">Stock Deduction (-)</option>
-                  <option value="damaged">Damaged Deduction (-)</option>
-                </select>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Adjustment Type*</label>
+                  <select value={adjustment.transaction_type} onChange={e=>setAdjustment({...adjustment, transaction_type: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 border rounded-xl">
+                    <option value="adjustment">Manual Adjustment (+/-)</option>
+                    <option value="receive">Stock Receive (+)</option>
+                    <option value="issue">Stock Issue (-)</option>
+                    <option value="transfer">Stock Transfer (-)</option>
+                    <option value="return">Stock Return (+)</option>
+                    <option value="damaged">Damage Deduction (-)</option>
+                    <option value="purchase">Purchase Inward (+)</option>
+                    <option value="csv_import">CSV Import Inward (+)</option>
+                    <option value="manual_entry">Manual Entry (+/-)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Quantity*</label>
+                  <input type="number" required min="0.001" step="any" value={adjustment.quantity || ""} onChange={e=>setAdjustment({...adjustment, quantity: parseFloat(e.target.value) || 0})} placeholder="Quantity value" className="w-full p-2.5 text-sm bg-slate-50 border rounded-xl" />
+                </div>
               </div>
 
-              <div>
-                <label className="text-xs font-semibold text-slate-400 block mb-1">Quantity*</label>
-                <input type="number" required min="1" step="any" value={adjustment.quantity || ""} onChange={e=>setAdjustment({...adjustment, quantity: parseFloat(e.target.value) || 0})} placeholder="Quantity value" className="w-full p-2.5 text-sm bg-slate-50 border rounded-xl" />
-              </div>
+              {/* Conditional Inward Goods details */}
+              {["receive", "purchase", "return", "in", "manual_entry", "adjustment"].includes(adjustment.transaction_type) && (
+                <div className="border-t border-slate-100 dark:border-slate-800 pt-3 space-y-3">
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 block">Inward Goods Receiving Details</span>
+                  
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 block mb-1">GRN Number (Optional)</label>
+                      <input type="text" value={adjustment.grn_number} onChange={e=>setAdjustment({...adjustment, grn_number: e.target.value})} placeholder="e.g. GRN-XXXX" className="w-full p-2 text-xs bg-slate-50 border rounded-lg" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 block mb-1">Supplier</label>
+                      <select value={adjustment.supplier_id} onChange={e=>setAdjustment({...adjustment, supplier_id: e.target.value})} className="w-full p-2 text-xs bg-slate-50 border rounded-lg">
+                        <option value="">Select Supplier</option>
+                        {suppliers.map(s=>(
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 block mb-1">Warehouse/Storage</label>
+                      <input type="text" value={adjustment.warehouse} onChange={e=>setAdjustment({...adjustment, warehouse: e.target.value})} placeholder="e.g. Aisle 4, Bin B" className="w-full p-2 text-xs bg-slate-50 border rounded-lg" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 block mb-1">PO Link Reference</label>
+                      <input type="text" value={adjustment.purchase_order_id} onChange={e=>setAdjustment({...adjustment, purchase_order_id: e.target.value})} placeholder="e.g. PO-XXXX" className="w-full p-2 text-xs bg-slate-50 border rounded-lg" />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 block mb-1">Actual Unit Cost (INR)</label>
+                      <input type="number" step="0.01" value={adjustment.unit_cost} onChange={e=>setAdjustment({...adjustment, unit_cost: e.target.value})} className="w-full p-2 text-xs bg-slate-50 border rounded-lg" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-400 block mb-1">Invoice Reference</label>
+                      <input type="text" value={adjustment.invoice_number} onChange={e=>setAdjustment({...adjustment, invoice_number: e.target.value})} placeholder="e.g. INV-XXXX" className="w-full p-2 text-xs bg-slate-50 border rounded-lg" />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-slate-400 block mb-1">Upload Receipt Slip Slip Attachment File</label>
+                    <input type="file" onChange={handleAdjustFileChange} className="w-full text-xs text-slate-400" />
+                  </div>
+                </div>
+              )}
 
               <div>
-                <label className="text-xs font-semibold text-slate-400 block mb-1">Internal Notes*</label>
-                <input type="text" required value={adjustment.notes} onChange={e=>setAdjustment({...adjustment, notes: e.target.value})} placeholder="Purchase GRN receipt or damage code..." className="w-full p-2.5 text-sm bg-slate-50 border rounded-xl" />
+                <label className="text-xs font-semibold text-slate-400 block mb-1">Internal Notes / Reason*</label>
+                <input type="text" required value={adjustment.notes} onChange={e=>setAdjustment({...adjustment, notes: e.target.value})} placeholder="Reason for this stock adjustment" className="w-full p-2.5 text-sm bg-slate-50 border rounded-xl" />
               </div>
 
               <div className="flex gap-3 justify-end pt-4 border-t mt-6">
                 <button title="Close" type="button" onClick={() => setShowAdjustModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
-                <button type="submit" className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow">Apply stock adjustment</button>
+                <button type="submit" disabled={adjustUploading} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow flex items-center gap-1.5">
+                  {adjustUploading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  Apply Stock Movement
+                </button>
               </div>
             </form>
           </div>
@@ -896,7 +1090,7 @@ export default function Inventory({ token, role }: { token: string; role: string
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
               <h3 className="text-base font-bold">Barcode Scanner Emulator</h3>
-              <button title="Close" onClick={() => setShowScanModal(false)} className="text-slate-400 hover:bg-slate-150 p-1.5 rounded"><X className="w-5 h-5" /></button>
+              <button title="Close" onClick={() => setShowScanModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
             {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
@@ -927,13 +1121,248 @@ export default function Inventory({ token, role }: { token: string; role: string
         </div>
       )}
 
+      {/* GOODS INWARD RECEIVING HISTORY MODAL */}
+      {showReceivingModal && currentItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-5xl p-6 shadow-2xl my-8 flex flex-col max-h-[90vh]">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <History className="w-5 h-5 text-emerald-500" />
+                  Goods Inward Receiving History
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">{currentItem.name} ({currentItem.sku})</p>
+              </div>
+              <button onClick={() => setShowReceivingModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+            </div>
+
+            {/* Inward history filters */}
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-4 bg-slate-50 dark:bg-slate-950 p-3 rounded-2xl">
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 block mb-0.5">Start Date</label>
+                <input type="date" value={recFilters.start_date} onChange={e=>setRecFilters({...recFilters, start_date: e.target.value})} className="w-full text-xs p-1.5 border rounded-lg" />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 block mb-0.5">End Date</label>
+                <input type="date" value={recFilters.end_date} onChange={e=>setRecFilters({...recFilters, end_date: e.target.value})} className="w-full text-xs p-1.5 border rounded-lg" />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 block mb-0.5">Supplier</label>
+                <select value={recFilters.supplier_id} onChange={e=>setRecFilters({...recFilters, supplier_id: e.target.value})} className="w-full text-xs p-1.5 border rounded-lg">
+                  <option value="">All</option>
+                  {suppliers.map(s=>(
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 block mb-0.5">Warehouse</label>
+                <input type="text" value={recFilters.warehouse} onChange={e=>setRecFilters({...recFilters, warehouse: e.target.value})} placeholder="Search..." className="w-full text-xs p-1.5 border rounded-lg" />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 block mb-0.5">Project</label>
+                <select value={recFilters.project_id} onChange={e=>setRecFilters({...recFilters, project_id: e.target.value})} className="w-full text-xs p-1.5 border rounded-lg">
+                  <option value="">All</option>
+                  {projects.map(p=>(
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => loadReceivingHistory(currentItem.id, recFilters)}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs py-1.5 px-3 rounded-lg font-bold shadow"
+                >
+                  Apply Filters
+                </button>
+              </div>
+            </div>
+
+            {/* Export actions */}
+            <div className="flex gap-2 justify-end mb-3">
+              <span className="text-xs text-slate-400 self-center font-semibold">Export:</span>
+              <button onClick={() => handleExportReceiving("excel")} className="flex items-center gap-1 text-[10px] px-2.5 py-1 border rounded-lg hover:bg-slate-50 font-bold">
+                <Download className="w-3 h-3 text-emerald-500" /> Excel
+              </button>
+              <button onClick={() => handleExportReceiving("csv")} className="flex items-center gap-1 text-[10px] px-2.5 py-1 border rounded-lg hover:bg-slate-50 font-bold">
+                <Download className="w-3 h-3 text-indigo-500" /> CSV
+              </button>
+              <button onClick={() => handleExportReceiving("pdf")} className="flex items-center gap-1 text-[10px] px-2.5 py-1 border rounded-lg hover:bg-slate-50 font-bold">
+                <Download className="w-3 h-3 text-rose-500" /> PDF
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto border rounded-2xl">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-50 dark:bg-slate-900 border-b dark:border-slate-800 text-slate-400 font-bold">
+                    <th className="p-3">Received Date</th>
+                    <th className="p-3">GRN Number</th>
+                    <th className="p-3">Supplier</th>
+                    <th className="p-3">Warehouse</th>
+                    <th className="p-3 text-right">Qty Received</th>
+                    <th className="p-3 text-right">Unit Cost</th>
+                    <th className="p-3">Invoice Ref</th>
+                    <th className="p-3 text-center">Attachment</th>
+                    <th className="p-3">Notes</th>
+                    <th className="p-3">Received By</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recLoading ? (
+                    <tr>
+                      <td colSpan={10} className="p-8 text-center text-slate-400">
+                        <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-indigo-500" />
+                        Loading Receiving Logs...
+                      </td>
+                    </tr>
+                  ) : receivingHistory.length === 0 ? (
+                    <tr>
+                      <td colSpan={10} className="p-8 text-center text-slate-400">No inward receiving history records found for this material.</td>
+                    </tr>
+                  ) : (
+                    receivingHistory.map((h: any) => (
+                      <tr key={h.id} className="border-b dark:border-slate-900 hover:bg-slate-50/50">
+                        <td className="p-3">{new Date(h.created_at).toLocaleDateString()}</td>
+                        <td className="p-3 font-mono font-bold text-slate-700 dark:text-slate-300">{h.grn_number || "N/A"}</td>
+                        <td className="p-3 font-semibold">{h.supplier?.name || "N/A"}</td>
+                        <td className="p-3">{h.warehouse || "N/A"}</td>
+                        <td className="p-3 text-right font-bold text-emerald-600">{h.quantity}</td>
+                        <td className="p-3 text-right font-semibold">{formatCurrency(h.unit_cost || 0)}</td>
+                        <td className="p-3 font-mono">{h.invoice_number || "N/A"}</td>
+                        <td className="p-3 text-center">
+                          {h.attachment_url ? (
+                            <div className="flex gap-1 justify-center">
+                              <button onClick={() => setPreviewUrl(h.attachment_url)} className="text-indigo-500 hover:text-indigo-700 p-0.5 border rounded">
+                                <Eye className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-slate-300">-</span>
+                          )}
+                        </td>
+                        <td className="p-3 italic text-slate-500">{h.notes || "-"}</td>
+                        <td className="p-3 font-medium text-slate-600">{h.user?.full_name || "N/A"}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* STOCK CHRONOLOGICAL TIMELINE MODAL */}
+      {showTimelineModal && currentItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-3xl p-6 shadow-2xl my-8 flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <History className="w-5 h-5 text-indigo-500" />
+                  Material Stock Movement Timeline
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">{currentItem.name} ({currentItem.sku})</p>
+              </div>
+              <button onClick={() => setShowTimelineModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+            </div>
+
+            {/* Timeline Filter controls */}
+            <div className="flex justify-between items-center gap-3 mb-3 bg-slate-50 dark:bg-slate-950 p-3 rounded-2xl">
+              <div className="flex gap-2">
+                <select
+                  value={timelineTypeFilter}
+                  onChange={e=>setTimelineTypeFilter(e.target.value)}
+                  className="text-xs p-1.5 border rounded-lg dark:bg-slate-900"
+                >
+                  <option value="">All Movement Types</option>
+                  <option value="in">Stock Inward (+)</option>
+                  <option value="out">Stock Deduction (-)</option>
+                  <option value="damaged">Damage Deduction (-)</option>
+                  <option value="transfer">Stock Transfer (-)</option>
+                  <option value="return">Stock Return (+)</option>
+                  <option value="receive">Goods Receipt (+)</option>
+                  <option value="issue">Goods Issued (-)</option>
+                  <option value="adjustment">Manual Adjustment (+/-)</option>
+                  <option value="purchase">PO Purchase (+)</option>
+                </select>
+                <button
+                  onClick={() => loadTimeline(currentItem.id, timelineTypeFilter)}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-lg font-bold"
+                >
+                  Filter
+                </button>
+              </div>
+
+              <div className="flex gap-2">
+                <button onClick={() => handleExportTimeline("excel")} className="flex items-center gap-1 text-[10px] px-2 py-1 border rounded-lg hover:bg-slate-50 font-bold">
+                  <Download className="w-3 h-3 text-emerald-500" /> Excel
+                </button>
+                <button onClick={() => handleExportTimeline("csv")} className="flex items-center gap-1 text-[10px] px-2 py-1 border rounded-lg hover:bg-slate-50 font-bold">
+                  <Download className="w-3 h-3 text-indigo-500" /> CSV
+                </button>
+                <button onClick={() => handleExportTimeline("pdf")} className="flex items-center gap-1 text-[10px] px-2 py-1 border rounded-lg hover:bg-slate-50 font-bold">
+                  <Download className="w-3 h-3 text-rose-500" /> PDF
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-3 p-2">
+              {timelineLoading ? (
+                <div className="text-center py-8 text-slate-400">
+                  <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-indigo-500" />
+                  Loading Movement Timeline...
+                </div>
+              ) : timelineData.length === 0 ? (
+                <div className="text-center py-8 text-slate-400">No timeline stock movements recorded.</div>
+              ) : (
+                timelineData.map((t: any) => {
+                  const isInward = ["in", "return", "receive", "purchase", "csv_import"].includes(t.transaction_type);
+                  return (
+                    <div key={t.id} className="border dark:border-slate-800 rounded-xl p-3 bg-slate-50/50 dark:bg-slate-900/30 flex justify-between items-center text-xs">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className={cn(
+                            "px-2 py-0.5 rounded-full font-bold uppercase text-[9px]",
+                            isInward 
+                              ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400"
+                              : "bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-400"
+                          )}>
+                            {t.transaction_type}
+                          </span>
+                          <span className="text-[10px] text-slate-400">{new Date(t.created_at).toLocaleString()}</span>
+                        </div>
+                        <p className="font-semibold text-slate-800 dark:text-slate-200">Notes: {t.notes || "No remarks"}</p>
+                        {t.project && <p className="text-[10px] text-slate-500">Project: {t.project.name}</p>}
+                        {t.grn_number && <p className="text-[10px] text-indigo-500 font-mono">GRN: {t.grn_number}</p>}
+                      </div>
+                      <div className="text-right">
+                        <span className={cn(
+                          "font-bold text-sm",
+                          isInward ? "text-emerald-600" : "text-rose-600"
+                        )}>
+                          {isInward ? "+" : "-"}{t.quantity} {currentItem.unit}
+                        </span>
+                        <span className="text-[10px] text-slate-400 block mt-1">Logged by: {t.user?.full_name || "System"}</span>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* CSV BULK IMPORT MODAL */}
       {showImportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in zoom-in-95 duration-200">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
+            <div className="flex items-center justify-between border-b border-slate-101 dark:border-slate-800 pb-3 mb-4">
               <h3 className="text-base font-bold">Bulk CSV Master Import</h3>
-              <button title="Close" onClick={() => setShowImportModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+              <button title="Close" onClick={() => setShowImportModal(false)} className="text-slate-400 hover:bg-slate-150 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
             {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
@@ -1030,6 +1459,32 @@ export default function Inventory({ token, role }: { token: string; role: string
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Attachment Preview Modal */}
+      {previewUrl && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-950 w-full max-w-4xl h-[85vh] rounded-2xl shadow-2xl border dark:border-slate-800 overflow-hidden flex flex-col">
+            <div className="flex justify-between items-center p-4 border-b dark:border-slate-800">
+              <h3 className="font-bold text-sm text-slate-850 dark:text-slate-100 flex items-center gap-2">
+                <FileText className="w-4 h-4 text-emerald-500" />
+                Attachment preview
+              </h3>
+              <button onClick={() => setPreviewUrl(null)} className="text-slate-400 hover:text-slate-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex-1 bg-slate-100 dark:bg-slate-900 p-2">
+              {previewUrl.toLowerCase().endsWith(".pdf") ? (
+                <iframe src={previewUrl} className="w-full h-full rounded-lg" />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center overflow-auto">
+                  <img src={previewUrl} alt="Preview" className="max-w-full max-h-full object-contain rounded-lg shadow" />
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

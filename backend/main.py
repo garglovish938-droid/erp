@@ -198,6 +198,16 @@ try:
                 "ALTER TABLE factory_wallet ADD COLUMN created_at DATETIME",
                 "ALTER TABLE factory_wallet_transactions ADD COLUMN wallet_id TEXT DEFAULT 'default'",
                 "ALTER TABLE project_payments ADD COLUMN receipt_type TEXT DEFAULT 'Project Payment'",
+                "ALTER TABLE project_payments ADD COLUMN is_deleted BOOLEAN DEFAULT 0",
+                "ALTER TABLE project_payments ADD COLUMN deleted_at DATETIME",
+                "ALTER TABLE project_payments ADD COLUMN deleted_by TEXT",
+                "ALTER TABLE stock_transactions ADD COLUMN grn_number TEXT",
+                "ALTER TABLE stock_transactions ADD COLUMN supplier_id TEXT",
+                "ALTER TABLE stock_transactions ADD COLUMN purchase_order_id TEXT",
+                "ALTER TABLE stock_transactions ADD COLUMN warehouse TEXT",
+                "ALTER TABLE stock_transactions ADD COLUMN unit_cost REAL",
+                "ALTER TABLE stock_transactions ADD COLUMN invoice_number TEXT",
+                "ALTER TABLE stock_transactions ADD COLUMN attachment_url TEXT",
                 "CREATE INDEX IF NOT EXISTS idx_attendance_staff ON attendance (staff_id)",
                 "CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance (date)",
                 "CREATE INDEX IF NOT EXISTS idx_daily_expenses_project ON daily_expenses (project_id)",
@@ -252,6 +262,16 @@ try:
                 "ALTER TABLE factory_wallet ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
                 "ALTER TABLE factory_wallet_transactions ADD COLUMN IF NOT EXISTS wallet_id VARCHAR(36) DEFAULT 'default'",
                 "ALTER TABLE project_payments ADD COLUMN IF NOT EXISTS receipt_type VARCHAR(50) DEFAULT 'Project Payment'",
+                "ALTER TABLE project_payments ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE project_payments ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+                "ALTER TABLE project_payments ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(36)",
+                "ALTER TABLE stock_transactions ADD COLUMN IF NOT EXISTS grn_number VARCHAR(50)",
+                "ALTER TABLE stock_transactions ADD COLUMN IF NOT EXISTS supplier_id VARCHAR(36)",
+                "ALTER TABLE stock_transactions ADD COLUMN IF NOT EXISTS purchase_order_id VARCHAR(36)",
+                "ALTER TABLE stock_transactions ADD COLUMN IF NOT EXISTS warehouse VARCHAR(100)",
+                "ALTER TABLE stock_transactions ADD COLUMN IF NOT EXISTS unit_cost DOUBLE PRECISION",
+                "ALTER TABLE stock_transactions ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(100)",
+                "ALTER TABLE stock_transactions ADD COLUMN IF NOT EXISTS attachment_url VARCHAR(255)",
                 "CREATE INDEX IF NOT EXISTS idx_attendance_staff ON attendance (staff_id)",
                 "CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance (date)",
                 "CREATE INDEX IF NOT EXISTS idx_daily_expenses_project ON daily_expenses (project_id)",
@@ -775,6 +795,31 @@ def logout_user(request: Request, current_user: User = Depends(auth.get_current_
     )
     return {"status": "success", "message": "Logged out successfully"}
 
+
+@app.post("/api/upload")
+async def upload_file_general(
+    file: UploadFile = File(...),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """General upload helper returning URL."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Invalid file")
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
+    filename = f"upload_{uuid.uuid4().hex[:8]}.{ext}"
+    try:
+        contents = await file.read()
+        url = storage_provider.upload_file(
+            file_data=contents,
+            filename=filename,
+            bucket="documents",
+            mime_type=file.content_type or "application/octet-stream",
+            subpath="general"
+        )
+        return {"url": url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/users", response_model=List[schemas.UserResponse])
 @app.get("/api/auth/users", response_model=List[schemas.UserResponse])
 def read_users(db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin_or_factory_manager)):
@@ -1043,11 +1088,255 @@ def restore_inventory_item(item_id: str, db: Session = Depends(get_db), current_
             raise HTTPException(status_code=404, detail="Item not found or already active")
         broadcast_sync({"event": "inventory_change"})
         return {"status": "success", "message": "Item restored"}
-    except ValueError as e:
+    except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
+@app.get("/api/inventory/{item_id}/receiving-history", response_model=List[schemas.StockTransactionResponse])
+def get_item_receiving_history(
+    item_id: str,
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    supplier_id: Optional[str] = Query(None),
+    warehouse: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    grn_number: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Retrieve complete inward receiving history for an inventory item."""
+    return crud.get_inventory_receiving_history(
+        db=db,
+        inventory_id=item_id,
+        start_date=start_date,
+        end_date=end_date,
+        supplier_id=supplier_id,
+        warehouse=warehouse,
+        project_id=project_id,
+        grn_number=grn_number
+    )
+
+@app.get("/api/inventory/{item_id}/timeline", response_model=List[schemas.StockTransactionResponse])
+def get_item_timeline(
+    item_id: str,
+    transaction_type: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Retrieve complete movement history timeline for an inventory item."""
+    return crud.get_inventory_timeline(
+        db=db,
+        inventory_id=item_id,
+        transaction_type=transaction_type
+    )
+
+@app.get("/api/inventory/{item_id}/receiving-history/export")
+def export_receiving_history(
+    item_id: str,
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    supplier_id: Optional[str] = Query(None),
+    warehouse: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
+    grn_number: Optional[str] = Query(None),
+    format: str = Query("excel"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Export receiving history as Excel, CSV, or PDF."""
+    import io
+    txns = crud.get_inventory_receiving_history(
+        db=db,
+        inventory_id=item_id,
+        start_date=start_date,
+        end_date=end_date,
+        supplier_id=supplier_id,
+        warehouse=warehouse,
+        project_id=project_id,
+        grn_number=grn_number
+    )
+    
+    headers = [
+        "Receiving Date", "GRN Number", "Supplier", 
+        "Purchase Order", "Warehouse", "Quantity Received", 
+        "Unit Cost", "Invoice", "Attachment", "Remarks", "Received By"
+    ]
+    rows = []
+    for t in txns:
+        supplier_name = t.supplier.name if t.supplier else "N/A"
+        po_number = t.purchase_order.po_number if t.purchase_order else "N/A"
+        receiver_name = t.user.full_name if t.user else "N/A"
+        rows.append([
+            t.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            t.grn_number or "N/A",
+            supplier_name,
+            po_number,
+            t.warehouse or "N/A",
+            t.quantity,
+            t.unit_cost or 0.0,
+            t.invoice_number or "N/A",
+            t.attachment_url or "N/A",
+            t.notes or "",
+            receiver_name
+        ])
+        
+    if format == "csv":
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(headers)
+        writer.writerows(rows)
+        buffer.seek(0)
+        return StreamingResponse(
+            iter([buffer.getvalue()]), 
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=receiving_history_{item_id}.csv"}
+        )
+        
+    if format == "pdf":
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        styles = getSampleStyleSheet()
+        elements = [
+            Paragraph(f"Inventory Receiving History - {item_id}", styles['Title']),
+            Spacer(1, 12)
+        ]
+        table_data = [headers] + rows
+        t_el = Table(table_data)
+        t_el.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4F46E5')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F9FAFB')]),
+        ]))
+        elements.append(t_el)
+        doc.build(elements)
+        buffer.seek(0)
+        return StreamingResponse(
+            buffer, 
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=receiving_history_{item_id}.pdf"}
+        )
+        
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Receiving History"
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+    for row_idx, row in enumerate(rows, 2):
+        for col_idx, val in enumerate(row, 1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer, 
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=receiving_history_{item_id}.xlsx"}
+    )
+
+@app.get("/api/inventory/{item_id}/timeline/export")
+def export_stock_timeline(
+    item_id: str,
+    transaction_type: Optional[str] = Query(None),
+    format: str = Query("excel"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    """Export stock timeline as Excel, CSV, or PDF."""
+    import io
+    txns = crud.get_inventory_timeline(db=db, inventory_id=item_id, transaction_type=transaction_type)
+    
+    headers = ["Date", "Type", "Quantity", "Project", "Remarks/Notes", "Logged By"]
+    rows = []
+    for t in txns:
+        proj_name = t.project.name if t.project else "N/A"
+        user_name = t.user.full_name if t.user else "N/A"
+        rows.append([
+            t.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            t.transaction_type,
+            t.quantity,
+            proj_name,
+            t.notes or "",
+            user_name
+        ])
+        
+    if format == "csv":
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(headers)
+        writer.writerows(rows)
+        buffer.seek(0)
+        return StreamingResponse(
+            iter([buffer.getvalue()]), 
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=stock_timeline_{item_id}.csv"}
+        )
+        
+    if format == "pdf":
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        styles = getSampleStyleSheet()
+        elements = [
+            Paragraph(f"Stock Timeline - {item_id}", styles['Title']),
+            Spacer(1, 12)
+        ]
+        table_data = [headers] + rows
+        t_el = Table(table_data)
+        t_el.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#0F172A')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F9FAFB')]),
+        ]))
+        elements.append(t_el)
+        doc.build(elements)
+        buffer.seek(0)
+        return StreamingResponse(
+            buffer, 
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=stock_timeline_{item_id}.pdf"}
+        )
+        
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Stock Timeline"
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+    for row_idx, row in enumerate(rows, 2):
+        for col_idx, val in enumerate(row, 1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer, 
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=stock_timeline_{item_id}.xlsx"}
+    )
+
+
 @app.post("/api/inventory/{item_id}/adjust", response_model=schemas.InventoryItemResponse)
-def adjust_inventory_stock(item_id: str, adj: schemas.StockAdjustment, db: Session = Depends(get_db), current_user: User = Depends(auth.require_store_or_higher)):
+def adjust_inventory_stock(
+    item_id: str,
+    adj: schemas.StockAdjustment,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_store_or_higher)
+):
+    """Adjust inventory stock levels manually (Stores/Admin)."""
     try:
         res = crud.adjust_stock(
             db=db,
@@ -1055,12 +1344,20 @@ def adjust_inventory_stock(item_id: str, adj: schemas.StockAdjustment, db: Sessi
             quantity=adj.quantity,
             transaction_type=adj.transaction_type,
             user_id=current_user.id,
-            notes=adj.notes
+            notes=adj.notes,
+            grn_number=adj.grn_number,
+            supplier_id=adj.supplier_id,
+            purchase_order_id=adj.purchase_order_id,
+            warehouse=adj.warehouse,
+            unit_cost=adj.unit_cost,
+            invoice_number=adj.invoice_number,
+            attachment_url=adj.attachment_url
         )
         broadcast_sync({"event": "inventory_change"})
         return res
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @app.get("/api/inventory/lookup/{barcode}", response_model=schemas.InventoryItemResponse)
 def lookup_barcode(barcode: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
@@ -7178,6 +7475,162 @@ async def add_project_payment(
         format_inr(received_amount)
     )
     return db_pay
+
+
+@app.get("/api/project-payments/deleted", response_model=List[schemas.ProjectPaymentResponse])
+def list_deleted_project_payments(db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
+    """Retrieve soft-deleted client payment records."""
+    return crud.get_deleted_project_payments(db)
+
+@app.get("/api/project-payments/{payment_id}/versions", response_model=List[schemas.ProjectPaymentVersionResponse])
+def list_project_payment_versions(payment_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
+    """Retrieve edit version logs for a client payment record."""
+    return crud.get_project_payment_versions(db, payment_id)
+
+@app.put("/api/project-payments/{payment_id}", response_model=schemas.ProjectPaymentResponse)
+async def update_project_payment_endpoint(
+    payment_id: str,
+    password: str = Form(...),
+    reason: str = Form(...),
+    project_id: Optional[str] = Form(None),
+    client_id: Optional[str] = Form(None),
+    invoice_amount: Optional[float] = Form(None),
+    received_amount: Optional[float] = Form(None),
+    payment_method: Optional[str] = Form(None),
+    invoice_number: Optional[str] = Form(None),
+    reference_number: Optional[str] = Form(None),
+    bank_name: Optional[str] = Form(None),
+    received_date: Optional[date] = Form(None),
+    remarks: Optional[str] = Form(None),
+    receipt_type: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    """Edit a client payment milestone (Admins only, password required)."""
+    user = db.query(models.User).filter(models.User.id == current_user.id).first()
+    if not user or not auth.verify_password(password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Invalid confirmation password")
+        
+    attachment_url = None
+    if file and file.filename:
+        ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
+        filename = f"payment_{uuid.uuid4().hex[:8]}.{ext}"
+        try:
+            contents = await file.read()
+            attachment_url = storage_provider.upload_file(
+                file_data=contents,
+                filename=filename,
+                bucket="documents",
+                mime_type=file.content_type or "application/octet-stream",
+                subpath="project_payments"
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to upload invoice attachment: {str(e)}")
+
+    updated = crud.update_project_payment(
+        db=db,
+        payment_id=payment_id,
+        invoice_amount=invoice_amount,
+        received_amount=received_amount,
+        payment_method=payment_method,
+        invoice_number=invoice_number,
+        reference_number=reference_number,
+        bank_name=bank_name,
+        received_date=received_date,
+        remarks=remarks,
+        receipt_type=receipt_type,
+        project_id=project_id,
+        client_id=client_id,
+        attachment_url=attachment_url,
+        user_id=current_user.id,
+        reason=reason
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Payment record not found")
+        
+    broadcast_sync({"event": "financial_change"})
+    return updated
+
+@app.delete("/api/project-payments/{payment_id}/soft")
+def soft_delete_payment(
+    payment_id: str,
+    password: str = Query(...),
+    reason: str = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    """Soft delete a client payment milestone (Admins only, password required)."""
+    user = db.query(models.User).filter(models.User.id == current_user.id).first()
+    if not user or not auth.verify_password(password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Invalid confirmation password")
+        
+    success = crud.delete_project_payment(db, payment_id, current_user.id, reason)
+    if not success:
+        raise HTTPException(status_code=404, detail="Payment record not found")
+        
+    broadcast_sync({"event": "financial_change"})
+    return {"message": "Payment record soft deleted successfully"}
+
+@app.post("/api/project-payments/{payment_id}/restore")
+def restore_payment(
+    payment_id: str,
+    password: str = Form(...),
+    reason: str = Form(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    """Restore a soft-deleted client payment milestone (Admins only, password required)."""
+    user = db.query(models.User).filter(models.User.id == current_user.id).first()
+    if not user or not auth.verify_password(password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Invalid confirmation password")
+        
+    success = crud.restore_project_payment(db, payment_id, current_user.id, reason)
+    if not success:
+        raise HTTPException(status_code=404, detail="Payment record not found")
+        
+    broadcast_sync({"event": "financial_change"})
+    return {"message": "Payment record restored successfully"}
+
+@app.delete("/api/project-payments/{payment_id}/permanent")
+def permanent_delete_payment(
+    payment_id: str,
+    password: str = Query(...),
+    reason: str = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    """Permanently delete a client payment milestone (Super Admins only, password required)."""
+    if current_user.role not in ["admin", "super_admin"]:
+        raise HTTPException(status_code=403, detail="Super Admin permissions required for permanent deletions")
+        
+    user = db.query(models.User).filter(models.User.id == current_user.id).first()
+    if not user or not auth.verify_password(password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Invalid confirmation password")
+        
+    db_pay = db.query(models.ProjectPayment).filter(models.ProjectPayment.id == payment_id).first()
+    if not db_pay:
+        raise HTTPException(status_code=404, detail="Payment record not found")
+        
+    crud.sync_cash_book_entry(
+        db=db,
+        ref_type="project_payment",
+        ref_id=db_pay.id,
+        txn_date=db_pay.received_date,
+        amount=db_pay.received_amount,
+        payment_method=db_pay.payment_method,
+        category="Project Payment",
+        txn_type="IN",
+        remarks=reason,
+        added_by=current_user.id,
+        action="delete"
+    )
+    
+    db.delete(db_pay)
+    db.commit()
+    broadcast_sync({"event": "financial_change"})
+    return {"message": "Payment record permanently deleted"}
+
 
 @app.get("/api/financials/dashboard-summary")
 def get_financials_summary(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):

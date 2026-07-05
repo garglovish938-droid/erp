@@ -187,10 +187,21 @@ class StockTransaction(Base):
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+    # Receiving / inward details
+    grn_number = Column(String(50), nullable=True)
+    supplier_id = Column(String(36), ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True, index=True)
+    purchase_order_id = Column(String(36), ForeignKey("purchase_orders.id", ondelete="SET NULL"), nullable=True, index=True)
+    warehouse = Column(String(100), nullable=True)
+    unit_cost = Column(Float, nullable=True)
+    invoice_number = Column(String(100), nullable=True)
+    attachment_url = Column(String(255), nullable=True)
+
     # Relationships
     inventory = relationship("InventoryItem", back_populates="stock_transactions")
     project = relationship("Project", back_populates="stock_transactions")
     user = relationship("User", back_populates="stock_transactions")
+    supplier = relationship("Supplier")
+    purchase_order = relationship("PurchaseOrder")
 
 class MaterialRequest(Base):
     __tablename__ = "material_requests"
@@ -709,9 +720,28 @@ class ProjectPayment(Base):
     # Client Receipts payment types
     receipt_type = Column(String(50), default="Project Payment", nullable=False)
 
+    # Soft delete columns
+    is_deleted = Column(Boolean, default=False, nullable=False)
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by = Column(String(36), nullable=True)
+
     project = relationship("Project")
     client = relationship("Client")
     receiver = relationship("User")
+
+
+class ProjectPaymentVersion(Base):
+    __tablename__ = "project_payment_versions"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    payment_id = Column(String(36), ForeignKey("project_payments.id", ondelete="CASCADE"), nullable=False, index=True)
+    old_values = Column(Text, nullable=True)  # JSON string
+    new_values = Column(Text, nullable=True)  # JSON string
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    reason = Column(Text, nullable=True)
+
+    user = relationship("User")
 
 
 class CashBook(Base):
