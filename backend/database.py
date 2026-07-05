@@ -38,4 +38,5 @@ def get_db():
         db.rollback()
         raise
     finally:
+        db.rollback()
         db.close()

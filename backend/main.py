@@ -125,6 +125,37 @@ app.add_middleware(
 )
 
 
+# Global database exception handler to format constraint errors and operational errors gracefully
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError, OperationalError, ProgrammingError
+from fastapi.responses import JSONResponse
+import traceback
+
+@app.exception_handler(SQLAlchemyError)
+def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError):
+    print(f"[Database Error] Route {request.url.path} failed: {exc}")
+    traceback.print_exc()
+    
+    # Extract user-friendly message
+    detail = "A database error occurred. Please try again."
+    if isinstance(exc, IntegrityError):
+        orig_msg = str(exc.orig).lower() if exc.orig else ""
+        if "unique" in orig_msg or "duplicate" in orig_msg:
+            detail = "Duplicate record detected. A record with this unique value already exists."
+        elif "foreign key" in orig_msg:
+            detail = "Invalid reference. One or more referenced records do not exist."
+        else:
+            detail = "Database integrity violation. Please verify input relationships."
+    elif isinstance(exc, OperationalError):
+        detail = "Database connection error. The service might be temporarily unavailable."
+    elif isinstance(exc, ProgrammingError):
+        detail = "Database query failure due to schema mismatch or programmatic error."
+        
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"detail": detail}
+    )
+
+
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -148,144 +179,74 @@ async def add_security_headers(request: Request, call_next):
 Base.metadata.create_all(bind=engine)
 
 # Safely apply projects.department migration for both SQLite and PostgreSQL on startup
-from sqlalchemy import text
+from sqlalchemy import text, inspect
 try:
     with engine.connect() as conn:
         dialect_name = engine.dialect.name
-        if dialect_name == "sqlite":
-            alters = [
-                "ALTER TABLE projects ADD COLUMN department TEXT",
-                "ALTER TABLE projects ADD COLUMN completion_percentage INTEGER DEFAULT 0",
-                "ALTER TABLE projects ADD COLUMN progress_mode TEXT DEFAULT 'manual'",
-                "ALTER TABLE projects ADD COLUMN version_id INTEGER DEFAULT 1",
-                "ALTER TABLE project_bom ADD COLUMN consumed_quantity FLOAT DEFAULT 0.0",
-                "ALTER TABLE project_daily_logs ADD COLUMN inventory_id VARCHAR(36)",
-                "ALTER TABLE project_daily_logs ADD COLUMN quantity_used FLOAT DEFAULT 0.0",
-                "ALTER TABLE project_daily_logs ADD COLUMN approval_status VARCHAR(20) DEFAULT 'pending'",
-                "ALTER TABLE project_daily_logs ADD COLUMN supervisor_comment TEXT",
-                "ALTER TABLE project_daily_logs ADD COLUMN approved_by VARCHAR(36)",
-                "ALTER TABLE project_daily_logs ADD COLUMN approved_at TIMESTAMP",
-                "ALTER TABLE project_daily_logs ADD COLUMN version_id INTEGER DEFAULT 1",
-                "ALTER TABLE audit_logs ADD COLUMN images TEXT",
-                "ALTER TABLE audit_logs ADD COLUMN documents TEXT",
-                "ALTER TABLE audit_logs ADD COLUMN inventory_id VARCHAR(36)",
-                "ALTER TABLE audit_logs ADD COLUMN reason TEXT",
-                "ALTER TABLE project_material_history ADD COLUMN status TEXT DEFAULT 'approved'",
-                "ALTER TABLE project_material_history ADD COLUMN approved_by TEXT",
-                "ALTER TABLE project_material_history ADD COLUMN approved_at DATETIME",
-                "ALTER TABLE inventory ADD COLUMN reserved_quantity FLOAT DEFAULT 0.0",
-                "ALTER TABLE inventory ADD COLUMN available_quantity FLOAT DEFAULT 0.0",
-                "ALTER TABLE daily_expenses ADD COLUMN deleted_at DATETIME",
-                "ALTER TABLE daily_expenses ADD COLUMN deleted_by TEXT",
-                "ALTER TABLE daily_expenses ADD COLUMN payment_mode TEXT DEFAULT 'Cash'",
-                "ALTER TABLE daily_expenses ADD COLUMN remarks TEXT",
-                "ALTER TABLE daily_expenses ADD COLUMN cash_received FLOAT DEFAULT 0.0",
-                "ALTER TABLE daily_expenses ADD COLUMN returned_cash FLOAT DEFAULT 0.0",
-                "ALTER TABLE daily_expenses ADD COLUMN approval_status TEXT DEFAULT 'approved'",
-                "ALTER TABLE daily_expenses ADD COLUMN approved_by TEXT",
-                "ALTER TABLE daily_expenses ADD COLUMN approved_at TIMESTAMP",
-                "ALTER TABLE daily_expenses ADD COLUMN supervisor_comment TEXT",
-                "ALTER TABLE daily_expenses ADD COLUMN wallet_id TEXT",
-                "ALTER TABLE daily_expenses ADD COLUMN wallet_linked BOOLEAN DEFAULT 0",
-                "ALTER TABLE daily_expenses ADD COLUMN linked_date DATE",
-                "ALTER TABLE daily_expenses ADD COLUMN transaction_source TEXT",
-                "ALTER TABLE factory_wallet ADD COLUMN name TEXT",
-                "ALTER TABLE factory_wallet ADD COLUMN opening_balance REAL DEFAULT 0.0",
-                "ALTER TABLE factory_wallet ADD COLUMN activation_date DATE",
-                "ALTER TABLE factory_wallet ADD COLUMN opening_txn_id TEXT",
-                "ALTER TABLE factory_wallet ADD COLUMN status TEXT DEFAULT 'active'",
-                "ALTER TABLE factory_wallet ADD COLUMN created_by TEXT",
-                "ALTER TABLE factory_wallet ADD COLUMN created_at DATETIME",
-                "ALTER TABLE factory_wallet_transactions ADD COLUMN wallet_id TEXT DEFAULT 'default'",
-                "ALTER TABLE project_payments ADD COLUMN receipt_type TEXT DEFAULT 'Project Payment'",
-                "ALTER TABLE project_payments ADD COLUMN is_deleted BOOLEAN DEFAULT 0",
-                "ALTER TABLE project_payments ADD COLUMN deleted_at DATETIME",
-                "ALTER TABLE project_payments ADD COLUMN deleted_by TEXT",
-                "ALTER TABLE stock_transactions ADD COLUMN grn_number TEXT",
-                "ALTER TABLE stock_transactions ADD COLUMN supplier_id TEXT",
-                "ALTER TABLE stock_transactions ADD COLUMN purchase_order_id TEXT",
-                "ALTER TABLE stock_transactions ADD COLUMN warehouse TEXT",
-                "ALTER TABLE stock_transactions ADD COLUMN unit_cost REAL",
-                "ALTER TABLE stock_transactions ADD COLUMN invoice_number TEXT",
-                "ALTER TABLE stock_transactions ADD COLUMN attachment_url TEXT",
-                "CREATE INDEX IF NOT EXISTS idx_attendance_staff ON attendance (staff_id)",
-                "CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance (date)",
-                "CREATE INDEX IF NOT EXISTS idx_daily_expenses_project ON daily_expenses (project_id)",
-                "CREATE INDEX IF NOT EXISTS idx_daily_expenses_date ON daily_expenses (expense_date)",
-                "CREATE INDEX IF NOT EXISTS idx_project_payments_project ON project_payments (project_id)",
-                "CREATE INDEX IF NOT EXISTS idx_project_bom_project ON project_bom (project_id)",
-                "CREATE INDEX IF NOT EXISTS idx_stock_transactions_inventory ON stock_transactions (inventory_id)"
-            ]
-        else:
-            alters = [
-                "ALTER TABLE projects ADD COLUMN IF NOT EXISTS department VARCHAR(100)",
-                "ALTER TABLE projects ADD COLUMN IF NOT EXISTS completion_percentage INTEGER DEFAULT 0",
-                "ALTER TABLE projects ADD COLUMN IF NOT EXISTS progress_mode VARCHAR(20) DEFAULT 'manual'",
-                "ALTER TABLE projects ADD COLUMN IF NOT EXISTS version_id INTEGER DEFAULT 1",
-                "ALTER TABLE project_bom ADD COLUMN IF NOT EXISTS consumed_quantity FLOAT DEFAULT 0.0",
-                "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS inventory_id VARCHAR(36)",
-                "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS quantity_used FLOAT DEFAULT 0.0",
-                "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) DEFAULT 'pending'",
-                "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS supervisor_comment TEXT",
-                "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS approved_by VARCHAR(36)",
-                "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP",
-                "ALTER TABLE project_daily_logs ADD COLUMN IF NOT EXISTS version_id INTEGER DEFAULT 1",
-                "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS images TEXT",
-                "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS documents TEXT",
-                "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS inventory_id VARCHAR(36)",
-                "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS reason TEXT",
-                "ALTER TABLE project_material_history ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'approved'",
-                "ALTER TABLE project_material_history ADD COLUMN IF NOT EXISTS approved_by VARCHAR(36)",
-                "ALTER TABLE project_material_history ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP",
-                "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS reserved_quantity FLOAT DEFAULT 0.0",
-                "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS available_quantity FLOAT DEFAULT 0.0",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(36)",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(50) DEFAULT 'Cash'",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS remarks TEXT",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS cash_received FLOAT DEFAULT 0.0",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS returned_cash FLOAT DEFAULT 0.0",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) DEFAULT 'approved'",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS approved_by VARCHAR(36)",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS supervisor_comment TEXT",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS wallet_id VARCHAR(36)",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS wallet_linked BOOLEAN DEFAULT FALSE",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS linked_date DATE",
-                "ALTER TABLE daily_expenses ADD COLUMN IF NOT EXISTS transaction_source VARCHAR(50)",
-                "ALTER TABLE factory_wallet ADD COLUMN IF NOT EXISTS name VARCHAR(100)",
-                "ALTER TABLE factory_wallet ADD COLUMN IF NOT EXISTS opening_balance DOUBLE PRECISION DEFAULT 0.0",
-                "ALTER TABLE factory_wallet ADD COLUMN IF NOT EXISTS activation_date DATE",
-                "ALTER TABLE factory_wallet ADD COLUMN IF NOT EXISTS opening_txn_id VARCHAR(50)",
-                "ALTER TABLE factory_wallet ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'",
-                "ALTER TABLE factory_wallet ADD COLUMN IF NOT EXISTS created_by VARCHAR(36)",
-                "ALTER TABLE factory_wallet ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-                "ALTER TABLE factory_wallet_transactions ADD COLUMN IF NOT EXISTS wallet_id VARCHAR(36) DEFAULT 'default'",
-                "ALTER TABLE project_payments ADD COLUMN IF NOT EXISTS receipt_type VARCHAR(50) DEFAULT 'Project Payment'",
-                "ALTER TABLE project_payments ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE",
-                "ALTER TABLE project_payments ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
-                "ALTER TABLE project_payments ADD COLUMN IF NOT EXISTS deleted_by VARCHAR(36)",
-                "ALTER TABLE stock_transactions ADD COLUMN IF NOT EXISTS grn_number VARCHAR(50)",
-                "ALTER TABLE stock_transactions ADD COLUMN IF NOT EXISTS supplier_id VARCHAR(36)",
-                "ALTER TABLE stock_transactions ADD COLUMN IF NOT EXISTS purchase_order_id VARCHAR(36)",
-                "ALTER TABLE stock_transactions ADD COLUMN IF NOT EXISTS warehouse VARCHAR(100)",
-                "ALTER TABLE stock_transactions ADD COLUMN IF NOT EXISTS unit_cost DOUBLE PRECISION",
-                "ALTER TABLE stock_transactions ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(100)",
-                "ALTER TABLE stock_transactions ADD COLUMN IF NOT EXISTS attachment_url VARCHAR(255)",
-                "CREATE INDEX IF NOT EXISTS idx_attendance_staff ON attendance (staff_id)",
-                "CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance (date)",
-                "CREATE INDEX IF NOT EXISTS idx_daily_expenses_project ON daily_expenses (project_id)",
-                "CREATE INDEX IF NOT EXISTS idx_daily_expenses_date ON daily_expenses (expense_date)",
-                "CREATE INDEX IF NOT EXISTS idx_project_payments_project ON project_payments (project_id)",
-                "CREATE INDEX IF NOT EXISTS idx_project_bom_project ON project_bom (project_id)",
-                "CREATE INDEX IF NOT EXISTS idx_stock_transactions_inventory ON stock_transactions (inventory_id)"
-            ]
+        inspector = inspect(engine)
+        existing_tables = inspector.get_table_names()
+        
+        # Now find any missing columns in existing tables and ADD them!
+        for mapper in Base.registry.mappers:
+            model_class = mapper.class_
+            if not hasattr(model_class, "__tablename__"):
+                continue
+            table_name = model_class.__tablename__
             
-        for statement in alters:
+            if table_name not in existing_tables:
+                continue
+                
+            db_columns = {col["name"].lower() for col in inspector.get_columns(table_name)}
+            
+            for column in model_class.__table__.columns:
+                col_name = column.name
+                if col_name.lower() in db_columns:
+                    continue
+                    
+                # Column is missing! Alter table to add it
+                col_type = column.type
+                type_str = str(col_type).upper()
+                
+                # Check for standard defaults
+                default_str = ""
+                if column.default is not None and not callable(column.default.arg):
+                    default_val = column.default.arg
+                    if isinstance(default_val, bool):
+                        if dialect_name == "sqlite":
+                            default_str = f" DEFAULT {1 if default_val else 0}"
+                        else:
+                            default_str = f" DEFAULT {'TRUE' if default_val else 'FALSE'}"
+                    elif isinstance(default_val, (int, float)):
+                        default_str = f" DEFAULT {default_val}"
+                    elif isinstance(default_val, str):
+                        default_str = f" DEFAULT '{default_val}'"
+                
+                if dialect_name == "sqlite":
+                    stmt = f"ALTER TABLE {table_name} ADD COLUMN {col_name} {type_str}{default_str}"
+                else:
+                    stmt = f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {type_str}{default_str}"
+                    
+                try:
+                    conn.execute(text(stmt))
+                    conn.commit()
+                    print(f"[Auto-Migration] Added column '{col_name}' to table '{table_name}': {stmt}")
+                except Exception as col_err:
+                    print(f"[Auto-Migration] Failed to add column '{col_name}' to '{table_name}': {col_err}")
+                    
+        # Apply indexes
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_attendance_staff ON attendance (staff_id)",
+            "CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance (date)",
+            "CREATE INDEX IF NOT EXISTS idx_daily_expenses_project ON daily_expenses (project_id)",
+            "CREATE INDEX IF NOT EXISTS idx_daily_expenses_date ON daily_expenses (expense_date)",
+            "CREATE INDEX IF NOT EXISTS idx_project_payments_project ON project_payments (project_id)",
+            "CREATE INDEX IF NOT EXISTS idx_project_bom_project ON project_bom (project_id)",
+            "CREATE INDEX IF NOT EXISTS idx_stock_transactions_inventory ON stock_transactions (inventory_id)"
+        ]
+        for idx_stmt in indexes:
             try:
-                conn.execute(text(statement))
+                conn.execute(text(idx_stmt))
                 conn.commit()
-                print(f"[Migration] Executed: {statement}")
             except Exception:
                 pass
 except Exception as e:

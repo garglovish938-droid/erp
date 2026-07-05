@@ -3479,7 +3479,7 @@ def get_factory_funds(db: Session) -> List[FactoryFund]:
 
 def get_factory_financial_stats(db: Session) -> dict:
     today = date.today()
-    wallet_balance = get_factory_wallet_balance(db)
+    wallet_balance = db.query(func.sum(FactoryWallet.balance)).scalar() or 0.0
     
     today_fund = db.query(func.sum(FactoryFund.amount)).filter(FactoryFund.date == today).scalar() or 0.0
     start_of_month = date(today.year, today.month, 1)
@@ -3916,7 +3916,7 @@ def get_cash_book_stats(db: Session, start_date: Optional[date] = None, end_date
         "yearly_out": round(yearly_out, 2)
     }
 
-def sync_cash_book_entry(db: Session, ref_type: str, ref_id: str, action: str = "upsert") -> None:
+def sync_cash_book_entry(db: Session, ref_type: str, ref_id: str, action: str = "upsert", **kwargs) -> None:
     if ref_type == "factory_fund":
         fund = db.query(FactoryFund).filter(FactoryFund.id == ref_id).first()
         if not fund:
@@ -3932,7 +3932,15 @@ def sync_cash_book_entry(db: Session, ref_type: str, ref_id: str, action: str = 
         ref_num = fund.reference_number
     elif ref_type == "project_payment":
         payment = db.query(ProjectPayment).filter(ProjectPayment.id == ref_id).first()
-        if not payment:
+        if not payment or payment.is_deleted or action == "delete":
+            db_entry = db.query(CashBook).filter(
+                CashBook.reference_type == "project_payment",
+                CashBook.reference_id == ref_id
+            ).first()
+            if db_entry:
+                db_entry.is_deleted = True
+                db_entry.deleted_at = datetime.utcnow()
+                db.commit()
             return
         amount = payment.received_amount
         txn_date = payment.received_date
