@@ -203,9 +203,10 @@ try:
                 if col_name.lower() in db_columns:
                     continue
                     
-                # Column is missing! Alter table to add it
                 col_type = column.type
                 type_str = str(col_type).upper()
+                if dialect_name != "sqlite":
+                    type_str = type_str.replace("DATETIME", "TIMESTAMP")
                 
                 # Check for standard defaults
                 default_str = ""
