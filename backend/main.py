@@ -5715,61 +5715,6 @@ def get_purchases_report(
         
     return pos.order_by(PurchaseOrder.created_at.desc()).all()
 
-
-@app.get("/api/admin/debug-expenses")
-def debug_expenses(db: Session = Depends(get_db)):
-    try:
-        from sqlalchemy import text
-        from sqlalchemy import inspect
-        inspector = inspect(db.get_bind())
-        tables = inspector.get_table_names()
-        
-        de_columns = []
-        if "daily_expenses" in tables:
-            de_columns = [col['name'] for col in inspector.get_columns("daily_expenses")]
-            
-        rows_list = []
-        try:
-            rows = db.execute(text("SELECT id, expense_id FROM daily_expenses LIMIT 5")).fetchall()
-            rows_list = [{"id": r[0], "expense_id": r[1]} for r in rows]
-        except Exception as e:
-            rows_list = [{"error_fetching_rows": str(e)}]
-            
-        # Try SQLAlchemy load
-        import models
-        exp = db.query(models.DailyExpense).first()
-        exp_dict = None
-        validation = "no records found"
-        if exp:
-            exp_dict = {
-                "id": exp.id,
-                "expense_id": exp.expense_id,
-                "wallet_id": exp.wallet_id,
-                "wallet_linked": exp.wallet_linked,
-                "linked_date": str(exp.linked_date) if exp.linked_date else None,
-                "transaction_source": exp.transaction_source
-            }
-            import schemas
-            try:
-                schemas.DailyExpenseResponse.model_validate(exp)
-                validation = "success"
-            except Exception as val_e:
-                import traceback
-                validation = f"failed: {traceback.format_exc()}"
-                
-        return {
-            "tables": tables,
-            "daily_expenses_columns": de_columns,
-            "sample_raw_rows": rows_list,
-            "sqlalchemy_sample": exp_dict,
-            "validation_result": validation
-        }
-    except Exception as e:
-        import traceback
-        return {"error": str(e), "traceback": traceback.format_exc()}
-
-
-# --- DAILY EXPENSES ENDPOINTS ---
 @app.get("/api/expenses", response_model=List[schemas.DailyExpenseResponse])
 def read_expenses(
     project_id: Optional[str] = Query(None),
