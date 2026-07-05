@@ -31,7 +31,8 @@ from models import (
     StockTransaction, MaterialRequest, PurchaseOrder, Staff, Attendance,
     Notification, ActivityLog, CustomFieldDefinition, CustomFieldValue,
     Shift, AttendanceRule, Task, DailyWorkLog, ProjectAssignment, ProjectDailyLog,
-    DailyExpense, LoginHistory, FactoryFund, ProjectPayment, CashBook
+    DailyExpense, LoginHistory, FactoryFund, ProjectPayment, CashBook,
+    FactoryWallet, FactoryWalletTransaction
 )
 import crud, schemas, auth
 from collections import defaultdict
@@ -260,6 +261,23 @@ try:
         print("Database already contains users. Skipping auto-seed.")
 except Exception as e:
     print(f"Error during auto-seed check: {e}")
+finally:
+    db.close()
+
+# Initialize Factory Wallet row if empty
+from models import FactoryWallet
+import datetime
+db = SessionLocal()
+try:
+    if db.query(FactoryWallet).count() == 0:
+        wallet = FactoryWallet(id="default", balance=0.0, updated_at=datetime.datetime.utcnow())
+        db.add(wallet)
+        db.commit()
+        print("[Startup] Initialized Factory Wallet with 0.0 balance.")
+    else:
+        print("[Startup] Factory Wallet already initialized.")
+except Exception as e:
+    print(f"Error initializing Factory Wallet: {e}")
 finally:
     db.close()
 
@@ -2312,6 +2330,11 @@ def delete_project_material_log(
 # --- MATERIAL REQUESTS ---
 @app.get("/api/requests", response_model=List[schemas.MaterialRequestResponse])
 def read_requests(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    if current_user.role in ["worker", "carpenter", "operator", "employee"]:
+        return db.query(MaterialRequest).filter(
+            MaterialRequest.requested_by == current_user.id,
+            MaterialRequest.is_deleted == False
+        ).all()
     return crud.get_material_requests(db)
 
 @app.post("/api/requests", response_model=schemas.MaterialRequestResponse)
@@ -2331,8 +2354,8 @@ def update_request_status(
     current_user: User = Depends(auth.require_any_authenticated)
 ):
     if status in ["approved", "rejected"]:
-        if current_user.role not in ["admin", "manager"]:
-            raise HTTPException(status_code=403, detail="Only managers can approve/reject requests")
+        if current_user.role not in ["admin", "super_admin", "manager", "factory_manager", "project_manager", "supervisor"]:
+            raise HTTPException(status_code=403, detail="Only managers and supervisors can approve/reject requests")
     elif status == "issued":
         if current_user.role not in ["admin", "store"]:
             raise HTTPException(status_code=403, detail="Only store keepers can issue materials")
@@ -5735,7 +5758,11 @@ async def create_expense(
         cash_received=cash_received,
         returned_cash=returned_cash
     )
-    db_exp = crud.create_daily_expense(db, exp_in, current_user.id)
+    try:
+        db_exp = crud.create_daily_expense(db, exp_in, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+        
     broadcast_sync({"event": "expense_change"})
     
     # Broadcast financial change as well
@@ -5808,14 +5835,18 @@ async def update_expense(
     ip_addr = request.client.host if request and request.client else None
     user_agent = request.headers.get("user-agent") if request else None
     
-    db_exp = crud.update_daily_expense(
-        db=db,
-        expense_id=expense_id,
-        exp_in=exp_in,
-        user_id=current_user.id,
-        ip_address=ip_addr,
-        device=user_agent
-    )
+    try:
+        db_exp = crud.update_daily_expense(
+            db=db,
+            expense_id=expense_id,
+            exp_in=exp_in,
+            user_id=current_user.id,
+            ip_address=ip_addr,
+            device=user_agent
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+        
     if not db_exp:
         raise HTTPException(status_code=404, detail="Expense record not found")
         
@@ -5830,11 +5861,14 @@ def delete_expense(
     current_user: User = Depends(auth.require_any_authenticated)
 ):
     """Delete an expense record."""
+    if current_user.role in ["worker", "carpenter", "operator", "employee"]:
+        raise HTTPException(status_code=403, detail="Employees cannot delete expenses")
     deleted = crud.delete_daily_expense(db, expense_id, current_user.id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Expense not found")
     broadcast_sync({"event": "expense_change"})
     return {"status": "success", "message": "Expense soft-deleted"}
+
 
 
 @app.get("/api/expenses/dashboard")
@@ -7015,6 +7049,22 @@ def get_factory_fund_stats(db: Session = Depends(get_db), current_user: User = D
     """Fetch factory balance sheet summary metrics."""
     return crud.get_factory_financial_stats(db)
 
+@app.get("/api/factory-wallet/balance", response_model=schemas.FactoryWalletBalanceResponse)
+def get_factory_wallet_balance_api(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    if current_user.role in ["worker", "carpenter", "operator", "employee"]:
+        raise HTTPException(status_code=403, detail="Employees cannot view the Factory Wallet balance")
+    balance = crud.get_factory_wallet_balance(db)
+    wallet = db.query(FactoryWallet).first()
+    updated_at = wallet.updated_at if wallet else datetime.utcnow()
+    return {"balance": balance, "updated_at": updated_at}
+
+@app.get("/api/factory-wallet/history", response_model=List[schemas.FactoryWalletTransactionResponse])
+def get_factory_wallet_history(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    if current_user.role in ["worker", "carpenter", "operator", "employee"]:
+        raise HTTPException(status_code=403, detail="Employees cannot view the Factory Wallet history")
+    return crud.get_factory_wallet_transactions(db)
+
+
 @app.get("/api/project-payments", response_model=List[schemas.ProjectPaymentResponse])
 def list_project_payments(project_id: Optional[str] = Query(None), db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
     """Retrieve client payment records, optionally filtered by project."""
@@ -7144,6 +7194,25 @@ async def add_cash_book_entry(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to upload attachment: {str(e)}")
 
+    if transaction_type.upper() == "IN" and category in ["Owner Investment", "Funding Injection"]:
+        # Route through Factory Expense Wallet logic
+        wallet_txn = crud.add_wallet_funds(
+            db=db,
+            amount=amount,
+            payment_method=payment_method or "Cash",
+            reference_number=reference_number,
+            remarks=remarks,
+            attachment_url=attachment_url,
+            user_id=current_user.id
+        )
+        # Fetch the synced CashBook entry to return it as CashBookResponse
+        db_entry = db.query(CashBook).filter(
+            CashBook.reference_type == "factory_fund",
+            CashBook.reference_id == wallet_txn.reference_id
+        ).first()
+        broadcast_sync({"event": "financial_change"})
+        return db_entry
+
     entry_in = schemas.CashBookCreate(
         date=date,
         transaction_type=transaction_type,
@@ -7157,6 +7226,7 @@ async def add_cash_book_entry(
     db_entry = crud.create_cash_book_entry(db, entry_in, current_user.id, ref_type="direct_txn")
     broadcast_sync({"event": "financial_change"})
     return db_entry
+
 
 @app.put("/api/cash-book/{txn_id}", response_model=schemas.CashBookResponse)
 async def update_cash_book_entry(
@@ -7343,7 +7413,10 @@ def approve_expense(
         reason=f"Expense approval transition: {status}"
     )
     
-    updated = crud.update_daily_expense(db, expense_id, exp_in, current_user.id)
+    try:
+        updated = crud.update_daily_expense(db, expense_id, exp_in, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     broadcast_sync({"event": "expense_change"})
     broadcast_sync({"event": "financial_change"})
     return updated

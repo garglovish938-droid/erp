@@ -19,6 +19,9 @@ interface FactoryFundProps {
 export default function FactoryFund({ token, role }: FactoryFundProps) {
   const { showToast } = useToast();
   const [entries, setEntries] = useState<any[]>([]);
+  const [activeSubTab, setActiveSubTab] = useState<"cashbook" | "wallet">("cashbook");
+  const [walletHistory, setWalletHistory] = useState<any[]>([]);
+  const [walletBalance, setWalletBalance] = useState<number>(0);
   const [stats, setStats] = useState<any>({
     available_balance: 0,
     opening_balance: 0,
@@ -61,50 +64,59 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      // Build filter query parameters
-      const params = new URLSearchParams();
-      if (startDate) params.append("start_date", startDate);
-      if (endDate) params.append("end_date", endDate);
-      if (category) params.append("category", category);
-      if (paymentMethod) params.append("payment_method", paymentMethod);
-      if (search) params.append("search", search);
-      if (txnType) params.append("transaction_type", txnType);
+      if (activeSubTab === "wallet") {
+        const [wHistory, wBal] = await Promise.all([
+          apiRequest("/api/factory-wallet/history"),
+          apiRequest("/api/factory-wallet/balance")
+        ]);
+        setWalletHistory(wHistory || []);
+        setWalletBalance(wBal?.balance || 0);
+      } else {
+        // Build filter query parameters
+        const params = new URLSearchParams();
+        if (startDate) params.append("start_date", startDate);
+        if (endDate) params.append("end_date", endDate);
+        if (category) params.append("category", category);
+        if (paymentMethod) params.append("payment_method", paymentMethod);
+        if (search) params.append("search", search);
+        if (txnType) params.append("transaction_type", txnType);
 
-      const [list, statsData] = await Promise.all([
-        apiRequest(`/api/cash-book?${params.toString()}`),
-        apiRequest(`/api/cash-book/stats?${startDate ? `start_date=${startDate}` : ""}${endDate ? `&end_date=${endDate}` : ""}`)
-      ]);
+        const [list, statsData] = await Promise.all([
+          apiRequest(`/api/cash-book?${params.toString()}`),
+          apiRequest(`/api/cash-book/stats?${startDate ? `start_date=${startDate}` : ""}${endDate ? `&end_date=${endDate}` : ""}`)
+        ]);
 
-      // Calculate running balance locally for display
-      let currentBal = statsData?.opening_balance || 0;
-      const enrichedEntries = (list || []).map((t: any) => {
-        if (t.transaction_type === "IN") {
-          currentBal += t.amount;
-        } else {
-          currentBal -= t.amount;
-        }
-        return { ...t, running_balance: currentBal };
-      });
+        // Calculate running balance locally for display
+        let currentBal = statsData?.opening_balance || 0;
+        const enrichedEntries = (list || []).map((t: any) => {
+          if (t.transaction_type === "IN") {
+            currentBal += t.amount;
+          } else {
+            currentBal -= t.amount;
+          }
+          return { ...t, running_balance: currentBal };
+        });
 
-      setEntries(enrichedEntries);
-      setStats(statsData || {
-        available_balance: 0,
-        opening_balance: 0,
-        period_in: 0,
-        period_out: 0,
-        closing_balance: 0,
-        monthly_in: 0,
-        monthly_out: 0,
-        yearly_in: 0,
-        yearly_out: 0
-      });
+        setEntries(enrichedEntries);
+        setStats(statsData || {
+          available_balance: 0,
+          opening_balance: 0,
+          period_in: 0,
+          period_out: 0,
+          closing_balance: 0,
+          monthly_in: 0,
+          monthly_out: 0,
+          yearly_in: 0,
+          yearly_out: 0
+        });
+      }
     } catch (e) {
-      console.error("Failed to load Cash Book entries:", e);
-      showToast("Error loading cash book records.", "error");
+      console.error("Failed to load records:", e);
+      showToast("Error loading records.", "error");
     } finally {
       setLoading(false);
     }
-  }, [startDate, endDate, category, paymentMethod, search, txnType, showToast]);
+  }, [activeSubTab, startDate, endDate, category, paymentMethod, search, txnType, showToast]);
 
   useEffect(() => {
     loadData();
@@ -316,310 +328,457 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
         </div>
       </div>
 
-      {/* Stats Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-        {/* Available Balance */}
-        <div className="bg-white dark:bg-slate-950 p-5 rounded-2xl border border-slate-100 dark:border-slate-900 shadow-sm flex flex-col justify-between">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Available Balance</span>
-          <div className="mt-2 flex items-baseline gap-1">
-            <span className="text-2xl font-bold text-slate-900 dark:text-white">{formatCurrency(stats.available_balance)}</span>
-          </div>
-          <span className="text-[10px] text-slate-400 mt-2">Combined net of all active transactions</span>
-        </div>
-
-        {/* Opening Balance */}
-        <div className="bg-white dark:bg-slate-950 p-5 rounded-2xl border border-slate-100 dark:border-slate-900 shadow-sm flex flex-col justify-between">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Opening Balance</span>
-          <div className="mt-2 flex items-baseline gap-1">
-            <span className="text-2xl font-bold text-slate-900 dark:text-white">{formatCurrency(stats.opening_balance)}</span>
-          </div>
-          <span className="text-[10px] text-slate-400 mt-2">Balance before selected start date</span>
-        </div>
-
-        {/* Period Money IN */}
-        <div className="bg-white dark:bg-slate-950 p-5 rounded-2xl border border-slate-100 dark:border-slate-900 shadow-sm flex flex-col justify-between">
-          <span className="text-xs font-semibold text-emerald-500 dark:text-emerald-400 uppercase tracking-wider flex items-center gap-1">
-            <ArrowUpRight className="h-3 w-3" /> Money IN
-          </span>
-          <div className="mt-2">
-            <span className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">+{formatCurrency(stats.period_in)}</span>
-          </div>
-          <span className="text-[10px] text-slate-400 mt-2">Total inflows during period</span>
-        </div>
-
-        {/* Period Money OUT */}
-        <div className="bg-white dark:bg-slate-950 p-5 rounded-2xl border border-slate-100 dark:border-slate-900 shadow-sm flex flex-col justify-between">
-          <span className="text-xs font-semibold text-rose-500 uppercase tracking-wider flex items-center gap-1">
-            <ArrowDownRight className="h-3 w-3" /> Money OUT
-          </span>
-          <div className="mt-2">
-            <span className="text-2xl font-bold text-rose-600">-{formatCurrency(stats.period_out)}</span>
-          </div>
-          <span className="text-[10px] text-slate-400 mt-2">Total outflows during period</span>
-        </div>
-
-        {/* Closing Balance */}
-        <div className="bg-white dark:bg-slate-950 p-5 rounded-2xl border border-slate-100 dark:border-slate-900 shadow-sm flex flex-col justify-between">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Closing Balance</span>
-          <div className="mt-2 flex items-baseline gap-1">
-            <span className="text-2xl font-bold text-slate-900 dark:text-white">{formatCurrency(stats.closing_balance)}</span>
-          </div>
-          <span className="text-[10px] text-slate-400 mt-2">Net balance at end of selected period</span>
-        </div>
+      {/* Sub-Tabs Navigation */}
+      <div className="flex border-b border-slate-100 dark:border-slate-800">
+        <button
+          onClick={() => setActiveSubTab("cashbook")}
+          className={`px-5 py-3 text-sm font-semibold border-b-2 transition-all duration-200 ${
+            activeSubTab === "cashbook"
+              ? "border-emerald-500 text-emerald-600 dark:text-emerald-400"
+              : "border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+          }`}
+        >
+          Company Cash Book
+        </button>
+        <button
+          onClick={() => setActiveSubTab("wallet")}
+          className={`px-5 py-3 text-sm font-semibold border-b-2 transition-all duration-200 ${
+            activeSubTab === "wallet"
+              ? "border-emerald-500 text-emerald-600 dark:text-emerald-400"
+              : "border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+          }`}
+        >
+          Factory Expense Wallet Ledger
+        </button>
       </div>
 
-      {/* Monthly/Yearly In-Out Widgets */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl border border-slate-100 dark:border-slate-950 flex justify-between items-center text-sm">
-          <div>
-            <span className="text-slate-400 block font-medium">This Month’s Flow</span>
-            <span className="font-bold text-slate-800 dark:text-slate-200 mt-1 block">
-              In: <span className="text-emerald-500">+{formatCurrency(stats.monthly_in)}</span> | Out: <span className="text-rose-500">-{formatCurrency(stats.monthly_out)}</span>
+      {activeSubTab === "wallet" ? (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Available Wallet Balance */}
+          <div className="bg-white dark:bg-slate-950 p-5 rounded-2xl border border-slate-100 dark:border-slate-900 shadow-sm flex flex-col justify-between">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Available Wallet Balance</span>
+            <div className="mt-2 flex items-baseline gap-1">
+              <span className="text-2xl font-bold text-slate-900 dark:text-white">{formatCurrency(walletBalance)}</span>
+            </div>
+            <span className="text-[10px] text-slate-400 mt-2 flex items-center gap-1">
+              <Landmark className="h-3.5 w-3.5 text-emerald-500" /> Current funds held by Factory Manager
             </span>
           </div>
-          <div className="text-right text-xs text-slate-400">
-            Net: <span className={stats.monthly_in - stats.monthly_out >= 0 ? "text-emerald-500 font-bold" : "text-rose-500 font-bold"}>
-              {formatCurrency(stats.monthly_in - stats.monthly_out)}
-            </span>
+          
+          {/* Total Funding Injected */}
+          <div className="bg-white dark:bg-slate-950 p-5 rounded-2xl border border-slate-100 dark:border-slate-900 shadow-sm flex flex-col justify-between">
+            <span className="text-xs font-semibold text-emerald-500 uppercase tracking-wider">Total Funding Injected</span>
+            <div className="mt-2">
+              <span className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
+                {formatCurrency(walletHistory.reduce((acc, t) => acc + (t.money_added || 0), 0))}
+              </span>
+            </div>
+            <span className="text-[10px] text-slate-400 mt-2">Cumulative owner investments</span>
+          </div>
+
+          {/* Total Expenses Deducted */}
+          <div className="bg-white dark:bg-slate-950 p-5 rounded-2xl border border-slate-100 dark:border-slate-900 shadow-sm flex flex-col justify-between">
+            <span className="text-xs font-semibold text-rose-500 uppercase tracking-wider">Total Expenses Deducted</span>
+            <div className="mt-2">
+              <span className="text-2xl font-bold text-rose-600 dark:text-rose-400">
+                {formatCurrency(walletHistory.reduce((acc, t) => acc + (t.expense_deducted || 0), 0))}
+              </span>
+            </div>
+            <span className="text-[10px] text-slate-400 mt-2">Cumulative wallet withdrawals</span>
           </div>
         </div>
+      ) : (
+        <>
+          {/* Stats Summary Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+            {/* Available Balance */}
+            <div className="bg-white dark:bg-slate-950 p-5 rounded-2xl border border-slate-100 dark:border-slate-900 shadow-sm flex flex-col justify-between">
+              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Available Balance</span>
+              <div className="mt-2 flex items-baseline gap-1">
+                <span className="text-2xl font-bold text-slate-900 dark:text-white">{formatCurrency(stats.available_balance)}</span>
+              </div>
+              <span className="text-[10px] text-slate-400 mt-2">Combined net of all active transactions</span>
+            </div>
 
-        <div className="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl border border-slate-100 dark:border-slate-950 flex justify-between items-center text-sm">
-          <div>
-            <span className="text-slate-400 block font-medium">This Year’s Flow</span>
-            <span className="font-bold text-slate-800 dark:text-slate-200 mt-1 block">
-              In: <span className="text-emerald-500">+{formatCurrency(stats.yearly_in)}</span> | Out: <span className="text-rose-500">-{formatCurrency(stats.yearly_out)}</span>
-            </span>
+            {/* Opening Balance */}
+            <div className="bg-white dark:bg-slate-950 p-5 rounded-2xl border border-slate-100 dark:border-slate-900 shadow-sm flex flex-col justify-between">
+              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Opening Balance</span>
+              <div className="mt-2 flex items-baseline gap-1">
+                <span className="text-2xl font-bold text-slate-900 dark:text-white">{formatCurrency(stats.opening_balance)}</span>
+              </div>
+              <span className="text-[10px] text-slate-400 mt-2">Balance before selected start date</span>
+            </div>
+
+            {/* Period Money IN */}
+            <div className="bg-white dark:bg-slate-950 p-5 rounded-2xl border border-slate-100 dark:border-slate-900 shadow-sm flex flex-col justify-between">
+              <span className="text-xs font-semibold text-emerald-500 dark:text-emerald-400 uppercase tracking-wider flex items-center gap-1">
+                <ArrowUpRight className="h-3 w-3" /> Money IN
+              </span>
+              <div className="mt-2">
+                <span className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">+{formatCurrency(stats.period_in)}</span>
+              </div>
+              <span className="text-[10px] text-slate-400 mt-2">Total inflows during period</span>
+            </div>
+
+            {/* Period Money OUT */}
+            <div className="bg-white dark:bg-slate-950 p-5 rounded-2xl border border-slate-100 dark:border-slate-900 shadow-sm flex flex-col justify-between">
+              <span className="text-xs font-semibold text-rose-500 uppercase tracking-wider flex items-center gap-1">
+                <ArrowDownRight className="h-3 w-3" /> Money OUT
+              </span>
+              <div className="mt-2">
+                <span className="text-2xl font-bold text-rose-600">-{formatCurrency(stats.period_out)}</span>
+              </div>
+              <span className="text-[10px] text-slate-400 mt-2">Total outflows during period</span>
+            </div>
+
+            {/* Closing Balance */}
+            <div className="bg-white dark:bg-slate-950 p-5 rounded-2xl border border-slate-100 dark:border-slate-900 shadow-sm flex flex-col justify-between">
+              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Closing Balance</span>
+              <div className="mt-2 flex items-baseline gap-1">
+                <span className="text-2xl font-bold text-slate-900 dark:text-white">{formatCurrency(stats.closing_balance)}</span>
+              </div>
+              <span className="text-[10px] text-slate-400 mt-2">Net balance at end of selected period</span>
+            </div>
           </div>
-          <div className="text-right text-xs text-slate-400">
-            Net: <span className={stats.yearly_in - stats.yearly_out >= 0 ? "text-emerald-500 font-bold" : "text-rose-500 font-bold"}>
-              {formatCurrency(stats.yearly_in - stats.yearly_out)}
-            </span>
+
+          {/* Monthly/Yearly In-Out Widgets */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl border border-slate-100 dark:border-slate-950 flex justify-between items-center text-sm">
+              <div>
+                <span className="text-slate-400 block font-medium">This Month’s Flow</span>
+                <span className="font-bold text-slate-800 dark:text-slate-200 mt-1 block">
+                  In: <span className="text-emerald-500">+{formatCurrency(stats.monthly_in)}</span> | Out: <span className="text-rose-500">-{formatCurrency(stats.monthly_out)}</span>
+                </span>
+              </div>
+              <div className="text-right text-xs text-slate-400">
+                Net: <span className={stats.monthly_in - stats.monthly_out >= 0 ? "text-emerald-500 font-bold" : "text-rose-500 font-bold"}>
+                  {formatCurrency(stats.monthly_in - stats.monthly_out)}
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl border border-slate-100 dark:border-slate-950 flex justify-between items-center text-sm">
+              <div>
+                <span className="text-slate-400 block font-medium">This Year’s Flow</span>
+                <span className="font-bold text-slate-800 dark:text-slate-200 mt-1 block">
+                  In: <span className="text-emerald-500">+{formatCurrency(stats.yearly_in)}</span> | Out: <span className="text-rose-500">-{formatCurrency(stats.yearly_out)}</span>
+                </span>
+              </div>
+              <div className="text-right text-xs text-slate-400">
+                Net: <span className={stats.yearly_in - stats.yearly_out >= 0 ? "text-emerald-500 font-bold" : "text-rose-500 font-bold"}>
+                  {formatCurrency(stats.yearly_in - stats.yearly_out)}
+                </span>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
+        </>
+      )}
 
-      {/* Filters & Export Control Panel */}
-      <div className="bg-white dark:bg-slate-950 p-4 rounded-2xl border border-slate-100 dark:border-slate-900 flex flex-col gap-4">
-        <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
-          {/* Start Date */}
-          <div className="relative">
-            <Calendar className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="pl-9 pr-3 py-2 w-full text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
-              placeholder="Start Date"
-            />
-          </div>
+      {activeSubTab === "cashbook" && (
+        /* Filters & Export Control Panel */
+        <div className="bg-white dark:bg-slate-950 p-4 rounded-2xl border border-slate-100 dark:border-slate-900 flex flex-col gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+            {/* Start Date */}
+            <div className="relative">
+              <Calendar className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="pl-9 pr-3 py-2 w-full text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+                placeholder="Start Date"
+              />
+            </div>
 
-          {/* End Date */}
-          <div className="relative">
-            <Calendar className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="pl-9 pr-3 py-2 w-full text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
-              placeholder="End Date"
-            />
-          </div>
+            {/* End Date */}
+            <div className="relative">
+              <Calendar className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="pl-9 pr-3 py-2 w-full text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+                placeholder="End Date"
+              />
+            </div>
 
-          {/* Transaction Type */}
-          <select
-            value={txnType}
-            onChange={(e) => setTxnType(e.target.value)}
-            className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
-          >
-            <option value="">All Types (IN & OUT)</option>
-            <option value="IN">Money IN</option>
-            <option value="OUT">Money OUT</option>
-          </select>
-
-          {/* Category */}
-          <select
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
-          >
-            <option value="">All Categories</option>
-            <option value="Owner Investment">Owner Investment</option>
-            <option value="Direct Sales">Direct Sales</option>
-            <option value="Client Payment">Client Payment</option>
-            <option value="Advance Payment">Advance Payment</option>
-            <option value="Fuel">Fuel / Petrol</option>
-            <option value="Food">Food / Meals</option>
-            <option value="Transport">Transport / Logistics</option>
-            <option value="Office Expense">Office Expense</option>
-            <option value="Material Purchase">Material Purchase</option>
-            <option value="Salary">Salary Payouts</option>
-            <option value="Cash Returned">Cash Returned</option>
-            <option value="Miscellaneous">Miscellaneous</option>
-          </select>
-
-          {/* Payment Method */}
-          <select
-            value={paymentMethod}
-            onChange={(e) => setPaymentMethod(e.target.value)}
-            className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
-          >
-            <option value="">All Payment Methods</option>
-            <option value="Cash">Cash</option>
-            <option value="UPI">UPI / GPay</option>
-            <option value="Bank">Bank Transfer / NEFT</option>
-            <option value="Cheque">Cheque</option>
-          </select>
-
-          {/* Search */}
-          <div className="relative">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-9 pr-3 py-2 w-full text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
-              placeholder="Search reference/remarks..."
-            />
-          </div>
-        </div>
-
-        <div className="flex justify-between items-center border-t border-slate-100 dark:border-slate-900 pt-3">
-          <button
-            onClick={() => {
-              setStartDate("");
-              setEndDate("");
-              setCategory("");
-              setPaymentMethod("");
-              setSearch("");
-              setTxnType("");
-            }}
-            className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 font-medium"
-          >
-            Clear Filters
-          </button>
-
-          <div className="flex gap-2">
-            <button
-              onClick={() => handleExport("excel")}
-              className="border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-950 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 text-emerald-600"
+            {/* Transaction Type */}
+            <select
+              value={txnType}
+              onChange={(e) => setTxnType(e.target.value)}
+              className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
             >
-              <FileSpreadsheet className="h-3.5 w-3.5" /> Excel
-            </button>
-            <button
-              onClick={() => handleExport("pdf")}
-              className="border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-950 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 text-rose-600"
+              <option value="">All Types (IN & OUT)</option>
+              <option value="IN">Money IN</option>
+              <option value="OUT">Money OUT</option>
+            </select>
+
+            {/* Category */}
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
             >
-              <FileText className="h-3.5 w-3.5" /> PDF
-            </button>
-            <button
-              onClick={() => handleExport("csv")}
-              className="border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-950 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 text-slate-600 dark:text-slate-400"
+              <option value="">All Categories</option>
+              <option value="Owner Investment">Owner Investment</option>
+              <option value="Direct Sales">Direct Sales</option>
+              <option value="Client Payment">Client Payment</option>
+              <option value="Advance Payment">Advance Payment</option>
+              <option value="Fuel">Fuel / Petrol</option>
+              <option value="Food">Food / Meals</option>
+              <option value="Transport">Transport / Logistics</option>
+              <option value="Office Expense">Office Expense</option>
+              <option value="Material Purchase">Material Purchase</option>
+              <option value="Salary">Salary Payouts</option>
+              <option value="Cash Returned">Cash Returned</option>
+              <option value="Miscellaneous">Miscellaneous</option>
+            </select>
+
+            {/* Payment Method */}
+            <select
+              value={paymentMethod}
+              onChange={(e) => setPaymentMethod(e.target.value)}
+              className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
             >
-              <FileDown className="h-3.5 w-3.5" /> CSV
+              <option value="">All Payment Methods</option>
+              <option value="Cash">Cash</option>
+              <option value="UPI">UPI / GPay</option>
+              <option value="Bank">Bank Transfer / NEFT</option>
+              <option value="Cheque">Cheque</option>
+            </select>
+
+            {/* Search */}
+            <div className="relative">
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="pl-9 pr-3 py-2 w-full text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+                placeholder="Search reference/remarks..."
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-between items-center border-t border-slate-100 dark:border-slate-900 pt-3">
+            <button
+              onClick={() => {
+                setStartDate("");
+                setEndDate("");
+                setCategory("");
+                setPaymentMethod("");
+                setSearch("");
+                setTxnType("");
+              }}
+              className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 font-medium"
+            >
+              Clear Filters
             </button>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => handleExport("excel")}
+                className="border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-950 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 text-emerald-600"
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5" /> Excel
+              </button>
+              <button
+                onClick={() => handleExport("pdf")}
+                className="border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-950 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 text-rose-600"
+              >
+                <FileText className="h-3.5 w-3.5" /> PDF
+              </button>
+              <button
+                onClick={() => handleExport("csv")}
+                className="border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-950 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 text-slate-600 dark:text-slate-400"
+              >
+                <FileDown className="h-3.5 w-3.5" /> CSV
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Ledger Grid Table */}
       <div className="bg-white dark:bg-slate-950 border border-slate-100 dark:border-slate-900 rounded-2xl shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-sm">
-            <thead>
-              <tr className="bg-slate-50 dark:bg-slate-900 text-slate-500 font-semibold border-b dark:border-slate-950">
-                <th className="p-4">Transaction ID</th>
-                <th className="p-4">Date</th>
-                <th className="p-4">Flow Type</th>
-                <th className="p-4">Category</th>
-                <th className="p-4">Origin / Reference</th>
-                <th className="p-4">Method</th>
-                <th className="p-4 text-right">Amount</th>
-                <th className="p-4 text-right">Running Balance</th>
-                <th className="p-4 text-center">Receipt</th>
-                <th className="p-4 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={10} className="p-8 text-center text-slate-400">
-                    <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-slate-300" />
-                    Loading capital ledger records...
-                  </td>
-                </tr>
-              ) : entries.length === 0 ? (
-                <tr>
-                  <td colSpan={10} className="p-8 text-center text-slate-400">
-                    No transactions found for the selected criteria.
-                  </td>
-                </tr>
-              ) : (
-                entries.map((t) => (
-                  <tr key={t.id} className="border-b dark:border-slate-900 hover:bg-slate-50/50 dark:hover:bg-slate-950/50 transition-colors">
-                    <td className="p-4 font-mono text-xs text-slate-600 dark:text-slate-400">{t.transaction_id}</td>
-                    <td className="p-4 text-slate-700 dark:text-slate-300 font-medium">{t.date}</td>
-                    <td className="p-4">
-                      <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-                        t.transaction_type === "IN" 
-                          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400"
-                          : "bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-400"
-                      }`}>
-                        {t.transaction_type === "IN" ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
-                        {t.transaction_type}
-                      </span>
-                    </td>
-                    <td className="p-4 font-semibold text-slate-800 dark:text-slate-200">{t.category}</td>
-                    <td className="p-4 text-xs text-slate-500 dark:text-slate-400">
-                      <div className="font-semibold">{formatTxnId(t.transaction_id, t.reference_type)}</div>
-                      <div className="opacity-75">{t.reference_number || "Direct"}</div>
-                    </td>
-                    <td className="p-4 font-medium">{t.payment_method}</td>
-                    <td className={`p-4 text-right font-bold ${t.transaction_type === "IN" ? "text-emerald-600" : "text-rose-600"}`}>
-                      {t.transaction_type === "IN" ? "+" : "-"}{formatCurrency(t.amount)}
-                    </td>
-                    <td className="p-4 text-right font-bold text-slate-900 dark:text-white">
-                      {formatCurrency(t.running_balance)}
-                    </td>
-                    <td className="p-4 text-center">
-                      {t.attachment_url ? (
-                        <a
-                          href={t.attachment_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-emerald-500 hover:text-emerald-600 inline-flex items-center justify-center p-1 border border-slate-100 rounded-md shadow-sm dark:border-slate-900"
-                          title="View receipt attachment"
-                        >
-                          <Paperclip className="h-3.5 w-3.5" />
-                        </a>
-                      ) : (
-                        <span className="text-slate-300 dark:text-slate-800 text-xs">-</span>
-                      )}
-                    </td>
-                    <td className="p-4 text-right">
-                      {t.reference_type === "direct_txn" && ["admin", "super_admin"].includes(role) ? (
-                        <div className="flex justify-end gap-1.5">
-                          <button
-                            onClick={() => handleEditClick(t)}
-                            className="p-1.5 text-slate-400 hover:text-emerald-500 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-md transition-colors"
-                          >
-                            <Edit3 className="h-4 w-4" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteTransaction(t.id)}
-                            className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-md transition-colors"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        </div>
-                      ) : (
-                        <span className="text-[10px] text-slate-400 italic">Automatic Sync</span>
-                      )}
-                    </td>
+            {activeSubTab === "wallet" ? (
+              <>
+                <thead>
+                  <tr className="bg-slate-50 dark:bg-slate-900 text-slate-500 font-semibold border-b dark:border-slate-950">
+                    <th className="p-4">Transaction ID</th>
+                    <th className="p-4">Date</th>
+                    <th className="p-4">Type</th>
+                    <th className="p-4">Remarks</th>
+                    <th className="p-4">Reference</th>
+                    <th className="p-4">User</th>
+                    <th className="p-4">Approved By</th>
+                    <th className="p-4 text-right">Money Added</th>
+                    <th className="p-4 text-right">Expense Deducted</th>
+                    <th className="p-4 text-right">Running Balance</th>
+                    <th className="p-4">Timestamp</th>
                   </tr>
-                ))
-              )}
-            </tbody>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr>
+                      <td colSpan={11} className="p-8 text-center text-slate-400">
+                        <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-slate-300" />
+                        Loading wallet transaction ledger...
+                      </td>
+                    </tr>
+                  ) : walletHistory.length === 0 ? (
+                    <tr>
+                      <td colSpan={11} className="p-8 text-center text-slate-400">
+                        No wallet transactions found.
+                      </td>
+                    </tr>
+                  ) : (
+                    walletHistory.map((t) => (
+                      <tr key={t.id} className="border-b dark:border-slate-900 hover:bg-slate-50/50 dark:hover:bg-slate-950/50 transition-colors">
+                        <td className="p-4 font-mono text-xs text-slate-600 dark:text-slate-400">{t.transaction_id}</td>
+                        <td className="p-4 text-slate-700 dark:text-slate-300 font-medium">{t.date}</td>
+                        <td className="p-4">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${
+                            t.transaction_type === "FUND_ADDED"
+                              ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
+                              : t.transaction_type === "EXPENSE_DEDUCTED"
+                              ? "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400"
+                              : t.transaction_type === "EXPENSE_REVERTED"
+                              ? "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
+                              : "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400"
+                          }`}>
+                            {t.transaction_type.replace("_", " ")}
+                          </span>
+                        </td>
+                        <td className="p-4 text-xs text-slate-600 dark:text-slate-400 max-w-[200px] truncate" title={t.remarks}>
+                          {t.remarks}
+                        </td>
+                        <td className="p-4 text-xs text-slate-500 font-mono">
+                          {t.reference_type ? `${t.reference_type}: ${t.reference_id?.slice(0, 8)}...` : "N/A"}
+                        </td>
+                        <td className="p-4 text-xs font-medium text-slate-700 dark:text-slate-300">
+                          {t.user?.name || "System"}
+                        </td>
+                        <td className="p-4 text-xs text-slate-500">
+                          {t.approver?.name || "-"}
+                        </td>
+                        <td className="p-4 text-right text-emerald-600 dark:text-emerald-400 font-semibold">
+                          {t.money_added > 0 ? `+${formatCurrency(t.money_added)}` : "-"}
+                        </td>
+                        <td className="p-4 text-right text-rose-600 dark:text-rose-400 font-semibold">
+                          {t.expense_deducted > 0 ? `-${formatCurrency(t.expense_deducted)}` : "-"}
+                        </td>
+                        <td className="p-4 text-right text-slate-900 dark:text-white font-bold">
+                          {formatCurrency(t.running_balance)}
+                        </td>
+                        <td className="p-4 text-xs text-slate-400 font-mono">
+                          {new Date(t.created_at).toLocaleString()}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </>
+            ) : (
+              <>
+                <thead>
+                  <tr className="bg-slate-50 dark:bg-slate-900 text-slate-500 font-semibold border-b dark:border-slate-950">
+                    <th className="p-4">Transaction ID</th>
+                    <th className="p-4">Date</th>
+                    <th className="p-4">Flow Type</th>
+                    <th className="p-4">Category</th>
+                    <th className="p-4">Origin / Reference</th>
+                    <th className="p-4">Method</th>
+                    <th className="p-4 text-right">Amount</th>
+                    <th className="p-4 text-right">Running Balance</th>
+                    <th className="p-4 text-center">Receipt</th>
+                    <th className="p-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr>
+                      <td colSpan={10} className="p-8 text-center text-slate-400">
+                        <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-slate-300" />
+                        Loading capital ledger records...
+                      </td>
+                    </tr>
+                  ) : entries.length === 0 ? (
+                    <tr>
+                      <td colSpan={10} className="p-8 text-center text-slate-400">
+                        No transactions found for the selected criteria.
+                      </td>
+                    </tr>
+                  ) : (
+                    entries.map((t) => (
+                      <tr key={t.id} className="border-b dark:border-slate-900 hover:bg-slate-50/50 dark:hover:bg-slate-950/50 transition-colors">
+                        <td className="p-4 font-mono text-xs text-slate-600 dark:text-slate-400">{t.transaction_id}</td>
+                        <td className="p-4 text-slate-700 dark:text-slate-300 font-medium">{t.date}</td>
+                        <td className="p-4">
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                            t.transaction_type === "IN" 
+                              ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400"
+                              : "bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-400"
+                          }`}>
+                            {t.transaction_type === "IN" ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
+                            {t.transaction_type}
+                          </span>
+                        </td>
+                        <td className="p-4 font-semibold text-slate-800 dark:text-slate-200">{t.category}</td>
+                        <td className="p-4 text-xs text-slate-500 dark:text-slate-400">
+                          <div className="font-semibold">{formatTxnId(t.transaction_id, t.reference_type)}</div>
+                          <div className="opacity-75">{t.reference_number || "Direct"}</div>
+                        </td>
+                        <td className="p-4 font-medium">{t.payment_method}</td>
+                        <td className={`p-4 text-right font-bold ${t.transaction_type === "IN" ? "text-emerald-600" : "text-rose-600"}`}>
+                          {t.transaction_type === "IN" ? "+" : "-"}{formatCurrency(t.amount)}
+                        </td>
+                        <td className="p-4 text-right font-bold text-slate-900 dark:text-white">
+                          {formatCurrency(t.running_balance)}
+                        </td>
+                        <td className="p-4 text-center">
+                          {t.attachment_url ? (
+                            <a
+                              href={t.attachment_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-emerald-500 hover:text-emerald-600 inline-flex items-center justify-center p-1 border border-slate-100 rounded-md shadow-sm dark:border-slate-900"
+                              title="View receipt attachment"
+                            >
+                              <Paperclip className="h-3.5 w-3.5" />
+                            </a>
+                          ) : (
+                            <span className="text-slate-300 dark:text-slate-800 text-xs">-</span>
+                          )}
+                        </td>
+                        <td className="p-4 text-right">
+                          {t.reference_type === "direct_txn" && ["admin", "super_admin"].includes(role) ? (
+                            <div className="flex justify-end gap-1.5">
+                              <button
+                                onClick={() => handleEditClick(t)}
+                                className="p-1.5 text-slate-400 hover:text-emerald-500 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-md transition-colors"
+                              >
+                                <Edit3 className="h-4 w-4" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteTransaction(t.id)}
+                                className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-md transition-colors"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-slate-400 font-mono">Synced</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </>
+            )}
           </table>
         </div>
       </div>

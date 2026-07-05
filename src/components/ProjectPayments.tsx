@@ -110,10 +110,6 @@ export default function ProjectPayments({ token, role }: ProjectPaymentsProps) {
       showToast("Please select a client.", "error");
       return;
     }
-    if (form.receipt_type === "Project Payment" && !form.project_id) {
-      showToast("A project must be selected for Project Payment types.", "error");
-      return;
-    }
     if (!form.received_amount || parseFloat(form.received_amount) <= 0) {
       showToast("Please enter a valid received amount.", "error");
       return;
@@ -254,9 +250,11 @@ export default function ProjectPayments({ token, role }: ProjectPaymentsProps) {
           className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
         >
           <option value="">All Receipt Types</option>
+          <option value="Advance Payment">Advance Payment</option>
           <option value="Project Payment">Project Payment</option>
-          <option value="Advance">Advance</option>
-          <option value="Direct">Direct Sale / Payment</option>
+          <option value="Direct Payment">Direct Payment</option>
+          <option value="Partial Payment">Partial Payment</option>
+          <option value="Misc Client Payment">Misc Client Payment</option>
         </select>
 
         {/* Search */}
@@ -314,10 +312,14 @@ export default function ProjectPayments({ token, role }: ProjectPaymentsProps) {
                     </td>
                     <td className="p-4">
                       <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ${
-                        p.receipt_type === "Advance"
+                        p.receipt_type === "Advance Payment"
                           ? "bg-purple-50 text-purple-700 dark:bg-purple-950/30 dark:text-purple-400"
-                          : p.receipt_type === "Direct"
+                          : p.receipt_type === "Direct Payment"
                           ? "bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400"
+                          : p.receipt_type === "Partial Payment"
+                          ? "bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+                          : p.receipt_type === "Misc Client Payment"
+                          ? "bg-slate-50 text-slate-700 dark:bg-slate-950/30 dark:text-slate-400"
                           : "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400"
                       }`}>
                         {p.receipt_type || "Project Payment"}
@@ -376,9 +378,11 @@ export default function ProjectPayments({ token, role }: ProjectPaymentsProps) {
                     onChange={(e) => setForm({ ...form, receipt_type: e.target.value })}
                     className="w-full text-sm border rounded-lg p-2.5 focus:outline-none dark:bg-slate-900 dark:border-slate-800"
                   >
-                    <option value="Project Payment">Project Payment (linked to Milestone)</option>
-                    <option value="Advance">Client Advance (Project pre-funding)</option>
-                    <option value="Direct">Direct Payment (Retail or Direct Sale)</option>
+                    <option value="Project Payment">Project Payment</option>
+                    <option value="Advance Payment">Advance Payment</option>
+                    <option value="Direct Payment">Direct Payment</option>
+                    <option value="Partial Payment">Partial Payment</option>
+                    <option value="Misc Client Payment">Misc Client Payment</option>
                   </select>
                 </div>
 
@@ -400,13 +404,13 @@ export default function ProjectPayments({ token, role }: ProjectPaymentsProps) {
               </div>
 
               <div className="grid grid-cols-2 gap-4">
-                {/* Project Selection (Optional for Advance/Direct) */}
+                {/* Project Selection (Optional) */}
                 <div>
                   <label className="text-xs font-semibold text-slate-400 block mb-1">
-                    Linked Project {form.receipt_type === "Project Payment" ? "*" : "(Optional)"}
+                    Linked Project (Optional)
                   </label>
                   <select
-                    required={form.receipt_type === "Project Payment"}
+                    required={false}
                     value={form.project_id}
                     onChange={(e) => setForm({ ...form, project_id: e.target.value })}
                     className="w-full text-sm border rounded-lg p-2.5 focus:outline-none dark:bg-slate-900 dark:border-slate-800"

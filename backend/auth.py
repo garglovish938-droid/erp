@@ -97,15 +97,15 @@ class RoleChecker:
 ALL_ROLES = [
     "super_admin", "admin", "factory_manager", "project_manager", "inventory_manager",
     "purchase_manager", "hr_manager", "accounts_manager", "quality_inspector",
-    "store_assistant", "machine_operator", "carpenter", "worker", "manager", "store", "accountant", "operator"
+    "store_assistant", "machine_operator", "carpenter", "worker", "manager", "store", "accountant", "operator", "supervisor"
 ]
 
 require_super_admin = RoleChecker(["super_admin"])
 require_admin = RoleChecker(["admin", "super_admin"])
 require_admin_or_factory_manager = RoleChecker(["admin", "super_admin", "factory_manager"])
-require_project_edit_access = RoleChecker(["admin", "super_admin", "factory_manager", "project_manager", "manager"])
-require_manager_or_higher = RoleChecker(["admin", "super_admin", "factory_manager", "project_manager", "manager"])
+require_project_edit_access = RoleChecker(["admin", "super_admin", "factory_manager", "project_manager", "manager", "supervisor"])
+require_manager_or_higher = RoleChecker(["admin", "super_admin", "factory_manager", "project_manager", "manager", "supervisor"])
 require_store_or_higher = RoleChecker(["admin", "super_admin", "factory_manager", "inventory_manager", "store_assistant", "manager", "store"])
 require_accountant_or_higher = RoleChecker(["admin", "super_admin", "factory_manager", "accounts_manager", "accountant"])
-require_report_access = RoleChecker(["admin", "super_admin", "factory_manager", "project_manager", "inventory_manager", "purchase_manager", "hr_manager", "accounts_manager", "manager", "store", "accountant"])
+require_report_access = RoleChecker(["admin", "super_admin", "factory_manager", "project_manager", "inventory_manager", "purchase_manager", "hr_manager", "accounts_manager", "manager", "store", "accountant", "supervisor"])
 require_any_authenticated = RoleChecker(ALL_ROLES)

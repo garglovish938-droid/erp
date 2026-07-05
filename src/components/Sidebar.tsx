@@ -30,24 +30,24 @@ export default function Sidebar({
 }: SidebarProps) {
   // All known roles grouped
   const adminRoles = ["admin", "super_admin"];
-  const managerRoles = ["admin", "super_admin", "manager", "hr_manager", "factory_manager", "project_manager"];
+  const managerRoles = ["admin", "super_admin", "manager", "hr_manager", "factory_manager", "project_manager", "supervisor"];
   const storeRoles = ["admin", "super_admin", "manager", "store", "store_assistant", "inventory_manager"];
   const accountantRoles = ["admin", "super_admin", "manager", "accountant", "accounts_manager", "purchase_manager"];
   const workerRoles = ["admin", "super_admin", "manager", "store", "accountant", "worker", "operator", "carpenter",
     "hr_manager", "factory_manager", "project_manager", "inventory_manager",
-    "purchase_manager", "accounts_manager", "quality_inspector", "store_assistant", "machine_operator"];
+    "purchase_manager", "accounts_manager", "quality_inspector", "store_assistant", "machine_operator", "supervisor"];
 
   const allMenu = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, roles: workerRoles },
     { id: "inventory", label: "Inventory", icon: PackageSearch, roles: [...storeRoles, ...accountantRoles] },
-    { id: "requests", label: "Material Request", icon: ArrowLeftRight, roles: [...storeRoles, ...managerRoles] },
+    { id: "requests", label: "Material Request", icon: ArrowLeftRight, roles: [...storeRoles, ...managerRoles, "worker", "operator", "carpenter"] },
     { id: "purchasing", label: "Purchase Management", icon: ShoppingCart, roles: [...storeRoles, ...accountantRoles] },
     { id: "daily-expenses", label: "Daily Expenses", icon: Receipt, roles: workerRoles },
     { id: "factory-fund", label: "Cash Book & Ledger", icon: Landmark, roles: accountantRoles },
     { id: "project-payments", label: "Client Receipts", icon: IndianRupee, roles: accountantRoles },
     { id: "projects", label: "Projects", icon: FolderKanban, roles: [...managerRoles, "store", "worker", "operator", "carpenter", "quality_inspector", "machine_operator"] },
     { id: "attendance", label: "Attendance", icon: ClipboardCheck, roles: workerRoles },
-    { id: "team", label: "Employees", icon: Users, roles: workerRoles },
+    { id: "team", label: "Employees", icon: Users, roles: managerRoles },
     { id: "crm", label: "Clients", icon: Smile, roles: [...managerRoles, ...accountantRoles] },
     { id: "reports", label: "Reports", icon: FileText, roles: [...managerRoles, ...accountantRoles] },
     { id: "archive", label: "Archive Registry", icon: Archive, roles: managerRoles },

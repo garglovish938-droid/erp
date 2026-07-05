@@ -22,8 +22,8 @@ export default function MaterialRequests({ token, role }: { token: string; role:
   });
   const [submittingRequest, setSubmittingRequest] = useState(false);
 
-  const isManager = ["admin", "manager"].includes(role);
-  const isStore = ["admin", "store"].includes(role);
+  const isManager = ["admin", "super_admin", "manager", "factory_manager", "project_manager", "supervisor"].includes(role);
+  const isStore = ["admin", "super_admin", "store"].includes(role);
 
   const fetchRequests = async () => {
     try {

@@ -731,3 +731,33 @@ class CashBook(Base):
     user = relationship("User")
 
 
+class FactoryWallet(Base):
+    __tablename__ = "factory_wallet"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    balance = Column(Float, default=0.0, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class FactoryWalletTransaction(Base):
+    __tablename__ = "factory_wallet_transactions"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    transaction_id = Column(String(50), unique=True, index=True, nullable=False)
+    date = Column(Date, nullable=False, default=date.today, index=True)
+    transaction_type = Column(String(50), nullable=False, index=True)  # FUND_ADDED, EXPENSE_DEDUCTED, EXPENSE_REVERTED, EXPENSE_EDITED
+    money_added = Column(Float, default=0.0, nullable=False)
+    expense_deducted = Column(Float, default=0.0, nullable=False)
+    running_balance = Column(Float, default=0.0, nullable=False)
+    remarks = Column(Text, nullable=True)
+    reference_type = Column(String(50), nullable=True)  # factory_fund, daily_expense
+    reference_id = Column(String(36), nullable=True, index=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    approved_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    user = relationship("User", foreign_keys=[user_id])
+    approver = relationship("User", foreign_keys=[approved_by])
+
+
+

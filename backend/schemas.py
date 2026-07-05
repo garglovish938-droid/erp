@@ -1117,6 +1117,30 @@ class FactoryFundResponse(BaseSchema):
     user: Optional[UserResponse] = None
 
 
+class FactoryWalletBalanceResponse(BaseModel):
+    balance: float
+    updated_at: datetime
+
+
+class FactoryWalletTransactionResponse(BaseSchema):
+    id: str
+    transaction_id: str
+    date: date
+    transaction_type: str
+    money_added: float
+    expense_deducted: float
+    running_balance: float
+    remarks: Optional[str]
+    reference_type: Optional[str]
+    reference_id: Optional[str]
+    user_id: Optional[str]
+    approved_by: Optional[str]
+    created_at: datetime
+    user: Optional[UserResponse] = None
+    approver: Optional[UserResponse] = None
+
+
+
 class ProjectPaymentCreate(BaseModel):
     project_id: Optional[str] = None
     client_id: str
