@@ -3442,6 +3442,22 @@ def get_dashboard_charts(db: Session = Depends(get_db), current_user: User = Dep
     }
 
 
+@app.get("/api/debug-db")
+def debug_db(db: Session = Depends(get_db)):
+    txns = db.query(CashBook).filter(CashBook.transaction_id.like("%20260705%")).all()
+    out = []
+    for t in txns:
+        out.append({
+            "id": t.id,
+            "transaction_id": t.transaction_id,
+            "date": str(t.date),
+            "type": t.transaction_type,
+            "amount": t.amount,
+            "is_deleted": t.is_deleted
+        })
+    return out
+
+
 # --- BARCODE PDF GENERATOR ---
 @app.get("/api/inventory/{item_id}/barcode/pdf")
 def get_barcode_pdf(item_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
