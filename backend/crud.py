@@ -3635,11 +3635,33 @@ def get_entity_history(db: Session, entity_type: str, entity_id: str) -> List[Ve
         VersionHistory.entity_id == entity_id
     ).order_by(VersionHistory.version_num.desc()).all()
 
+def generate_next_transaction_id(db: Session, date_str: str) -> str:
+    prefix = f"TXN-{date_str}-"
+    candidates = db.query(CashBook.transaction_id).filter(CashBook.transaction_id.like(f"{prefix}%")).all()
+    max_idx = 0
+    for (tid,) in candidates:
+        if tid.startswith(prefix):
+            suffix = tid[len(prefix):]
+            digits = []
+            for char in suffix:
+                if char.isdigit():
+                    digits.append(char)
+                else:
+                    break
+            if digits:
+                try:
+                    idx = int("".join(digits))
+                    if idx > max_idx:
+                        max_idx = idx
+                except ValueError:
+                    pass
+    return f"TXN-{date_str}-{max_idx + 1:04d}"
+
+
 def create_cash_book_entry(db: Session, entry: CashBookCreate, added_by: Optional[str], ref_type: Optional[str] = None, ref_id: Optional[str] = None) -> CashBook:
     target_date = entry.date or date.today()
     date_str = target_date.strftime("%Y%m%d")
-    txn_count = db.query(func.count(CashBook.id)).filter(CashBook.date == target_date).scalar()
-    txn_id = f"TXN-{date_str}-{txn_count + 1:04d}"
+    txn_id = generate_next_transaction_id(db, date_str)
     
     db_entry = CashBook(
         transaction_id=txn_id,
@@ -3815,8 +3837,7 @@ def sync_cash_book_entry(db: Session, ref_type: str, ref_id: str, action: str = 
             if not db_out:
                 target_date = expense.expense_date or date.today()
                 date_str = target_date.strftime("%Y%m%d")
-                txn_count = db.query(func.count(CashBook.id)).filter(CashBook.date == target_date).scalar()
-                txn_id = f"TXN-{date_str}-{txn_count + 1:04d}"
+                txn_id = generate_next_transaction_id(db, date_str)
                 db_out = CashBook(
                     transaction_id=txn_id,
                     date=target_date,
@@ -3845,8 +3866,7 @@ def sync_cash_book_entry(db: Session, ref_type: str, ref_id: str, action: str = 
                 if not db_in:
                     target_date = expense.expense_date or date.today()
                     date_str = target_date.strftime("%Y%m%d")
-                    txn_count = db.query(func.count(CashBook.id)).filter(CashBook.date == target_date).scalar()
-                    txn_id = f"TXN-{date_str}-{txn_count + 1:04d}"
+                    txn_id = generate_next_transaction_id(db, date_str)
                     db_in = CashBook(
                         transaction_id=txn_id,
                         date=target_date,
@@ -3882,8 +3902,7 @@ def sync_cash_book_entry(db: Session, ref_type: str, ref_id: str, action: str = 
             if not db_entry:
                 target_date = expense.expense_date or date.today()
                 date_str = target_date.strftime("%Y%m%d")
-                txn_count = db.query(func.count(CashBook.id)).filter(CashBook.date == target_date).scalar()
-                txn_id = f"TXN-{date_str}-{txn_count + 1:04d}"
+                txn_id = generate_next_transaction_id(db, date_str)
                 db_entry = CashBook(
                     transaction_id=txn_id,
                     date=target_date,
@@ -3937,8 +3956,7 @@ def sync_cash_book_entry(db: Session, ref_type: str, ref_id: str, action: str = 
     else:
         target_date = txn_date or date.today()
         date_str = target_date.strftime("%Y%m%d")
-        txn_count = db.query(func.count(CashBook.id)).filter(CashBook.date == target_date).scalar()
-        txn_id = f"TXN-{date_str}-{txn_count + 1:04d}"
+        txn_id = generate_next_transaction_id(db, date_str)
         
         db_entry = CashBook(
             transaction_id=txn_id,
