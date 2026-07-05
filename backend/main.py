@@ -7344,7 +7344,7 @@ def get_factory_wallet_balance_api(wallet_id: Optional[str] = None, db: Session 
 def get_factory_wallet_history(wallet_id: Optional[str] = None, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
     if current_user.role in ["worker", "carpenter", "operator", "employee"]:
         raise HTTPException(status_code=403, detail="Employees cannot view the Factory Wallet history")
-    query = db.query(FactoryWalletTransaction).options(
+    query = db.query(FactoryWalletTransaction).filter(FactoryWalletTransaction.is_deleted == False).options(
         joinedload(FactoryWalletTransaction.user),
         joinedload(FactoryWalletTransaction.approver)
     )
@@ -7385,15 +7385,24 @@ def delete_factory_wallet_api(
     if not user or not auth.verify_password(password, user.password_hash):
         raise HTTPException(status_code=400, detail="Invalid confirmation password")
         
-    wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
+    wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id, FactoryWallet.is_deleted == False).first()
     if not wallet:
         raise HTTPException(status_code=404, detail="Wallet not found")
         
-    # Clean up linked records manually to guarantee portability across SQLite and PostgreSQL
-    db.query(FactoryWalletTransaction).filter(FactoryWalletTransaction.wallet_id == wallet_id).delete()
+    # Soft delete the wallet
+    wallet.is_deleted = True
+    wallet.deleted_at = datetime.utcnow()
+    wallet.deleted_by = current_user.id
+    
+    # Soft delete all linked transactions
+    db.query(FactoryWalletTransaction).filter(FactoryWalletTransaction.wallet_id == wallet_id).update({
+        "is_deleted": True,
+        "deleted_at": datetime.utcnow()
+    })
+    
+    # Unlink expenses
     db.query(DailyExpense).filter(DailyExpense.wallet_id == wallet_id).update({"wallet_id": None})
         
-    db.delete(wallet)
     db.commit()
     broadcast_sync({"event": "financial_change"})
     return {"message": "Wallet deleted successfully"}

@@ -3479,7 +3479,7 @@ def get_factory_funds(db: Session) -> List[FactoryFund]:
 
 def get_factory_financial_stats(db: Session) -> dict:
     today = date.today()
-    wallet_balance = db.query(func.sum(FactoryWallet.balance)).scalar() or 0.0
+    wallet_balance = db.query(func.sum(FactoryWallet.balance)).filter(FactoryWallet.is_deleted == False).scalar() or 0.0
     
     today_fund = db.query(func.sum(FactoryFund.amount)).filter(FactoryFund.date == today).scalar() or 0.0
     start_of_month = date(today.year, today.month, 1)
@@ -3629,10 +3629,10 @@ def generate_next_transaction_id(db: Session, date_str: str) -> str:
 
 
 def get_factory_wallets(db: Session) -> List[FactoryWallet]:
-    return db.query(FactoryWallet).order_by(FactoryWallet.created_at.desc()).all()
+    return db.query(FactoryWallet).filter(FactoryWallet.is_deleted == False).order_by(FactoryWallet.created_at.desc()).all()
 
 def get_factory_wallet(db: Session, wallet_id: str) -> Optional[FactoryWallet]:
-    return db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
+    return db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id, FactoryWallet.is_deleted == False).first()
 
 def recalculate_wallet_balance(db: Session, wallet_id: str) -> float:
     wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
