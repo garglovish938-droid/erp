@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator, model_validator
 from typing import Optional, List
-from datetime import datetime, date
+from datetime import datetime, date, date as dt_date
 
 # Generic Config for ORM serialization (Pydantic v2 style)
 class BaseSchema(BaseModel):
@@ -563,7 +563,7 @@ class StaffResponse(BaseSchema):
 # Attendance
 class AttendanceCreate(BaseModel):
     staff_id: str
-    date: date
+    date: dt_date
     status: str  # present, absent, leave
     check_in: Optional[str] = None
     check_out: Optional[str] = None
@@ -571,7 +571,7 @@ class AttendanceCreate(BaseModel):
 class AttendanceResponse(BaseSchema):
     id: str
     staff_id: str
-    date: date
+    date: dt_date
     status: str
     check_in: Optional[str]
     check_out: Optional[str]
@@ -1080,7 +1080,7 @@ class BulkActionRequest(BaseModel):
 
 
 class FactoryFundCreate(BaseModel):
-    date: Optional[date] = None
+    date: Optional[dt_date] = None
     amount: float
     payment_method: str
     reference_number: Optional[str] = None
@@ -1106,7 +1106,7 @@ class FactoryFundCreate(BaseModel):
 class FactoryFundResponse(BaseSchema):
     id: str
     fund_id: str
-    date: date
+    date: dt_date
     amount: float
     payment_method: str
     reference_number: Optional[str]
@@ -1125,7 +1125,7 @@ class FactoryWalletBalanceResponse(BaseModel):
 class FactoryWalletTransactionResponse(BaseSchema):
     id: str
     transaction_id: str
-    date: date
+    date: dt_date
     transaction_type: str
     money_added: float
     expense_deducted: float
@@ -1198,7 +1198,7 @@ class ProjectPaymentResponse(BaseSchema):
 
 
 class CashBookCreate(BaseModel):
-    date: Optional[date] = None
+    date: Optional[dt_date] = None
     transaction_type: str  # IN, OUT
     category: str
     amount: float
@@ -1218,7 +1218,7 @@ class CashBookCreate(BaseModel):
 class CashBookResponse(BaseSchema):
     id: str
     transaction_id: str
-    date: date
+    date: dt_date
     transaction_type: str
     category: str
     amount: float
