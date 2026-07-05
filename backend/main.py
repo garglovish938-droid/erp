@@ -11,7 +11,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Query, File, Upload
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 # Excel and PDF libraries
@@ -34,7 +34,7 @@ from models import (
     DailyExpense, LoginHistory, FactoryFund, ProjectPayment, CashBook,
     FactoryWallet, FactoryWalletTransaction
 )
-import crud, schemas, auth
+import crud, schemas, auth, models
 from collections import defaultdict
 import time
 
@@ -7368,6 +7368,36 @@ def update_factory_wallet_api(wallet_id: str, update: schemas.FactoryWalletUpdat
     if not db_wallet:
         raise HTTPException(status_code=404, detail="Wallet not found")
     return db_wallet
+
+
+@app.delete("/api/factory-wallet/{wallet_id}")
+def delete_factory_wallet_api(
+    wallet_id: str,
+    password: str = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    """Delete a factory wallet (Admins only, password required)."""
+    if wallet_id == "default":
+        raise HTTPException(status_code=400, detail="Cannot delete the default wallet")
+        
+    user = db.query(models.User).filter(models.User.id == current_user.id).first()
+    if not user or not auth.verify_password(password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Invalid confirmation password")
+        
+    wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
+    if not wallet:
+        raise HTTPException(status_code=404, detail="Wallet not found")
+        
+    # Clean up linked records manually to guarantee portability across SQLite and PostgreSQL
+    db.query(FactoryWalletTransaction).filter(FactoryWalletTransaction.wallet_id == wallet_id).delete()
+    db.query(DailyExpense).filter(DailyExpense.wallet_id == wallet_id).update({"wallet_id": None})
+        
+    db.delete(wallet)
+    db.commit()
+    broadcast_sync({"event": "financial_change"})
+    return {"message": "Wallet deleted successfully"}
+
 
 
 @app.get("/api/project-payments", response_model=List[schemas.ProjectPaymentResponse])

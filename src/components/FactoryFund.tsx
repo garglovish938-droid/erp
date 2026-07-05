@@ -46,6 +46,11 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
     activation_date: new Date().toISOString().split("T")[0]
   });
 
+  // Wallet Deletion Modal states
+  const [showDeleteWalletModal, setShowDeleteWalletModal] = useState(false);
+  const [deleteWalletPassword, setDeleteWalletPassword] = useState("");
+  const [deleteWalletConfirm, setDeleteWalletConfirm] = useState(false);
+
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -259,6 +264,52 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
     }
   };
 
+  const handleDeleteWallet = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (selectedWalletId === "all" || selectedWalletId === "default") {
+      showToast("Cannot delete this wallet.", "error");
+      return;
+    }
+    if (!deleteWalletConfirm) {
+      showToast("Please check the confirmation box.", "error");
+      return;
+    }
+    if (!deleteWalletPassword) {
+      showToast("Please enter your verification password.", "error");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const savedUser = localStorage.getItem("allure_erp_user");
+      const userToken = savedUser ? JSON.parse(savedUser).token : token;
+      
+      const res = await fetch(`${API_BASE_URL}/api/factory-wallet/${selectedWalletId}?password=${encodeURIComponent(deleteWalletPassword)}`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${userToken}`,
+          "Content-Type": "application/json"
+        }
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Failed to delete wallet");
+      }
+
+      showToast("Wallet deleted successfully!", "success");
+      setShowDeleteWalletModal(false);
+      setDeleteWalletPassword("");
+      setDeleteWalletConfirm(false);
+      setSelectedWalletId("all");
+      loadData();
+    } catch (err: any) {
+      showToast(err.message || "Failed to delete wallet.", "error");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleEditClick = (txn: any) => {
     setSelectedTxn(txn);
     setForm({
@@ -430,6 +481,15 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
                 <option key={w.id} value={w.id}>{w.name || w.id} (Bal: ₹{w.balance})</option>
               ))}
             </select>
+            {["admin", "super_admin"].includes(role) && selectedWalletId !== "all" && selectedWalletId !== "default" && (
+              <button
+                type="button"
+                onClick={() => setShowDeleteWalletModal(true)}
+                className="bg-rose-600 hover:bg-rose-700 text-white px-3.5 py-2 rounded-lg text-sm font-semibold transition-all duration-200 flex items-center gap-1.5 ml-2"
+              >
+                <Trash2 className="h-4 w-4" /> Delete Wallet
+              </button>
+            )}
           </div>
           {["admin", "super_admin"].includes(role) && (
             <button
@@ -1261,6 +1321,66 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
                   className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50"
                 >
                   {submitting ? "Creating..." : "Create Wallet"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showDeleteWalletModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-950 w-full max-w-md rounded-2xl shadow-xl border dark:border-slate-800 overflow-hidden">
+            <div className="flex justify-between items-center p-5 border-b dark:border-slate-800">
+              <h2 className="text-lg font-bold text-rose-600 dark:text-rose-400">Delete Factory Wallet</h2>
+              <button onClick={() => setShowDeleteWalletModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={handleDeleteWallet} className="p-6 space-y-4">
+              <p className="text-sm text-slate-500">
+                Are you sure you want to delete the selected wallet? All transaction logs linked to this wallet will be removed, and daily expenses linked to it will be unlinked.
+              </p>
+              
+              <div className="flex items-start gap-2 bg-rose-50 dark:bg-rose-950/20 p-3 rounded-xl border border-rose-100 dark:border-rose-900/40">
+                <input
+                  type="checkbox"
+                  id="confirmDeleteWalletCheckbox"
+                  checked={deleteWalletConfirm}
+                  onChange={(e) => setDeleteWalletConfirm(e.target.checked)}
+                  className="mt-1"
+                />
+                <label htmlFor="confirmDeleteWalletCheckbox" className="text-xs text-rose-700 dark:text-rose-400 font-semibold select-none">
+                  Double Confirmation: I explicitly confirm that I wish to permanently delete this wallet.
+                </label>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-400 block mb-1">Confirm Admin Password *</label>
+                <input
+                  type="password"
+                  required
+                  value={deleteWalletPassword}
+                  onChange={(e) => setDeleteWalletPassword(e.target.value)}
+                  className="w-full text-sm border rounded-lg p-2.5 focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+                  placeholder="••••••••"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteWalletModal(false)}
+                  className="border dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-900 px-4 py-2 rounded-lg text-sm font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting || !deleteWalletConfirm}
+                  className="bg-rose-600 hover:bg-rose-700 text-white px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50"
+                >
+                  {submitting ? "Deleting..." : "Confirm Delete"}
                 </button>
               </div>
             </form>
