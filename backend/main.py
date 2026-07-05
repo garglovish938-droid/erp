@@ -7177,54 +7177,58 @@ async def add_cash_book_entry(
     current_user: User = Depends(auth.require_admin)
 ):
     """Log a manual cash book transaction (owner injection, direct sale, petrol, etc. Admins only)."""
-    attachment_url = None
-    if file and file.filename:
-        ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
-        filename = f"cash_{uuid.uuid4().hex[:8]}.{ext}"
-        try:
-            contents = await file.read()
-            attachment_url = storage_provider.upload_file(
-                file_data=contents,
-                filename=filename,
-                bucket="documents",
-                mime_type=file.content_type or "application/octet-stream",
-                subpath="cash_book"
-            )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to upload attachment: {str(e)}")
+    try:
+        attachment_url = None
+        if file and file.filename:
+            ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
+            filename = f"cash_{uuid.uuid4().hex[:8]}.{ext}"
+            try:
+                contents = await file.read()
+                attachment_url = storage_provider.upload_file(
+                    file_data=contents,
+                    filename=filename,
+                    bucket="documents",
+                    mime_type=file.content_type or "application/octet-stream",
+                    subpath="cash_book"
+                )
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to upload attachment: {str(e)}")
 
-    if transaction_type.upper() == "IN" and category in ["Owner Investment", "Funding Injection"]:
-        # Route through Factory Expense Wallet logic
-        wallet_txn = crud.add_wallet_funds(
-            db=db,
+        if transaction_type.upper() == "IN" and category in ["Owner Investment", "Funding Injection"]:
+            # Route through Factory Expense Wallet logic
+            wallet_txn = crud.add_wallet_funds(
+                db=db,
+                amount=amount,
+                payment_method=payment_method or "Cash",
+                reference_number=reference_number,
+                remarks=remarks,
+                attachment_url=attachment_url,
+                user_id=current_user.id
+            )
+            # Fetch the synced CashBook entry to return it as CashBookResponse
+            db_entry = db.query(CashBook).filter(
+                CashBook.reference_type == "factory_fund",
+                CashBook.reference_id == wallet_txn.reference_id
+            ).first()
+            broadcast_sync({"event": "financial_change"})
+            return db_entry
+
+        entry_in = schemas.CashBookCreate(
+            date=date,
+            transaction_type=transaction_type,
+            category=category,
             amount=amount,
-            payment_method=payment_method or "Cash",
+            payment_method=payment_method,
             reference_number=reference_number,
             remarks=remarks,
-            attachment_url=attachment_url,
-            user_id=current_user.id
+            attachment_url=attachment_url
         )
-        # Fetch the synced CashBook entry to return it as CashBookResponse
-        db_entry = db.query(CashBook).filter(
-            CashBook.reference_type == "factory_fund",
-            CashBook.reference_id == wallet_txn.reference_id
-        ).first()
+        db_entry = crud.create_cash_book_entry(db, entry_in, current_user.id, ref_type="direct_txn")
         broadcast_sync({"event": "financial_change"})
         return db_entry
-
-    entry_in = schemas.CashBookCreate(
-        date=date,
-        transaction_type=transaction_type,
-        category=category,
-        amount=amount,
-        payment_method=payment_method,
-        reference_number=reference_number,
-        remarks=remarks,
-        attachment_url=attachment_url
-    )
-    db_entry = crud.create_cash_book_entry(db, entry_in, current_user.id, ref_type="direct_txn")
-    broadcast_sync({"event": "financial_change"})
-    return db_entry
+    except Exception as e:
+        import traceback
+        raise HTTPException(status_code=400, detail=f"TRACEBACK: {traceback.format_exc()}")
 
 
 @app.put("/api/cash-book/{txn_id}", response_model=schemas.CashBookResponse)
