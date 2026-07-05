@@ -3443,6 +3443,66 @@ def get_dashboard_charts(db: Session = Depends(get_db), current_user: User = Dep
     }
 
 
+@app.get("/api/debug/charts-error")
+def debug_charts_error(db: Session = Depends(get_db)):
+    import traceback
+    try:
+        # Weekly movement
+        weekly_movement = []
+        for i in range(6, -1, -1):
+            day = datetime.utcnow().date() - timedelta(days=i)
+            start_datetime = datetime(day.year, day.month, day.day, 0, 0, 0)
+            end_datetime = datetime(day.year, day.month, day.day, 23, 59, 59)
+            received = db.query(func.sum(StockTransaction.quantity)).filter(
+                StockTransaction.created_at >= start_datetime,
+                StockTransaction.created_at <= end_datetime,
+                StockTransaction.transaction_type.in_(["in", "return", "adjustment"])
+            ).scalar() or 0.0
+            issued = db.query(func.sum(StockTransaction.quantity)).filter(
+                StockTransaction.created_at >= start_datetime,
+                StockTransaction.created_at <= end_datetime,
+                StockTransaction.transaction_type.in_(["out", "damaged", "transfer"])
+            ).scalar() or 0.0
+
+        # Categories
+        categories = db.query(Category).filter(Category.is_deleted == False).all()
+        for cat in categories:
+            count = db.query(InventoryItem).filter(
+                InventoryItem.category_id == cat.id,
+                InventoryItem.is_deleted == False
+            ).count()
+
+        # Monthly purchases
+        for i in range(5, -1, -1):
+            today = datetime.utcnow().date()
+            target_year = today.year
+            target_month_num = today.month - i
+            while target_month_num <= 0:
+                target_month_num += 12
+                target_year -= 1
+            start_datetime = datetime(target_year, target_month_num, 1, 0, 0, 0)
+            if target_month_num == 12:
+                end_datetime = datetime(target_year + 1, 1, 1, 0, 0, 0)
+            else:
+                end_datetime = datetime(target_year, target_month_num + 1, 1, 0, 0, 0)
+            total_cost = db.query(func.sum(PurchaseOrder.total_cost)).filter(
+                PurchaseOrder.created_at >= start_datetime,
+                PurchaseOrder.created_at < end_datetime,
+                PurchaseOrder.is_deleted == False
+            ).scalar() or 0.0
+
+        # Suppliers
+        suppliers = db.query(Supplier).filter(Supplier.is_deleted == False).all()
+        for sup in suppliers:
+            pos_count = db.query(PurchaseOrder).filter(
+                PurchaseOrder.supplier_id == sup.id,
+                PurchaseOrder.is_deleted == False
+            ).count()
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+
 # --- BARCODE PDF GENERATOR ---
 @app.get("/api/inventory/{item_id}/barcode/pdf")
 def get_barcode_pdf(item_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
