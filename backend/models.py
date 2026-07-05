@@ -598,9 +598,16 @@ class DailyExpense(Base):
     approved_at = Column(DateTime, nullable=True)
     supervisor_comment = Column(Text, nullable=True)
 
+    # Wallet integration
+    wallet_id = Column(String(36), ForeignKey("factory_wallet.id", ondelete="SET NULL"), nullable=True, index=True)
+    wallet_linked = Column(Boolean, default=False, nullable=False)
+    linked_date = Column(Date, nullable=True)
+    transaction_source = Column(String(50), nullable=True)
+
     project = relationship("Project")
     creator = relationship("User", foreign_keys=[created_by])
     approver = relationship("User", foreign_keys=[approved_by])
+    wallet = relationship("FactoryWallet", foreign_keys=[wallet_id])
 
 
 class LoginHistory(Base):
@@ -735,8 +742,17 @@ class FactoryWallet(Base):
     __tablename__ = "factory_wallet"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
+    name = Column(String(100), nullable=True)
+    opening_balance = Column(Float, default=0.0, nullable=False)
+    activation_date = Column(Date, nullable=True)
+    opening_txn_id = Column(String(50), nullable=True)
     balance = Column(Float, default=0.0, nullable=False)
+    status = Column(String(20), default="active", nullable=False)
+    created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    creator = relationship("User", foreign_keys=[created_by])
 
 
 class FactoryWalletTransaction(Base):
@@ -744,6 +760,7 @@ class FactoryWalletTransaction(Base):
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     transaction_id = Column(String(50), unique=True, index=True, nullable=False)
+    wallet_id = Column(String(36), ForeignKey("factory_wallet.id", ondelete="CASCADE"), nullable=True, index=True)
     date = Column(Date, nullable=False, default=date.today, index=True)
     transaction_type = Column(String(50), nullable=False, index=True)  # FUND_ADDED, EXPENSE_DEDUCTED, EXPENSE_REVERTED, EXPENSE_EDITED
     money_added = Column(Float, default=0.0, nullable=False)
@@ -758,6 +775,7 @@ class FactoryWalletTransaction(Base):
 
     user = relationship("User", foreign_keys=[user_id])
     approver = relationship("User", foreign_keys=[approved_by])
+    wallet = relationship("FactoryWallet", foreign_keys=[wallet_id])
 
 
 

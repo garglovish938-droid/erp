@@ -5,7 +5,7 @@ from sqlalchemy import func
 from typing import List, Optional
 
 from models import (
-    User, Category, InventoryItem, Supplier, Client, Project, ProjectBOM,
+    generate_uuid, User, Category, InventoryItem, Supplier, Client, Project, ProjectBOM,
     StockTransaction, MaterialRequest, PurchaseOrder, Staff, Attendance,
     Notification, ActivityLog, CustomFieldDefinition, CustomFieldValue, DailyExpense,
     WorkflowDefinition, WorkflowStep, ApprovalRule, DashboardWidget, Task,
@@ -21,7 +21,7 @@ from schemas import (
     StaffCreate, StaffUpdate, AttendanceCreate, CustomFieldDefinitionCreate, CustomFieldValueCreate,
     WorkflowDefinitionCreate, ApprovalRuleCreate, DashboardWidgetCreate, TaskCreate,
     TaskUpdate, DocumentCreate, ShiftCreate, AttendanceRuleUpdate, NewMaterialAndProjectUsageRequest,
-    FactoryFundCreate, ProjectPaymentCreate, CashBookCreate
+    FactoryFundCreate, ProjectPaymentCreate, CashBookCreate, FactoryWalletCreate, FactoryWalletUpdate
 )
 
 # Activity Logger Helper
@@ -1965,9 +1965,22 @@ def create_daily_expense(db: Session, exp: DailyExpenseCreate, user_id: str) -> 
             actual_amount = 0.0
             
     # Wallet validation check
-    wallet_balance = get_factory_wallet_balance(db)
-    if actual_amount > wallet_balance:
-        raise ValueError(f"Insufficient Factory Wallet Balance. Available: {format_inr(wallet_balance)}")
+    wallet_id = exp.wallet_id or "default"
+    wallet_linked = exp.wallet_linked or False
+    linked_date = None
+    
+    if wallet_linked:
+        wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
+        if wallet:
+            # Check activation date
+            if wallet.activation_date and target_date < wallet.activation_date:
+                wallet_linked = False
+            else:
+                linked_date = target_date
+                if actual_amount > wallet.balance:
+                    raise ValueError(f"Insufficient Factory Wallet Balance in '{wallet.name or wallet.id}'. Available: {format_inr(wallet.balance)}")
+        else:
+            wallet_linked = False
             
     db_exp = DailyExpense(
         expense_id=expense_id,
@@ -1983,38 +1996,29 @@ def create_daily_expense(db: Session, exp: DailyExpenseCreate, user_id: str) -> 
         remarks=exp.remarks,
         cash_received=exp.cash_received or 0.0,
         returned_cash=exp.returned_cash or 0.0,
-        approval_status=status
+        approval_status=status,
+        wallet_id=wallet_id,
+        wallet_linked=wallet_linked,
+        linked_date=linked_date,
+        transaction_source="daily_expense"
     )
     db.add(db_exp)
     db.flush()
     
     # Deduct wallet balance immediately if approved
-    if db_exp.approval_status == "approved" and db_exp.amount > 0:
-        wallet = db.query(FactoryWallet).first()
-        if not wallet:
-            wallet = FactoryWallet(id="default", balance=0.0, updated_at=datetime.utcnow())
-            db.add(wallet)
-            db.flush()
-        wallet.balance -= db_exp.amount
-        wallet.updated_at = datetime.utcnow()
-        
-        txn_count = db.query(func.count(FactoryWalletTransaction.id)).filter(FactoryWalletTransaction.date == target_date).scalar()
-        wallet_txn_id = f"WALLET-TXN-{target_date.strftime('%Y%m%d')}-{txn_count + 1:04d}"
-        
-        db_txn = FactoryWalletTransaction(
-            transaction_id=wallet_txn_id,
-            date=target_date,
-            transaction_type="EXPENSE_DEDUCTED",
+    if db_exp.approval_status == "approved" and db_exp.amount > 0 and db_exp.wallet_linked:
+        log_wallet_transaction(
+            db=db,
+            wallet_id=db_exp.wallet_id,
+            txn_type="EXPENSE_DEDUCTED",
             money_added=0.0,
             expense_deducted=db_exp.amount,
-            running_balance=wallet.balance,
             remarks=db_exp.description or f"Expense: {db_exp.expense_category}",
-            reference_type="daily_expense",
-            reference_id=db_exp.id,
+            ref_type="daily_expense",
+            ref_id=db_exp.id,
             user_id=user_id,
-            created_at=datetime.utcnow()
+            txn_date=target_date
         )
-        db.add(db_txn)
         
     db.commit()
     db.refresh(db_exp)
@@ -2077,25 +2081,30 @@ def update_daily_expense(
             
     old_amount = db_exp.amount
     old_approval_status = db_exp.approval_status
+    old_wallet_id = db_exp.wallet_id
+    old_wallet_linked = db_exp.wallet_linked
+    old_expense_date = db_exp.expense_date
     
     new_amount = calculated_amount if calculated_amount is not None else exp_in.amount
     if new_amount is None:
         new_amount = old_amount
         
     new_approval_status = exp_in.approval_status if exp_in.approval_status is not None else old_approval_status
+    new_wallet_id = exp_in.wallet_id if exp_in.wallet_id is not None else old_wallet_id
+    new_wallet_linked = exp_in.wallet_linked if exp_in.wallet_linked is not None else old_wallet_linked
+    new_expense_date = exp_in.expense_date if exp_in.expense_date is not None else old_expense_date
     
-    # Validate balance changes
-    if old_approval_status == "approved" and new_approval_status == "approved":
-        if new_amount != old_amount:
-            if new_amount > old_amount:
-                diff = new_amount - old_amount
-                wallet_bal = get_factory_wallet_balance(db)
-                if diff > wallet_bal:
-                    raise ValueError(f"Insufficient Factory Wallet Balance. Available: {format_inr(wallet_bal)}")
-    elif new_approval_status == "approved" and old_approval_status != "approved":
-        wallet_bal = get_factory_wallet_balance(db)
-        if new_amount > wallet_bal:
-            raise ValueError(f"Insufficient Factory Wallet Balance. Available: {format_inr(wallet_bal)}")
+    # Validate balance changes on the target wallet
+    if new_approval_status == "approved" and new_wallet_linked:
+        target_wallet = db.query(FactoryWallet).filter(FactoryWallet.id == new_wallet_id).first()
+        if target_wallet and (not target_wallet.activation_date or new_expense_date >= target_wallet.activation_date):
+            was_linked_to_same_wallet = (old_approval_status == "approved" and old_wallet_linked and old_wallet_id == new_wallet_id)
+            net_deduction = new_amount
+            if was_linked_to_same_wallet:
+                net_deduction = new_amount - old_amount
+                
+            if net_deduction > 0 and net_deduction > target_wallet.balance:
+                raise ValueError(f"Insufficient Factory Wallet Balance in '{target_wallet.name or target_wallet.id}'. Available: {format_inr(target_wallet.balance)}")
             
     fields_to_check = {
         "amount": calculated_amount if calculated_amount is not None else exp_in.amount,
@@ -2110,7 +2119,9 @@ def update_daily_expense(
         "cash_received": exp_in.cash_received,
         "returned_cash": exp_in.returned_cash,
         "approval_status": exp_in.approval_status,
-        "supervisor_comment": exp_in.supervisor_comment
+        "supervisor_comment": exp_in.supervisor_comment,
+        "wallet_id": exp_in.wallet_id,
+        "wallet_linked": exp_in.wallet_linked
     }
     
     # If approval_status changes to approved, set approved_by and approved_at
@@ -2173,100 +2184,46 @@ def update_daily_expense(
         )
         log_detailed_activity(db, user_id, "DailyExpense", "update", db_exp.id, f"Updated expense {db_exp.expense_id}: {', '.join(changes)}")
         
-        # Wallet ledger adjustments
-        wallet = db.query(FactoryWallet).first()
-        if not wallet:
-            wallet = FactoryWallet(id="default", balance=0.0, updated_at=datetime.utcnow())
-            db.add(wallet)
-            db.flush()
-            
-        target_date = db_exp.expense_date or date.today()
-        
-        if old_approval_status == "approved" and new_approval_status == "approved":
-            if new_amount != old_amount:
-                if new_amount > old_amount:
-                    diff = new_amount - old_amount
-                    wallet.balance -= diff
-                    
-                    txn_count = db.query(func.count(FactoryWalletTransaction.id)).filter(FactoryWalletTransaction.date == target_date).scalar()
-                    wallet_txn_id = f"WALLET-TXN-{target_date.strftime('%Y%m%d')}-{txn_count + 1:04d}"
-                    db_txn = FactoryWalletTransaction(
-                        transaction_id=wallet_txn_id,
-                        date=target_date,
-                        transaction_type="EXPENSE_EDITED",
-                        money_added=0.0,
-                        expense_deducted=diff,
-                        running_balance=wallet.balance,
-                        remarks=f"Adjusted amount (increased) for expense {db_exp.expense_id}",
-                        reference_type="daily_expense",
-                        reference_id=db_exp.id,
-                        user_id=user_id,
-                        created_at=datetime.utcnow()
-                    )
-                    db.add(db_txn)
+        # Wallet ledger adjustments using log_wallet_transaction helper
+        # 1. Revert old transaction if it was deducted
+        was_deducted = (old_approval_status == "approved" and old_amount > 0 and old_wallet_linked)
+        if was_deducted:
+            old_wallet = db.query(FactoryWallet).filter(FactoryWallet.id == old_wallet_id).first()
+            if old_wallet and (not old_wallet.activation_date or old_expense_date >= old_wallet.activation_date):
+                log_wallet_transaction(
+                    db=db,
+                    wallet_id=old_wallet_id,
+                    txn_type="EXPENSE_REVERTED",
+                    money_added=old_amount,
+                    expense_deducted=0.0,
+                    remarks=f"Reverted edited expense (old state): {db_exp.expense_id}",
+                    ref_type="daily_expense",
+                    ref_id=db_exp.id,
+                    user_id=user_id,
+                    txn_date=date.today()
+                )
+                
+        # 2. Apply new transaction if it is approved and linked
+        is_deducted = (db_exp.approval_status == "approved" and db_exp.amount > 0 and db_exp.wallet_linked)
+        if is_deducted:
+            new_wallet = db.query(FactoryWallet).filter(FactoryWallet.id == db_exp.wallet_id).first()
+            if new_wallet:
+                if new_wallet.activation_date and db_exp.expense_date < new_wallet.activation_date:
+                    db_exp.wallet_linked = False
                 else:
-                    diff = old_amount - new_amount
-                    wallet.balance += diff
-                    
-                    txn_count = db.query(func.count(FactoryWalletTransaction.id)).filter(FactoryWalletTransaction.date == target_date).scalar()
-                    wallet_txn_id = f"WALLET-TXN-{target_date.strftime('%Y%m%d')}-{txn_count + 1:04d}"
-                    db_txn = FactoryWalletTransaction(
-                        transaction_id=wallet_txn_id,
-                        date=target_date,
-                        transaction_type="EXPENSE_EDITED",
-                        money_added=diff,
-                        expense_deducted=0.0,
-                        running_balance=wallet.balance,
-                        remarks=f"Adjusted amount (decreased) for expense {db_exp.expense_id}",
-                        reference_type="daily_expense",
-                        reference_id=db_exp.id,
+                    log_wallet_transaction(
+                        db=db,
+                        wallet_id=db_exp.wallet_id,
+                        txn_type="EXPENSE_DEDUCTED",
+                        money_added=0.0,
+                        expense_deducted=db_exp.amount,
+                        remarks=db_exp.description or f"Expense: {db_exp.expense_category}",
+                        ref_type="daily_expense",
+                        ref_id=db_exp.id,
                         user_id=user_id,
-                        created_at=datetime.utcnow()
+                        txn_date=db_exp.expense_date
                     )
-                    db.add(db_txn)
-                wallet.updated_at = datetime.utcnow()
-        elif new_approval_status == "approved" and old_approval_status != "approved":
-            wallet.balance -= new_amount
-            wallet.updated_at = datetime.utcnow()
-            
-            txn_count = db.query(func.count(FactoryWalletTransaction.id)).filter(FactoryWalletTransaction.date == target_date).scalar()
-            wallet_txn_id = f"WALLET-TXN-{target_date.strftime('%Y%m%d')}-{txn_count + 1:04d}"
-            db_txn = FactoryWalletTransaction(
-                transaction_id=wallet_txn_id,
-                date=target_date,
-                transaction_type="EXPENSE_DEDUCTED",
-                money_added=0.0,
-                expense_deducted=new_amount,
-                running_balance=wallet.balance,
-                remarks=db_exp.description or f"Expense approved: {db_exp.expense_category}",
-                reference_type="daily_expense",
-                reference_id=db_exp.id,
-                user_id=db_exp.created_by,
-                approved_by=user_id,
-                created_at=datetime.utcnow()
-            )
-            db.add(db_txn)
-        elif new_approval_status != "approved" and old_approval_status == "approved":
-            wallet.balance += old_amount
-            wallet.updated_at = datetime.utcnow()
-            
-            txn_count = db.query(func.count(FactoryWalletTransaction.id)).filter(FactoryWalletTransaction.date == target_date).scalar()
-            wallet_txn_id = f"WALLET-TXN-{target_date.strftime('%Y%m%d')}-{txn_count + 1:04d}"
-            db_txn = FactoryWalletTransaction(
-                transaction_id=wallet_txn_id,
-                date=target_date,
-                transaction_type="EXPENSE_REVERTED",
-                money_added=old_amount,
-                expense_deducted=0.0,
-                running_balance=wallet.balance,
-                remarks=f"Reverted expense approval: {db_exp.expense_id}",
-                reference_type="daily_expense",
-                reference_id=db_exp.id,
-                user_id=user_id,
-                created_at=datetime.utcnow()
-            )
-            db.add(db_txn)
-            
+                    
         db.commit()
         db.refresh(db_exp)
         
@@ -2301,30 +2258,22 @@ def delete_daily_expense(db: Session, expense_id: str, user_id: str) -> Optional
     db_exp.deleted_at = datetime.utcnow()
     db_exp.deleted_by = user_id
     
-    # If approved, revert deduction from wallet balance
-    if db_exp.approval_status == "approved" and db_exp.amount > 0:
-        wallet = db.query(FactoryWallet).first()
-        if wallet:
-            wallet.balance += db_exp.amount
-            wallet.updated_at = datetime.utcnow()
-            
-            target_date = date.today()
-            txn_count = db.query(func.count(FactoryWalletTransaction.id)).filter(FactoryWalletTransaction.date == target_date).scalar()
-            wallet_txn_id = f"WALLET-TXN-{target_date.strftime('%Y%m%d')}-{txn_count + 1:04d}"
-            db_txn = FactoryWalletTransaction(
-                transaction_id=wallet_txn_id,
-                date=target_date,
-                transaction_type="EXPENSE_REVERTED",
+    # If approved and linked, revert deduction from wallet balance
+    if db_exp.approval_status == "approved" and db_exp.amount > 0 and db_exp.wallet_linked:
+        wallet = db.query(FactoryWallet).filter(FactoryWallet.id == db_exp.wallet_id).first()
+        if wallet and (not wallet.activation_date or db_exp.expense_date >= wallet.activation_date):
+            log_wallet_transaction(
+                db=db,
+                wallet_id=db_exp.wallet_id,
+                txn_type="EXPENSE_REVERTED",
                 money_added=db_exp.amount,
                 expense_deducted=0.0,
-                running_balance=wallet.balance,
                 remarks=f"Reverted deleted expense: {db_exp.expense_id}",
-                reference_type="daily_expense",
-                reference_id=db_exp.id,
+                ref_type="daily_expense",
+                ref_id=db_exp.id,
                 user_id=user_id,
-                created_at=datetime.utcnow()
+                txn_date=date.today()
             )
-            db.add(db_txn)
             
     log_detailed_activity(db, user_id, "DailyExpense", "delete", db_exp.id, f"Deleted expense {db_exp.expense_id}")
     db.commit()
@@ -3431,11 +3380,24 @@ def add_wallet_funds(
     reference_number: Optional[str] = None,
     remarks: Optional[str] = None,
     attachment_url: Optional[str] = None,
-    user_id: Optional[str] = None
+    user_id: Optional[str] = None,
+    wallet_id: Optional[str] = None
 ) -> FactoryWalletTransaction:
     target_date = date.today()
     date_str = target_date.strftime("%Y%m%d")
     
+    # Determine which wallet to use
+    selected_wallet_id = wallet_id or "default"
+    wallet = db.query(FactoryWallet).filter(FactoryWallet.id == selected_wallet_id).first()
+    if not wallet:
+        # Fallback to default or first active wallet if not found
+        wallet = db.query(FactoryWallet).first()
+        if not wallet:
+            wallet = FactoryWallet(id="default", balance=0.0, name="Main Factory Wallet", updated_at=datetime.utcnow())
+            db.add(wallet)
+            db.flush()
+        selected_wallet_id = wallet.id
+        
     # 1. Create FactoryFund entry for compatibility
     fund_count = db.query(func.count(FactoryFund.id)).filter(FactoryFund.date == target_date).scalar()
     fund_id = f"FUND-{date_str}-{fund_count + 1:04d}"
@@ -3451,36 +3413,22 @@ def add_wallet_funds(
         added_by=user_id
     )
     db.add(db_fund)
-    db.flush() # Get db_fund.id
+    db.flush()
     
-    # 2. Update FactoryWallet balance
-    wallet = db.query(FactoryWallet).first()
-    if not wallet:
-        wallet = FactoryWallet(id="default", balance=0.0, updated_at=datetime.utcnow())
-        db.add(wallet)
-        db.flush()
-        
-    wallet.balance += amount
-    wallet.updated_at = datetime.utcnow()
-    
-    # 3. Create wallet transaction record
-    txn_count = db.query(func.count(FactoryWalletTransaction.id)).filter(FactoryWalletTransaction.date == target_date).scalar()
-    wallet_txn_id = f"WALLET-TXN-{date_str}-{txn_count + 1:04d}"
-    
-    db_txn = FactoryWalletTransaction(
-        transaction_id=wallet_txn_id,
-        date=target_date,
-        transaction_type="FUND_ADDED",
+    # 2. Log transaction and update balance
+    db_txn = log_wallet_transaction(
+        db=db,
+        wallet_id=selected_wallet_id,
+        txn_type="FUND_ADDED",
         money_added=amount,
         expense_deducted=0.0,
-        running_balance=wallet.balance,
         remarks=remarks or "Owner Funding Injection",
-        reference_type="factory_fund",
-        reference_id=db_fund.id,
+        ref_type="factory_fund",
+        ref_id=db_fund.id,
         user_id=user_id,
-        created_at=datetime.utcnow()
+        txn_date=target_date
     )
-    db.add(db_txn)
+    
     db.commit()
     db.refresh(db_txn)
     
@@ -3500,7 +3448,8 @@ def create_factory_fund(db: Session, fund: FactoryFundCreate, user_id: str) -> F
         reference_number=fund.reference_number,
         remarks=fund.remarks,
         attachment_url=fund.attachment_url,
-        user_id=user_id
+        user_id=user_id,
+        wallet_id=getattr(fund, "wallet_id", None)
     )
     return db.query(FactoryFund).filter(FactoryFund.id == wallet_txn.reference_id).first()
 
@@ -3656,6 +3605,160 @@ def generate_next_transaction_id(db: Session, date_str: str) -> str:
                 except ValueError:
                     pass
     return f"TXN-{date_str}-{max_idx + 1:04d}"
+
+
+def get_factory_wallets(db: Session) -> List[FactoryWallet]:
+    return db.query(FactoryWallet).order_by(FactoryWallet.created_at.desc()).all()
+
+def get_factory_wallet(db: Session, wallet_id: str) -> Optional[FactoryWallet]:
+    return db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
+
+def recalculate_wallet_balance(db: Session, wallet_id: str) -> float:
+    wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
+    if not wallet:
+        return 0.0
+    
+    txns = db.query(FactoryWalletTransaction).filter(FactoryWalletTransaction.wallet_id == wallet_id).all()
+    balance = wallet.opening_balance
+    for t in txns:
+        if t.transaction_type == "OPENING_BALANCE":
+            continue
+        balance += t.money_added
+        balance -= t.expense_deducted
+    return balance
+
+def log_wallet_transaction(
+    db: Session,
+    wallet_id: str,
+    txn_type: str,
+    money_added: float,
+    expense_deducted: float,
+    remarks: str,
+    ref_type: Optional[str] = None,
+    ref_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    approved_by: Optional[str] = None,
+    txn_date: Optional[date] = None
+) -> FactoryWalletTransaction:
+    target_date = txn_date or date.today()
+    date_str = target_date.strftime("%Y%m%d")
+    
+    wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
+    if not wallet:
+        raise ValueError("Wallet not found")
+        
+    wallet.balance += money_added
+    wallet.balance -= expense_deducted
+    wallet.updated_at = datetime.utcnow()
+    
+    prefix = f"WALLET-TXN-{date_str}-"
+    candidates = db.query(FactoryWalletTransaction.transaction_id)\
+        .filter(FactoryWalletTransaction.transaction_id.like(f"{prefix}%"))\
+        .all()
+    
+    max_idx = 0
+    for (tid,) in candidates:
+        if tid.startswith(prefix):
+            suffix = tid[len(prefix):]
+            digits = []
+            for char in suffix:
+                if char.isdigit():
+                    digits.append(char)
+                else:
+                    break
+            if digits:
+                try:
+                    idx = int("".join(digits))
+                    if idx > max_idx:
+                        max_idx = idx
+                except ValueError:
+                    pass
+                    
+    wallet_txn_id = f"WALLET-TXN-{date_str}-{max_idx + 1:04d}"
+    
+    db_txn = FactoryWalletTransaction(
+        transaction_id=wallet_txn_id,
+        wallet_id=wallet_id,
+        date=target_date,
+        transaction_type=txn_type,
+        money_added=money_added,
+        expense_deducted=expense_deducted,
+        running_balance=wallet.balance,
+        remarks=remarks,
+        reference_type=ref_type,
+        reference_id=ref_id,
+        user_id=user_id,
+        approved_by=approved_by,
+        created_at=datetime.utcnow()
+    )
+    db.add(db_txn)
+    db.flush()
+    return db_txn
+
+def create_factory_wallet(db: Session, wallet: FactoryWalletCreate, user_id: str) -> FactoryWallet:
+    target_date = wallet.activation_date or date.today()
+    
+    db_wallet = FactoryWallet(
+        id=generate_uuid(),
+        name=wallet.name,
+        opening_balance=wallet.opening_balance,
+        activation_date=target_date,
+        balance=wallet.opening_balance,
+        status=wallet.status or "active",
+        created_by=user_id,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
+    )
+    db.add(db_wallet)
+    db.flush()
+    
+    if wallet.opening_balance > 0:
+        db_txn = log_wallet_transaction(
+            db=db,
+            wallet_id=db_wallet.id,
+            txn_type="OPENING_BALANCE",
+            money_added=0.0,
+            expense_deducted=0.0,
+            remarks=f"Opening Balance for {wallet.name}",
+            user_id=user_id,
+            txn_date=target_date
+        )
+        db_wallet.opening_txn_id = db_txn.transaction_id
+        
+        entry_in = CashBookCreate(
+            date=target_date,
+            transaction_type="IN",
+            category="Owner Investment",
+            amount=wallet.opening_balance,
+            payment_method="Cash",
+            remarks=f"Opening Balance for Wallet: {wallet.name}"
+        )
+        db_entry = create_cash_book_entry(db, entry_in, user_id, ref_type="factory_fund", ref_id=db_txn.id)
+        db_txn.reference_id = db_entry.id
+        
+    db.commit()
+    db.refresh(db_wallet)
+    return db_wallet
+
+def update_factory_wallet(db: Session, wallet_id: str, update: FactoryWalletUpdate) -> Optional[FactoryWallet]:
+    db_wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
+    if not db_wallet:
+        return None
+        
+    if update.name is not None:
+        db_wallet.name = update.name
+    if update.activation_date is not None:
+        db_wallet.activation_date = update.activation_date
+    if update.status is not None:
+        db_wallet.status = update.status
+    if update.opening_balance is not None:
+        db_wallet.opening_balance = update.opening_balance
+        db_wallet.balance = recalculate_wallet_balance(db, wallet_id)
+        
+    db_wallet.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(db_wallet)
+    return db_wallet
 
 
 def create_cash_book_entry(db: Session, entry: CashBookCreate, added_by: Optional[str], ref_type: Optional[str] = None, ref_id: Optional[str] = None) -> CashBook:

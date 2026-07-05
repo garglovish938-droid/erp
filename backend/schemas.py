@@ -871,7 +871,6 @@ class CheckOutRequest(BaseModel):
 
 
 # Daily Expense
-# Daily Expense
 class DailyExpenseCreate(BaseModel):
     expense_date: Optional[date] = None
     expense_category: str
@@ -886,6 +885,10 @@ class DailyExpenseCreate(BaseModel):
     # Cash received reconciliation fields
     cash_received: Optional[float] = 0.0
     returned_cash: Optional[float] = 0.0
+    
+    # Wallet integration
+    wallet_id: Optional[str] = None
+    wallet_linked: Optional[bool] = False
 
     @field_validator('amount')
     @classmethod
@@ -920,6 +923,10 @@ class DailyExpenseUpdate(BaseModel):
     returned_cash: Optional[float] = None
     approval_status: Optional[str] = None
     supervisor_comment: Optional[str] = None
+    
+    # Wallet integration
+    wallet_id: Optional[str] = None
+    wallet_linked: Optional[bool] = None
 
     @field_validator('amount')
     @classmethod
@@ -965,6 +972,12 @@ class DailyExpenseResponse(BaseSchema):
     approved_by: Optional[str]
     approved_at: Optional[datetime]
     supervisor_comment: Optional[str]
+
+    # Wallet integration fields
+    wallet_id: Optional[str] = None
+    wallet_linked: bool = False
+    linked_date: Optional[dt_date] = None
+    transaction_source: Optional[str] = None
     
     project: Optional[ProjectResponse] = None
     creator: Optional[UserResponse] = None
@@ -1086,6 +1099,7 @@ class FactoryFundCreate(BaseModel):
     reference_number: Optional[str] = None
     remarks: Optional[str] = None
     attachment_url: Optional[str] = None
+    wallet_id: Optional[str] = None
 
     @field_validator('amount')
     @classmethod
@@ -1115,6 +1129,40 @@ class FactoryFundResponse(BaseSchema):
     attachment_url: Optional[str]
     created_at: datetime
     user: Optional[UserResponse] = None
+
+
+class FactoryWalletCreate(BaseModel):
+    name: str
+    opening_balance: float = 0.0
+    activation_date: Optional[dt_date] = None
+    status: Optional[str] = "active"
+
+    @field_validator('opening_balance')
+    @classmethod
+    def validate_positive_balance(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("Opening balance must be greater than or equal to 0")
+        return v
+
+
+class FactoryWalletUpdate(BaseModel):
+    name: Optional[str] = None
+    opening_balance: Optional[float] = None
+    activation_date: Optional[dt_date] = None
+    status: Optional[str] = None
+
+
+class FactoryWalletResponse(BaseSchema):
+    id: str
+    name: Optional[str]
+    opening_balance: float
+    activation_date: Optional[dt_date]
+    opening_txn_id: Optional[str]
+    balance: float
+    status: str
+    created_by: Optional[str]
+    created_at: datetime
+    updated_at: datetime
 
 
 class FactoryWalletBalanceResponse(BaseModel):

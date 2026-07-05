@@ -47,10 +47,13 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
     payment_mode: "Cash",
     remarks: "",
     cash_received: "",
-    returned_cash: ""
+    returned_cash: "",
+    wallet_id: "",
+    wallet_linked: false
   });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [exportFormat, setExportFormat] = useState("excel");
+  const [wallets, setWallets] = useState<any[]>([]);
 
   // Edit Modal State
   const [showEditModal, setShowEditModal] = useState(false);
@@ -66,7 +69,9 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
     remarks: "",
     cash_received: "",
     returned_cash: "",
-    reason: ""
+    reason: "",
+    wallet_id: "",
+    wallet_linked: false
   });
   const [editFile, setEditFile] = useState<File | null>(null);
   const [editSubmitting, setEditSubmitting] = useState(false);
@@ -116,6 +121,19 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
   useEffect(() => {
     loadData();
 
+    const fetchWallets = async () => {
+      try {
+        const list = await apiRequest("/api/factory-wallet");
+        setWallets(list || []);
+        if (list && list.length > 0) {
+          setForm(prev => ({ ...prev, wallet_id: list[0].id }));
+        }
+      } catch (err) {
+        console.error("Failed to load wallets:", err);
+      }
+    };
+    fetchWallets();
+
     // WS Sync
     const handleSync = (e: Event) => {
       const detail = (e as CustomEvent).detail;
@@ -164,6 +182,8 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
       fd.append("cash_received", cashRec.toString());
       fd.append("returned_cash", cashRet.toString());
       if (selectedFile) fd.append("file", selectedFile);
+      if (form.wallet_id) fd.append("wallet_id", form.wallet_id);
+      fd.append("wallet_linked", form.wallet_linked ? "true" : "false");
 
       const savedUser = localStorage.getItem("allure_erp_user");
       const userToken = savedUser ? JSON.parse(savedUser).token : token;
@@ -191,7 +211,9 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
         payment_mode: "Cash",
         remarks: "",
         cash_received: "",
-        returned_cash: ""
+        returned_cash: "",
+        wallet_id: wallets.length > 0 ? wallets[0].id : "",
+        wallet_linked: false
       });
       setSelectedFile(null);
       loadData();
@@ -215,7 +237,9 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
       remarks: exp.remarks || "",
       cash_received: exp.cash_received ? exp.cash_received.toString() : "",
       returned_cash: exp.returned_cash ? exp.returned_cash.toString() : "",
-      reason: ""
+      reason: "",
+      wallet_id: exp.wallet_id || "",
+      wallet_linked: exp.wallet_linked || false
     });
     setEditFile(null);
     setShowEditModal(true);
@@ -251,6 +275,8 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
       fd.append("cash_received", cashRec.toString());
       fd.append("returned_cash", cashRet.toString());
       if (editFile) fd.append("file", editFile);
+      if (editForm.wallet_id) fd.append("wallet_id", editForm.wallet_id);
+      fd.append("wallet_linked", editForm.wallet_linked ? "true" : "false");
 
       const savedUser = localStorage.getItem("allure_erp_user");
       const userToken = savedUser ? JSON.parse(savedUser).token : token;
@@ -527,7 +553,14 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
                   <tr key={e.id} className="border-b dark:border-slate-900 hover:bg-slate-50/50 dark:hover:bg-slate-950/50 transition-colors">
                     <td className="p-4 font-mono text-xs text-slate-600 dark:text-slate-400">{e.expense_id}</td>
                     <td className="p-4 text-slate-700 dark:text-slate-300 font-medium">{e.expense_date}</td>
-                    <td className="p-4 font-semibold text-slate-800 dark:text-slate-200">{e.expense_category}</td>
+                    <td className="p-4 font-semibold text-slate-800 dark:text-slate-200">
+                      <div>{e.expense_category}</div>
+                      {e.wallet_linked && (
+                        <div className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 mt-0.5 inline-flex items-center gap-0.5 bg-emerald-50 dark:bg-emerald-950/30 px-1.5 py-0.2 rounded">
+                          Wallet Linked
+                        </div>
+                      )}
+                    </td>
                     <td className="p-4 text-slate-600 dark:text-slate-400">
                       {e.project ? e.project.name : <span className="text-slate-400 italic">Office Expense</span>}
                     </td>
@@ -761,6 +794,37 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
                 </div>
               </div>
 
+              {/* Wallet Integration */}
+              <div className="grid grid-cols-2 gap-4 border border-emerald-100 dark:border-emerald-950 bg-emerald-50/10 dark:bg-emerald-950/5 p-3 rounded-lg">
+                <div className="flex items-center gap-2 mt-4">
+                  <input
+                    type="checkbox"
+                    id="wallet_linked"
+                    checked={form.wallet_linked}
+                    onChange={(e) => setForm({ ...form, wallet_linked: e.target.checked })}
+                    className="h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300 dark:border-slate-800"
+                  />
+                  <label htmlFor="wallet_linked" className="text-sm font-semibold text-slate-700 dark:text-slate-300 cursor-pointer">
+                    Link to Factory Wallet
+                  </label>
+                </div>
+
+                {form.wallet_linked && (
+                  <div>
+                    <label className="text-xs font-semibold text-slate-400 block mb-1">Select Wallet</label>
+                    <select
+                      value={form.wallet_id}
+                      onChange={(e) => setForm({ ...form, wallet_id: e.target.value })}
+                      className="w-full text-sm border rounded-lg p-2.5 focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+                    >
+                      {wallets.map(w => (
+                        <option key={w.id} value={w.id}>{w.name || w.id} (Bal: ₹{w.balance})</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
               {/* Description */}
               <div>
                 <label className="text-xs font-semibold text-slate-450 block mb-1">Description / Purpose</label>
@@ -951,6 +1015,38 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
                     <option value="Bank">Bank Transfer</option>
                   </select>
                 </div>
+              </div>
+
+              {/* Wallet Integration */}
+              <div className="grid grid-cols-2 gap-4 border border-emerald-100 dark:border-emerald-950 bg-emerald-50/10 dark:bg-emerald-950/5 p-3 rounded-lg">
+                <div className="flex items-center gap-2 mt-4">
+                  <input
+                    type="checkbox"
+                    id="edit_wallet_linked"
+                    checked={editForm.wallet_linked}
+                    onChange={(e) => setEditForm({ ...editForm, wallet_linked: e.target.checked })}
+                    className="h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300 dark:border-slate-800"
+                  />
+                  <label htmlFor="edit_wallet_linked" className="text-sm font-semibold text-slate-700 dark:text-slate-300 cursor-pointer">
+                    Link to Factory Wallet
+                  </label>
+                </div>
+
+                {editForm.wallet_linked && (
+                  <div>
+                    <label className="text-xs font-semibold text-slate-400 block mb-1">Select Wallet</label>
+                    <select
+                      value={editForm.wallet_id}
+                      onChange={(e) => setEditForm({ ...editForm, wallet_id: e.target.value })}
+                      className="w-full text-sm border rounded-lg p-2.5 focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+                    >
+                      <option value="">No Wallet Selected</option>
+                      {wallets.map(w => (
+                        <option key={w.id} value={w.id}>{w.name || w.id} (Bal: ₹{w.balance})</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
 
               {/* Description */}

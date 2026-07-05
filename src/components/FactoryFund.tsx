@@ -34,6 +34,18 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
     yearly_out: 0
   });
 
+  const [wallets, setWallets] = useState<any[]>([]);
+  const [selectedWalletId, setSelectedWalletId] = useState<string>("all");
+  const [formWalletId, setFormWalletId] = useState<string>("");
+  
+  // Wallet Creation Modal states
+  const [showCreateWalletModal, setShowCreateWalletModal] = useState(false);
+  const [newWalletForm, setNewWalletForm] = useState({
+    name: "",
+    opening_balance: "",
+    activation_date: new Date().toISOString().split("T")[0]
+  });
+
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -64,10 +76,17 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
+      const wList = await apiRequest("/api/factory-wallet").catch(() => []);
+      setWallets(wList || []);
+      
+      if (wList && wList.length > 0 && !formWalletId) {
+        setFormWalletId(wList[0].id);
+      }
+
       if (activeSubTab === "wallet") {
         const [wHistory, wBal] = await Promise.all([
-          apiRequest("/api/factory-wallet/history"),
-          apiRequest("/api/factory-wallet/balance")
+          apiRequest(`/api/factory-wallet/history?wallet_id=${selectedWalletId}`),
+          apiRequest(`/api/factory-wallet/balance?wallet_id=${selectedWalletId}`)
         ]);
         setWalletHistory(wHistory || []);
         setWalletBalance(wBal?.balance || 0);
@@ -116,7 +135,7 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
     } finally {
       setLoading(false);
     }
-  }, [activeSubTab, startDate, endDate, category, paymentMethod, search, txnType, showToast]);
+  }, [activeSubTab, startDate, endDate, category, paymentMethod, search, txnType, selectedWalletId, formWalletId, showToast]);
 
   useEffect(() => {
     loadData();
@@ -169,6 +188,7 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
       if (form.reference_number) fd.append("reference_number", form.reference_number);
       if (form.remarks) fd.append("remarks", form.remarks);
       if (selectedFile) fd.append("file", selectedFile);
+      if (formWalletId) fd.append("wallet_id", formWalletId);
 
       const savedUser = localStorage.getItem("allure_erp_user");
       const userToken = savedUser ? JSON.parse(savedUser).token : token;
@@ -190,6 +210,50 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
       loadData();
     } catch (err: any) {
       showToast(err.message || "Failed to log transaction.", "error");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleCreateWallet = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newWalletForm.name) {
+      showToast("Please enter a wallet name.", "error");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const savedUser = localStorage.getItem("allure_erp_user");
+      const userToken = savedUser ? JSON.parse(savedUser).token : token;
+      
+      const res = await fetch(`${API_BASE_URL}/api/factory-wallet`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${userToken}`
+        },
+        body: JSON.stringify({
+          name: newWalletForm.name,
+          opening_balance: parseFloat(newWalletForm.opening_balance || "0"),
+          activation_date: newWalletForm.activation_date
+        })
+      });
+      
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to create wallet");
+      }
+      
+      showToast("Wallet created successfully!", "success");
+      setShowCreateWalletModal(false);
+      setNewWalletForm({
+        name: "",
+        opening_balance: "",
+        activation_date: new Date().toISOString().split("T")[0]
+      });
+      loadData();
+    } catch (err: any) {
+      showToast(err.message || "Failed to create wallet.", "error");
     } finally {
       setSubmitting(false);
     }
@@ -351,6 +415,32 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
           Factory Expense Wallet Ledger
         </button>
       </div>
+
+      {activeSubTab === "wallet" && (
+        <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-4 bg-slate-50 dark:bg-slate-900/40 p-4 rounded-xl border border-slate-100 dark:border-slate-800">
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-semibold text-slate-500">Active Wallet:</span>
+            <select
+              value={selectedWalletId}
+              onChange={(e) => setSelectedWalletId(e.target.value)}
+              className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-950 dark:border-slate-800"
+            >
+              <option value="all">All Wallets combined</option>
+              {wallets.map(w => (
+                <option key={w.id} value={w.id}>{w.name || w.id} (Bal: ₹{w.balance})</option>
+              ))}
+            </select>
+          </div>
+          {["admin", "super_admin"].includes(role) && (
+            <button
+              onClick={() => setShowCreateWalletModal(true)}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200"
+            >
+              Create New Wallet
+            </button>
+          )}
+        </div>
+      )}
 
       {activeSubTab === "wallet" ? (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -833,6 +923,7 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
                     {form.transaction_type === "IN" ? (
                       <>
                         <option value="Owner Investment">Owner Investment</option>
+                        <option value="Cash Returned">Cash Returned (Refund to Wallet)</option>
                         <option value="Direct Sales">Direct Sales</option>
                         <option value="Advance Payment">Advance Payment</option>
                         <option value="Other">Other Inflow</option>
@@ -866,6 +957,22 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
                   />
                 </div>
               </div>
+
+              {/* Target Wallet (conditional) */}
+              {(form.transaction_type === "IN" && ["Owner Investment", "Cash Returned"].includes(form.category)) && (
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Target Factory Wallet</label>
+                  <select
+                    value={formWalletId}
+                    onChange={(e) => setFormWalletId(e.target.value)}
+                    className="w-full text-sm border rounded-lg p-2.5 focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+                  >
+                    {wallets.map(w => (
+                      <option key={w.id} value={w.id}>{w.name || w.id} (Bal: ₹{w.balance})</option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-4">
                 {/* Payment Method */}
@@ -1086,6 +1193,74 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
                   className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50"
                 >
                   {submitting ? "Updating..." : "Update Entry"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showCreateWalletModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-950 w-full max-w-md rounded-2xl shadow-xl border dark:border-slate-800 overflow-hidden">
+            <div className="flex justify-between items-center p-5 border-b dark:border-slate-800">
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">Create New Factory Wallet</h2>
+              <button onClick={() => setShowCreateWalletModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={handleCreateWallet} className="p-6 space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-400 block mb-1">Wallet Name</label>
+                <input
+                  type="text"
+                  required
+                  value={newWalletForm.name}
+                  onChange={(e) => setNewWalletForm({ ...newWalletForm, name: e.target.value })}
+                  className="w-full text-sm border rounded-lg p-2.5 focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+                  placeholder="e.g. Factory Wallet 2026"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Opening Balance (INR)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={newWalletForm.opening_balance}
+                    onChange={(e) => setNewWalletForm({ ...newWalletForm, opening_balance: e.target.value })}
+                    className="w-full text-sm border rounded-lg p-2.5 focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+                    placeholder="0.00"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Activation Date</label>
+                  <input
+                    type="date"
+                    required
+                    value={newWalletForm.activation_date}
+                    onChange={(e) => setNewWalletForm({ ...newWalletForm, activation_date: e.target.value })}
+                    className="w-full text-sm border rounded-lg p-2.5 focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateWalletModal(false)}
+                  className="border dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-900 px-4 py-2 rounded-lg text-sm font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50"
+                >
+                  {submitting ? "Creating..." : "Create Wallet"}
                 </button>
               </div>
             </form>

@@ -7049,19 +7049,45 @@ def get_factory_fund_stats(db: Session = Depends(get_db), current_user: User = D
     return crud.get_factory_financial_stats(db)
 
 @app.get("/api/factory-wallet/balance", response_model=schemas.FactoryWalletBalanceResponse)
-def get_factory_wallet_balance_api(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+def get_factory_wallet_balance_api(wallet_id: Optional[str] = None, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
     if current_user.role in ["worker", "carpenter", "operator", "employee"]:
         raise HTTPException(status_code=403, detail="Employees cannot view the Factory Wallet balance")
-    balance = crud.get_factory_wallet_balance(db)
-    wallet = db.query(FactoryWallet).first()
+    selected_id = wallet_id or "default"
+    wallet = db.query(FactoryWallet).filter(FactoryWallet.id == selected_id).first()
+    if not wallet:
+        wallet = db.query(FactoryWallet).first()
+    balance = wallet.balance if wallet else 0.0
     updated_at = wallet.updated_at if wallet else datetime.utcnow()
     return {"balance": balance, "updated_at": updated_at}
 
 @app.get("/api/factory-wallet/history", response_model=List[schemas.FactoryWalletTransactionResponse])
-def get_factory_wallet_history(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+def get_factory_wallet_history(wallet_id: Optional[str] = None, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
     if current_user.role in ["worker", "carpenter", "operator", "employee"]:
         raise HTTPException(status_code=403, detail="Employees cannot view the Factory Wallet history")
-    return crud.get_factory_wallet_transactions(db)
+    query = db.query(FactoryWalletTransaction).options(
+        joinedload(FactoryWalletTransaction.user),
+        joinedload(FactoryWalletTransaction.approver)
+    )
+    if wallet_id and wallet_id != "all":
+        query = query.filter(FactoryWalletTransaction.wallet_id == wallet_id)
+    return query.order_by(FactoryWalletTransaction.created_at.desc(), FactoryWalletTransaction.id.desc()).all()
+
+@app.get("/api/factory-wallet", response_model=List[schemas.FactoryWalletResponse])
+def list_factory_wallets(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    if current_user.role in ["worker", "carpenter", "operator", "employee"]:
+        raise HTTPException(status_code=403, detail="Employees cannot view Factory Wallets")
+    return crud.get_factory_wallets(db)
+
+@app.post("/api/factory-wallet", response_model=schemas.FactoryWalletResponse)
+def create_factory_wallet_api(wallet: schemas.FactoryWalletCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    return crud.create_factory_wallet(db, wallet, current_user.id)
+
+@app.put("/api/factory-wallet/{wallet_id}", response_model=schemas.FactoryWalletResponse)
+def update_factory_wallet_api(wallet_id: str, update: schemas.FactoryWalletUpdate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    db_wallet = crud.update_factory_wallet(db, wallet_id, update)
+    if not db_wallet:
+        raise HTTPException(status_code=404, detail="Wallet not found")
+    return db_wallet
 
 
 @app.get("/api/project-payments", response_model=List[schemas.ProjectPaymentResponse])
@@ -7173,6 +7199,7 @@ async def add_cash_book_entry(
     reference_number: Optional[str] = Form(None),
     remarks: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
+    wallet_id: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_admin)
 ):
@@ -7193,7 +7220,7 @@ async def add_cash_book_entry(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to upload attachment: {str(e)}")
 
-    if transaction_type.upper() == "IN" and category in ["Owner Investment", "Funding Injection"]:
+    if transaction_type.upper() == "IN" and category in ["Owner Investment", "Funding Injection", "Cash Returned"]:
         # Route through Factory Expense Wallet logic
         wallet_txn = crud.add_wallet_funds(
             db=db,
@@ -7202,7 +7229,8 @@ async def add_cash_book_entry(
             reference_number=reference_number,
             remarks=remarks,
             attachment_url=attachment_url,
-            user_id=current_user.id
+            user_id=current_user.id,
+            wallet_id=wallet_id
         )
         # Fetch the synced CashBook entry to return it as CashBookResponse
         db_entry = db.query(CashBook).filter(

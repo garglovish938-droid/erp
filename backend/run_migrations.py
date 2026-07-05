@@ -120,6 +120,72 @@ def apply_migrations(engine):
         else:
             print(f"  [=] Column '{table_name}.approved_at' already exists.")
 
+    # Apply wallet-specific migrations
+    # 2. factory_wallet table migrations
+    fw_table = "factory_wallet"
+    if fw_table in inspector.get_table_names():
+        fw_columns = [col['name'] for col in inspector.get_columns(fw_table)]
+        with engine.begin() as conn:
+            if "name" not in fw_columns:
+                col_type = "TEXT" if is_sqlite else "VARCHAR(100)"
+                conn.execute(text(f"ALTER TABLE {fw_table} ADD COLUMN name {col_type}"))
+                print(f"  [+] Added column '{fw_table}.name'")
+            if "opening_balance" not in fw_columns:
+                col_type = "REAL" if is_sqlite else "DOUBLE PRECISION"
+                conn.execute(text(f"ALTER TABLE {fw_table} ADD COLUMN opening_balance {col_type} DEFAULT 0.0"))
+                print(f"  [+] Added column '{fw_table}.opening_balance'")
+            if "activation_date" not in fw_columns:
+                conn.execute(text(f"ALTER TABLE {fw_table} ADD COLUMN activation_date DATE"))
+                print(f"  [+] Added column '{fw_table}.activation_date'")
+            if "opening_txn_id" not in fw_columns:
+                col_type = "TEXT" if is_sqlite else "VARCHAR(50)"
+                conn.execute(text(f"ALTER TABLE {fw_table} ADD COLUMN opening_txn_id {col_type}"))
+                print(f"  [+] Added column '{fw_table}.opening_txn_id'")
+            if "status" not in fw_columns:
+                col_type = "TEXT" if is_sqlite else "VARCHAR(20)"
+                conn.execute(text(f"ALTER TABLE {fw_table} ADD COLUMN status {col_type} DEFAULT 'active'"))
+                print(f"  [+] Added column '{fw_table}.status'")
+            if "created_by" not in fw_columns:
+                col_type = "TEXT" if is_sqlite else "VARCHAR(36)"
+                conn.execute(text(f"ALTER TABLE {fw_table} ADD COLUMN created_by {col_type}"))
+                print(f"  [+] Added column '{fw_table}.created_by'")
+            if "created_at" not in fw_columns:
+                col_type = "DATETIME" if is_sqlite else "TIMESTAMP"
+                default_val = "datetime('now')" if is_sqlite else "CURRENT_TIMESTAMP"
+                conn.execute(text(f"ALTER TABLE {fw_table} ADD COLUMN created_at {col_type} DEFAULT {default_val}"))
+                print(f"  [+] Added column '{fw_table}.created_at'")
+
+    # 3. factory_wallet_transactions table migrations
+    fwt_table = "factory_wallet_transactions"
+    if fwt_table in inspector.get_table_names():
+        fwt_columns = [col['name'] for col in inspector.get_columns(fwt_table)]
+        with engine.begin() as conn:
+            if "wallet_id" not in fwt_columns:
+                col_type = "TEXT" if is_sqlite else "VARCHAR(36)"
+                conn.execute(text(f"ALTER TABLE {fwt_table} ADD COLUMN wallet_id {col_type} DEFAULT 'default'"))
+                print(f"  [+] Added column '{fwt_table}.wallet_id'")
+
+    # 4. daily_expenses table migrations
+    de_table = "daily_expenses"
+    if de_table in inspector.get_table_names():
+        de_columns = [col['name'] for col in inspector.get_columns(de_table)]
+        with engine.begin() as conn:
+            if "wallet_id" not in de_columns:
+                col_type = "TEXT" if is_sqlite else "VARCHAR(36)"
+                conn.execute(text(f"ALTER TABLE {de_table} ADD COLUMN wallet_id {col_type} DEFAULT 'default'"))
+                print(f"  [+] Added column '{de_table}.wallet_id'")
+            if "wallet_linked" not in de_columns:
+                col_type = "BOOLEAN" if is_sqlite else "BOOLEAN"
+                conn.execute(text(f"ALTER TABLE {de_table} ADD COLUMN wallet_linked {col_type} DEFAULT FALSE"))
+                print(f"  [+] Added column '{de_table}.wallet_linked'")
+            if "linked_date" not in de_columns:
+                conn.execute(text(f"ALTER TABLE {de_table} ADD COLUMN linked_date DATE"))
+                print(f"  [+] Added column '{de_table}.linked_date'")
+            if "transaction_source" not in de_columns:
+                col_type = "TEXT" if is_sqlite else "VARCHAR(50)"
+                conn.execute(text(f"ALTER TABLE {de_table} ADD COLUMN transaction_source {col_type}"))
+                print(f"  [+] Added column '{de_table}.transaction_source'")
+
 def main():
     print("=== STARTING DATABASE MIGRATION ===")
     engine = get_engine()
