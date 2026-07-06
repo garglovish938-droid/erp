@@ -455,31 +455,18 @@ export default function Inventory({ token, role }: { token: string; role: string
     if (!bulkPassword) return;
 
     setSubmitLoading(true);
+    setSubmitError("");
     try {
-      const userToken = getAuthToken();
-      const endpoint = bulkAction === "archive" 
-        ? "/api/inventory/bulk-archive" 
-        : bulkAction === "restore" 
-        ? "/api/inventory/bulk-restore" 
-        : "/api/inventory/bulk-delete";
-
-      const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+      await apiRequest("/api/archive/bulk", {
         method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${userToken}`
-        },
         body: JSON.stringify({
+          entity_type: "inventory",
+          action: bulkAction,
           ids: selectedIds,
-          password: bulkPassword,
-          reason: bulkReason
+          reason: bulkReason,
+          password: bulkPassword
         })
       });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.detail || "Failed to execute bulk action");
-      }
 
       showToast(`Bulk ${bulkAction} action completed successfully!`, "success");
       setShowBulkConfirmModal(false);

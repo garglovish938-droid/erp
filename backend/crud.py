@@ -1968,209 +1968,84 @@ def format_inr(number) -> str:
 
 # Daily Expense CRUD
 def create_daily_expense(db: Session, exp: DailyExpenseCreate, user_id: str) -> DailyExpense:
-    target_date = exp.expense_date or date.today()
-    date_str = target_date.strftime("%Y%m%d")
-    exp_count = db.query(func.count(DailyExpense.id)).filter(DailyExpense.expense_date == target_date).scalar()
-    expense_id = f"EXP-{date_str}-{exp_count + 1:04d}"
-    
-    user = db.query(User).filter(User.id == user_id).first()
-    role = user.role if user else "worker"
-    is_worker = role in ["worker", "carpenter", "operator", "employee"]
-    status = "pending" if is_worker else "approved"
-    
-    # Calculate amount if cash received is specified
-    actual_amount = exp.amount
-    if exp.cash_received and exp.cash_received > 0:
-        actual_amount = exp.cash_received - (exp.returned_cash or 0.0)
-        if actual_amount < 0:
-            actual_amount = 0.0
-            
-    # Wallet validation check
-    wallet_id = exp.wallet_id or "default"
-    wallet_linked = exp.wallet_linked or False
-    linked_date = None
-    
-    if wallet_linked:
-        wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
-        if wallet:
-            # Check activation date
-            if wallet.activation_date and target_date < wallet.activation_date:
-                wallet_linked = False
-            else:
-                linked_date = target_date
-                if actual_amount > wallet.balance:
-                    raise ValueError(f"Insufficient Factory Wallet Balance in '{wallet.name or wallet.id}'. Available: {format_inr(wallet.balance)}")
-        else:
-            wallet_linked = False
-            
-    db_exp = DailyExpense(
-        expense_id=expense_id,
-        expense_date=target_date,
-        expense_category=exp.expense_category,
-        description=exp.description,
-        amount=actual_amount,
-        vendor=exp.vendor,
-        project_id=exp.project_id,
-        created_by=user_id,
-        attachment_url=exp.attachment_url,
-        payment_mode=exp.payment_mode,
-        remarks=exp.remarks,
-        cash_received=exp.cash_received or 0.0,
-        returned_cash=exp.returned_cash or 0.0,
-        approval_status=status,
-        wallet_id=wallet_id,
-        wallet_linked=wallet_linked,
-        linked_date=linked_date,
-        transaction_source="daily_expense"
-    )
-    db.add(db_exp)
-    db.flush()
-    
-    # Deduct wallet balance immediately if approved
-    if db_exp.approval_status == "approved" and db_exp.amount > 0 and db_exp.wallet_linked:
-        log_wallet_transaction(
-            db=db,
-            wallet_id=db_exp.wallet_id,
-            txn_type="EXPENSE_DEDUCTED",
-            money_added=0.0,
-            expense_deducted=db_exp.amount,
-            remarks=db_exp.description or f"Expense: {db_exp.expense_category}",
-            ref_type="daily_expense",
-            ref_id=db_exp.id,
-            user_id=user_id,
-            txn_date=target_date
-        )
+    try:
+        target_date = exp.expense_date or date.today()
+        date_str = target_date.strftime("%Y%m%d")
+        exp_count = db.query(func.count(DailyExpense.id)).filter(DailyExpense.expense_date == target_date).scalar()
+        expense_id = f"EXP-{date_str}-{exp_count + 1:04d}"
         
-    db.commit()
-    db.refresh(db_exp)
-    
-    # Save Version 1 in Version History
-    exp_data = {
-        "expense_id": db_exp.expense_id,
-        "expense_date": str(db_exp.expense_date),
-        "expense_category": db_exp.expense_category,
-        "description": db_exp.description,
-        "amount": db_exp.amount,
-        "vendor": db_exp.vendor,
-        "project_id": db_exp.project_id,
-        "payment_mode": db_exp.payment_mode,
-        "remarks": db_exp.remarks,
-        "cash_received": db_exp.cash_received,
-        "returned_cash": db_exp.returned_cash,
-        "approval_status": db_exp.approval_status
-    }
-    save_version(db, "DailyExpense", db_exp.id, exp_data, user_id)
-    
-    log_detailed_activity(db, user_id, "DailyExpense", "create", db_exp.id, f"Created expense {db_exp.expense_id} of amount {db_exp.amount}")
-    
-    # Sync to cash book if approved
-    if db_exp.approval_status == "approved":
-        sync_cash_book_entry(db, "daily_expense", db_exp.id)
+        user = db.query(User).filter(User.id == user_id).first()
+        role = user.role if user else "worker"
+        is_worker = role in ["worker", "carpenter", "operator", "employee"]
+        status = "pending" if is_worker else "approved"
         
-    return db_exp
-
-def update_daily_expense(
-    db: Session,
-    expense_id: str,
-    exp_in: DailyExpenseUpdate,
-    user_id: str,
-    ip_address: Optional[str] = None,
-    device: Optional[str] = None,
-    browser: Optional[str] = None
-) -> Optional[DailyExpense]:
-    db_exp = db.query(DailyExpense).filter(DailyExpense.id == expense_id, DailyExpense.is_deleted == False).first()
-    if not db_exp:
-        return None
-        
-    # Capture old values
-    changes = []
-    old_values = []
-    new_values = []
-    
-    # Check if amount calculation needs to be updated based on cash received or returned
-    new_cash_received = exp_in.cash_received if exp_in.cash_received is not None else db_exp.cash_received
-    new_returned_cash = exp_in.returned_cash if exp_in.returned_cash is not None else db_exp.returned_cash
-    
-    calculated_amount = None
-    if exp_in.cash_received is not None or exp_in.returned_cash is not None:
-        if new_cash_received > 0:
-            calculated_amount = new_cash_received - new_returned_cash
-            if calculated_amount < 0:
-                calculated_amount = 0.0
-        else:
-            calculated_amount = exp_in.amount if exp_in.amount is not None else db_exp.amount
-            
-    old_amount = db_exp.amount
-    old_approval_status = db_exp.approval_status
-    old_wallet_id = db_exp.wallet_id
-    old_wallet_linked = db_exp.wallet_linked
-    old_expense_date = db_exp.expense_date
-    
-    new_amount = calculated_amount if calculated_amount is not None else exp_in.amount
-    if new_amount is None:
-        new_amount = old_amount
-        
-    new_approval_status = exp_in.approval_status if exp_in.approval_status is not None else old_approval_status
-    new_wallet_id = exp_in.wallet_id if exp_in.wallet_id is not None else old_wallet_id
-    new_wallet_linked = exp_in.wallet_linked if exp_in.wallet_linked is not None else old_wallet_linked
-    new_expense_date = exp_in.expense_date if exp_in.expense_date is not None else old_expense_date
-    
-    # Validate balance changes on the target wallet
-    if new_approval_status == "approved" and new_wallet_linked:
-        target_wallet = db.query(FactoryWallet).filter(FactoryWallet.id == new_wallet_id).first()
-        if target_wallet and (not target_wallet.activation_date or new_expense_date >= target_wallet.activation_date):
-            was_linked_to_same_wallet = (old_approval_status == "approved" and old_wallet_linked and old_wallet_id == new_wallet_id)
-            net_deduction = new_amount
-            if was_linked_to_same_wallet:
-                net_deduction = new_amount - old_amount
+        # Calculate amount if cash received is specified
+        actual_amount = exp.amount
+        if exp.cash_received and exp.cash_received > 0:
+            actual_amount = exp.cash_received - (exp.returned_cash or 0.0)
+            if actual_amount < 0:
+                actual_amount = 0.0
                 
-            if net_deduction > 0 and net_deduction > target_wallet.balance:
-                raise ValueError(f"Insufficient Factory Wallet Balance in '{target_wallet.name or target_wallet.id}'. Available: {format_inr(target_wallet.balance)}")
-            
-    fields_to_check = {
-        "amount": calculated_amount if calculated_amount is not None else exp_in.amount,
-        "expense_category": exp_in.expense_category,
-        "description": exp_in.description,
-        "vendor": exp_in.vendor,
-        "project_id": exp_in.project_id,
-        "attachment_url": exp_in.attachment_url,
-        "payment_mode": exp_in.payment_mode,
-        "remarks": exp_in.remarks,
-        "expense_date": exp_in.expense_date,
-        "cash_received": exp_in.cash_received,
-        "returned_cash": exp_in.returned_cash,
-        "approval_status": exp_in.approval_status,
-        "supervisor_comment": exp_in.supervisor_comment,
-        "wallet_id": exp_in.wallet_id,
-        "wallet_linked": exp_in.wallet_linked
-    }
-    
-    # If approval_status changes to approved, set approved_by and approved_at
-    if exp_in.approval_status == "approved" and db_exp.approval_status != "approved":
-        db_exp.approved_by = user_id
-        db_exp.approved_at = datetime.utcnow()
-    
-    for field, val in fields_to_check.items():
-        if val is not None:
-            old_val = getattr(db_exp, field)
-            if field == "project_id" and old_val != val:
-                old_p = db.query(Project).filter(Project.id == old_val).first() if old_val else None
-                new_p = db.query(Project).filter(Project.id == val).first() if val else None
-                old_val_name = old_p.name if old_p else "None"
-                new_val_name = new_p.name if new_p else "None"
-                changes.append(f"Project: {old_val_name} -> {new_val_name}")
-                old_values.append(f"Project: {old_val_name}")
-                new_values.append(f"Project: {new_val_name}")
-            elif old_val != val:
-                changes.append(f"{field.replace('_', ' ').capitalize()}: {old_val} -> {val}")
-                old_values.append(f"{field}: {old_val}")
-                new_values.append(f"{field}: {val}")
-            
-            setattr(db_exp, field, val)
-            
-    if changes:
+        # Wallet validation check
+        wallet_id = exp.wallet_id or "default"
+        wallet_linked = exp.wallet_linked or False
+        linked_date = None
+        
+        if wallet_linked:
+            wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
+            if wallet:
+                # Check activation date
+                if wallet.activation_date and target_date < wallet.activation_date:
+                    wallet_linked = False
+                else:
+                    linked_date = target_date
+                    if actual_amount > wallet.balance:
+                        raise ValueError(f"Insufficient Factory Wallet Balance in '{wallet.name or wallet.id}'. Available: {format_inr(wallet.balance)}")
+            else:
+                wallet_linked = False
+                
+        db_exp = DailyExpense(
+            expense_id=expense_id,
+            expense_date=target_date,
+            expense_category=exp.expense_category,
+            description=exp.description,
+            amount=actual_amount,
+            vendor=exp.vendor,
+            project_id=exp.project_id,
+            created_by=user_id,
+            attachment_url=exp.attachment_url,
+            payment_mode=exp.payment_mode,
+            remarks=exp.remarks,
+            cash_received=exp.cash_received or 0.0,
+            returned_cash=exp.returned_cash or 0.0,
+            approval_status=status,
+            wallet_id=wallet_id,
+            wallet_linked=wallet_linked,
+            linked_date=linked_date,
+            transaction_source="daily_expense"
+        )
+        db.add(db_exp)
         db.flush()
-        # Save new state to Version History
+        
+        # Deduct wallet balance immediately if approved
+        if db_exp.approval_status == "approved" and db_exp.amount > 0 and db_exp.wallet_linked:
+            log_wallet_transaction(
+                db=db,
+                wallet_id=db_exp.wallet_id,
+                txn_type="EXPENSE_DEDUCTED",
+                money_added=0.0,
+                expense_deducted=db_exp.amount,
+                remarks=db_exp.description or f"Expense: {db_exp.expense_category}",
+                ref_type="daily_expense",
+                ref_id=db_exp.id,
+                user_id=user_id,
+                txn_date=target_date
+            )
+            
+        db.commit()
+        db.refresh(db_exp)
+        
+        # Save Version 1 in Version History
         exp_data = {
             "expense_id": db_exp.expense_id,
             "expense_date": str(db_exp.expense_date),
@@ -2183,75 +2058,209 @@ def update_daily_expense(
             "remarks": db_exp.remarks,
             "cash_received": db_exp.cash_received,
             "returned_cash": db_exp.returned_cash,
-            "approval_status": db_exp.approval_status,
-            "supervisor_comment": db_exp.supervisor_comment
+            "approval_status": db_exp.approval_status
         }
         save_version(db, "DailyExpense", db_exp.id, exp_data, user_id)
         
-        # Log to Audit Log
-        log_audit(
-            db=db,
-            user_id=user_id,
-            project_id=db_exp.project_id,
-            inventory_id=None,
-            action="edit_expense",
-            details=f"Edited expense {db_exp.expense_id}. Changes: {', '.join(changes)}",
-            old_value=" | ".join(old_values),
-            new_value=" | ".join(new_values),
-            reason=exp_in.reason,
-            ip_address=ip_address,
-            device=device,
-            browser=browser
-        )
-        log_detailed_activity(db, user_id, "DailyExpense", "update", db_exp.id, f"Updated expense {db_exp.expense_id}: {', '.join(changes)}")
+        log_detailed_activity(db, user_id, "DailyExpense", "create", db_exp.id, f"Created expense {db_exp.expense_id} of amount {db_exp.amount}")
         
-        # Wallet ledger adjustments using log_wallet_transaction helper
-        # 1. Revert old transaction if it was deducted
-        was_deducted = (old_approval_status == "approved" and old_amount > 0 and old_wallet_linked)
-        if was_deducted:
-            old_wallet = db.query(FactoryWallet).filter(FactoryWallet.id == old_wallet_id).first()
-            if old_wallet and (not old_wallet.activation_date or old_expense_date >= old_wallet.activation_date):
-                log_wallet_transaction(
-                    db=db,
-                    wallet_id=old_wallet_id,
-                    txn_type="EXPENSE_REVERTED",
-                    money_added=old_amount,
-                    expense_deducted=0.0,
-                    remarks=f"Reverted edited expense (old state): {db_exp.expense_id}",
-                    ref_type="daily_expense",
-                    ref_id=db_exp.id,
-                    user_id=user_id,
-                    txn_date=date.today()
-                )
+        # Sync to cash book if approved
+        if db_exp.approval_status == "approved":
+            sync_cash_book_entry(db, "daily_expense", db_exp.id)
+            
+        return db_exp
+    except Exception as e:
+        db.rollback()
+        raise e
+
+
+def update_daily_expense(
+    db: Session,
+    expense_id: str,
+    exp_in: DailyExpenseUpdate,
+    user_id: str,
+    ip_address: Optional[str] = None,
+    device: Optional[str] = None,
+    browser: Optional[str] = None
+) -> Optional[DailyExpense]:
+    try:
+        db_exp = db.query(DailyExpense).filter(DailyExpense.id == expense_id, DailyExpense.is_deleted == False).first()
+        if not db_exp:
+            return None
+            
+        # Capture old values
+        changes = []
+        old_values = []
+        new_values = []
+        
+        # Check if amount calculation needs to be updated based on cash received or returned
+        new_cash_received = exp_in.cash_received if exp_in.cash_received is not None else db_exp.cash_received
+        new_returned_cash = exp_in.returned_cash if exp_in.returned_cash is not None else db_exp.returned_cash
+        
+        calculated_amount = None
+        if exp_in.cash_received is not None or exp_in.returned_cash is not None:
+            if new_cash_received > 0:
+                calculated_amount = new_cash_received - new_returned_cash
+                if calculated_amount < 0:
+                    calculated_amount = 0.0
+            else:
+                calculated_amount = exp_in.amount if exp_in.amount is not None else db_exp.amount
                 
-        # 2. Apply new transaction if it is approved and linked
-        is_deducted = (db_exp.approval_status == "approved" and db_exp.amount > 0 and db_exp.wallet_linked)
-        if is_deducted:
-            new_wallet = db.query(FactoryWallet).filter(FactoryWallet.id == db_exp.wallet_id).first()
-            if new_wallet:
-                if new_wallet.activation_date and db_exp.expense_date < new_wallet.activation_date:
-                    db_exp.wallet_linked = False
-                else:
+        old_amount = db_exp.amount
+        old_approval_status = db_exp.approval_status
+        old_wallet_id = db_exp.wallet_id
+        old_wallet_linked = db_exp.wallet_linked
+        old_expense_date = db_exp.expense_date
+        
+        new_amount = calculated_amount if calculated_amount is not None else exp_in.amount
+        if new_amount is None:
+            new_amount = old_amount
+            
+        new_approval_status = exp_in.approval_status if exp_in.approval_status is not None else old_approval_status
+        new_wallet_id = exp_in.wallet_id if exp_in.wallet_id is not None else old_wallet_id
+        new_wallet_linked = exp_in.wallet_linked if exp_in.wallet_linked is not None else old_wallet_linked
+        new_expense_date = exp_in.expense_date if exp_in.expense_date is not None else old_expense_date
+        
+        # Validate balance changes on the target wallet
+        if new_approval_status == "approved" and new_wallet_linked:
+            target_wallet = db.query(FactoryWallet).filter(FactoryWallet.id == new_wallet_id).first()
+            if target_wallet and (not target_wallet.activation_date or new_expense_date >= target_wallet.activation_date):
+                was_linked_to_same_wallet = (old_approval_status == "approved" and old_wallet_linked and old_wallet_id == new_wallet_id)
+                net_deduction = new_amount
+                if was_linked_to_same_wallet:
+                    net_deduction = new_amount - old_amount
+                    
+                if net_deduction > 0 and net_deduction > target_wallet.balance:
+                    raise ValueError(f"Insufficient Factory Wallet Balance in '{target_wallet.name or target_wallet.id}'. Available: {format_inr(target_wallet.balance)}")
+                
+        fields_to_check = {
+            "amount": calculated_amount if calculated_amount is not None else exp_in.amount,
+            "expense_category": exp_in.expense_category,
+            "description": exp_in.description,
+            "vendor": exp_in.vendor,
+            "project_id": exp_in.project_id,
+            "attachment_url": exp_in.attachment_url,
+            "payment_mode": exp_in.payment_mode,
+            "remarks": exp_in.remarks,
+            "expense_date": exp_in.expense_date,
+            "cash_received": exp_in.cash_received,
+            "returned_cash": exp_in.returned_cash,
+            "approval_status": exp_in.approval_status,
+            "supervisor_comment": exp_in.supervisor_comment,
+            "wallet_id": exp_in.wallet_id,
+            "wallet_linked": exp_in.wallet_linked
+        }
+        
+        # If approval_status changes to approved, set approved_by and approved_at
+        if exp_in.approval_status == "approved" and db_exp.approval_status != "approved":
+            db_exp.approved_by = user_id
+            db_exp.approved_at = datetime.utcnow()
+        
+        for field, val in fields_to_check.items():
+            if val is not None:
+                old_val = getattr(db_exp, field)
+                if field == "project_id" and old_val != val:
+                    old_p = db.query(Project).filter(Project.id == old_val).first() if old_val else None
+                    new_p = db.query(Project).filter(Project.id == val).first() if val else None
+                    old_val_name = old_p.name if old_p else "None"
+                    new_val_name = new_p.name if new_p else "None"
+                    changes.append(f"Project: {old_val_name} -> {new_val_name}")
+                    old_values.append(f"Project: {old_val_name}")
+                    new_values.append(f"Project: {new_val_name}")
+                elif old_val != val:
+                    changes.append(f"{field.replace('_', ' ').capitalize()}: {old_val} -> {val}")
+                    old_values.append(f"{field}: {old_val}")
+                    new_values.append(f"{field}: {val}")
+                
+                setattr(db_exp, field, val)
+                
+        if changes:
+            db.flush()
+            # Save new state to Version History
+            exp_data = {
+                "expense_id": db_exp.expense_id,
+                "expense_date": str(db_exp.expense_date),
+                "expense_category": db_exp.expense_category,
+                "description": db_exp.description,
+                "amount": db_exp.amount,
+                "vendor": db_exp.vendor,
+                "project_id": db_exp.project_id,
+                "payment_mode": db_exp.payment_mode,
+                "remarks": db_exp.remarks,
+                "cash_received": db_exp.cash_received,
+                "returned_cash": db_exp.returned_cash,
+                "approval_status": db_exp.approval_status,
+                "supervisor_comment": db_exp.supervisor_comment
+            }
+            save_version(db, "DailyExpense", db_exp.id, exp_data, user_id)
+            
+            # Log to Audit Log
+            log_audit(
+                db=db,
+                user_id=user_id,
+                project_id=db_exp.project_id,
+                inventory_id=None,
+                action="edit_expense",
+                details=f"Edited expense {db_exp.expense_id}. Changes: {', '.join(changes)}",
+                old_value=" | ".join(old_values),
+                new_value=" | ".join(new_values),
+                reason=exp_in.reason,
+                ip_address=ip_address,
+                device=device,
+                browser=browser
+            )
+            log_detailed_activity(db, user_id, "DailyExpense", "update", db_exp.id, f"Updated expense {db_exp.expense_id}: {', '.join(changes)}")
+            
+            # Wallet ledger adjustments using log_wallet_transaction helper
+            # 1. Revert old transaction if it was deducted
+            was_deducted = (old_approval_status == "approved" and old_amount > 0 and old_wallet_linked)
+            if was_deducted:
+                old_wallet = db.query(FactoryWallet).filter(FactoryWallet.id == old_wallet_id).first()
+                if old_wallet and (not old_wallet.activation_date or old_expense_date >= old_wallet.activation_date):
                     log_wallet_transaction(
                         db=db,
-                        wallet_id=db_exp.wallet_id,
-                        txn_type="EXPENSE_DEDUCTED",
-                        money_added=0.0,
-                        expense_deducted=db_exp.amount,
-                        remarks=db_exp.description or f"Expense: {db_exp.expense_category}",
+                        wallet_id=old_wallet_id,
+                        txn_type="EXPENSE_REVERTED",
+                        money_added=old_amount,
+                        expense_deducted=0.0,
+                        remarks=f"Reverted edited expense (old state): {db_exp.expense_id}",
                         ref_type="daily_expense",
                         ref_id=db_exp.id,
                         user_id=user_id,
-                        txn_date=db_exp.expense_date
+                        txn_date=date.today()
                     )
                     
-        db.commit()
-        db.refresh(db_exp)
-        
-        # Sync Cash Book!
-        sync_cash_book_entry(db, "daily_expense", db_exp.id)
-        
-    return db_exp
+            # 2. Apply new transaction if it is approved and linked
+            is_deducted = (db_exp.approval_status == "approved" and db_exp.amount > 0 and db_exp.wallet_linked)
+            if is_deducted:
+                new_wallet = db.query(FactoryWallet).filter(FactoryWallet.id == db_exp.wallet_id).first()
+                if new_wallet:
+                    if new_wallet.activation_date and db_exp.expense_date < new_wallet.activation_date:
+                        db_exp.wallet_linked = False
+                    else:
+                        log_wallet_transaction(
+                            db=db,
+                            wallet_id=db_exp.wallet_id,
+                            txn_type="EXPENSE_DEDUCTED",
+                            money_added=0.0,
+                            expense_deducted=db_exp.amount,
+                            remarks=db_exp.description or f"Expense: {db_exp.expense_category}",
+                            ref_type="daily_expense",
+                            ref_id=db_exp.id,
+                            user_id=user_id,
+                            txn_date=db_exp.expense_date
+                        )
+                        
+            db.commit()
+            db.refresh(db_exp)
+            
+            # Sync Cash Book!
+            sync_cash_book_entry(db, "daily_expense", db_exp.id)
+            
+        return db_exp
+    except Exception as e:
+        db.rollback()
+        raise e
 
 def get_daily_expenses(
     db: Session,
@@ -2272,37 +2281,42 @@ def get_daily_expenses(
     return query.order_by(DailyExpense.expense_date.desc()).all()
 
 def delete_daily_expense(db: Session, expense_id: str, user_id: str) -> Optional[DailyExpense]:
-    db_exp = db.query(DailyExpense).filter(DailyExpense.id == expense_id, DailyExpense.is_deleted == False).first()
-    if not db_exp:
-        return None
-    db_exp.is_deleted = True
-    db_exp.deleted_at = datetime.utcnow()
-    db_exp.deleted_by = user_id
-    
-    # If approved and linked, revert deduction from wallet balance
-    if db_exp.approval_status == "approved" and db_exp.amount > 0 and db_exp.wallet_linked:
-        wallet = db.query(FactoryWallet).filter(FactoryWallet.id == db_exp.wallet_id).first()
-        if wallet and (not wallet.activation_date or db_exp.expense_date >= wallet.activation_date):
-            log_wallet_transaction(
-                db=db,
-                wallet_id=db_exp.wallet_id,
-                txn_type="EXPENSE_REVERTED",
-                money_added=db_exp.amount,
-                expense_deducted=0.0,
-                remarks=f"Reverted deleted expense: {db_exp.expense_id}",
-                ref_type="daily_expense",
-                ref_id=db_exp.id,
-                user_id=user_id,
-                txn_date=date.today()
-            )
-            
-    log_detailed_activity(db, user_id, "DailyExpense", "delete", db_exp.id, f"Deleted expense {db_exp.expense_id}")
-    db.commit()
-    
-    # Sync Cash Book!
-    sync_cash_book_entry(db, "daily_expense", db_exp.id)
-    
-    return db_exp
+    try:
+        db_exp = db.query(DailyExpense).filter(DailyExpense.id == expense_id, DailyExpense.is_deleted == False).first()
+        if not db_exp:
+            return None
+        db_exp.is_deleted = True
+        db_exp.deleted_at = datetime.utcnow()
+        db_exp.deleted_by = user_id
+        
+        # If approved and linked, revert deduction from wallet balance
+        if db_exp.approval_status == "approved" and db_exp.amount > 0 and db_exp.wallet_linked:
+            wallet = db.query(FactoryWallet).filter(FactoryWallet.id == db_exp.wallet_id).first()
+            if wallet and (not wallet.activation_date or db_exp.expense_date >= wallet.activation_date):
+                log_wallet_transaction(
+                    db=db,
+                    wallet_id=db_exp.wallet_id,
+                    txn_type="EXPENSE_REVERTED",
+                    money_added=db_exp.amount,
+                    expense_deducted=0.0,
+                    remarks=f"Reverted deleted expense: {db_exp.expense_id}",
+                    ref_type="daily_expense",
+                    ref_id=db_exp.id,
+                    user_id=user_id,
+                    txn_date=date.today()
+                )
+                
+        log_detailed_activity(db, user_id, "DailyExpense", "delete", db_exp.id, f"Deleted expense {db_exp.expense_id}")
+        db.commit()
+        
+        # Sync Cash Book!
+        sync_cash_book_entry(db, "daily_expense", db_exp.id)
+        
+        return db_exp
+    except Exception as e:
+        db.rollback()
+        raise e
+
 
 
 # --- PROJECT MATERIALS & TRANSFERS CRUD (NEW) ---
@@ -3392,7 +3406,7 @@ def get_factory_wallet_transactions(db: Session) -> List[FactoryWalletTransactio
     return db.query(FactoryWalletTransaction).options(
         joinedload(FactoryWalletTransaction.user),
         joinedload(FactoryWalletTransaction.approver)
-    ).order_by(FactoryWalletTransaction.created_at.desc(), FactoryWalletTransaction.id.desc()).all()
+    ).filter(FactoryWalletTransaction.is_deleted == False).order_by(FactoryWalletTransaction.created_at.desc(), FactoryWalletTransaction.id.desc()).all()
 
 def add_wallet_funds(
     db: Session,
@@ -3404,62 +3418,67 @@ def add_wallet_funds(
     user_id: Optional[str] = None,
     wallet_id: Optional[str] = None
 ) -> FactoryWalletTransaction:
-    target_date = date.today()
-    date_str = target_date.strftime("%Y%m%d")
-    
-    # Determine which wallet to use
-    selected_wallet_id = wallet_id or "default"
-    wallet = db.query(FactoryWallet).filter(FactoryWallet.id == selected_wallet_id).first()
-    if not wallet:
-        # Fallback to default or first active wallet if not found
-        wallet = db.query(FactoryWallet).first()
-        if not wallet:
-            wallet = FactoryWallet(id="default", balance=0.0, name="Main Factory Wallet", updated_at=datetime.utcnow())
-            db.add(wallet)
-            db.flush()
-        selected_wallet_id = wallet.id
+    try:
+        target_date = date.today()
+        date_str = target_date.strftime("%Y%m%d")
         
-    # 1. Create FactoryFund entry for compatibility
-    fund_count = db.query(func.count(FactoryFund.id)).filter(FactoryFund.date == target_date).scalar()
-    fund_id = f"FUND-{date_str}-{fund_count + 1:04d}"
-    
-    db_fund = FactoryFund(
-        fund_id=fund_id,
-        date=target_date,
-        amount=amount,
-        payment_method=payment_method,
-        reference_number=reference_number,
-        remarks=remarks,
-        attachment_url=attachment_url,
-        added_by=user_id
-    )
-    db.add(db_fund)
-    db.flush()
-    
-    # 2. Log transaction and update balance
-    db_txn = log_wallet_transaction(
-        db=db,
-        wallet_id=selected_wallet_id,
-        txn_type="FUND_ADDED",
-        money_added=amount,
-        expense_deducted=0.0,
-        remarks=remarks or "Owner Funding Injection",
-        ref_type="factory_fund",
-        ref_id=db_fund.id,
-        user_id=user_id,
-        txn_date=target_date
-    )
-    
-    db.commit()
-    db.refresh(db_txn)
-    
-    # 4. Sync to Cash Ledger (CashBook)
-    sync_cash_book_entry(db, "factory_fund", db_fund.id)
-    
-    # 5. Log activity
-    log_detailed_activity(db, user_id, "FactoryFund", "create", db_fund.id, f"Added owner funding {db_fund.fund_id} of amount {db_fund.amount} to Factory Wallet.")
-    
-    return db_txn
+        # Determine which wallet to use
+        selected_wallet_id = wallet_id or "default"
+        wallet = db.query(FactoryWallet).filter(FactoryWallet.id == selected_wallet_id).first()
+        if not wallet:
+            # Fallback to default or first active wallet if not found
+            wallet = db.query(FactoryWallet).first()
+            if not wallet:
+                wallet = FactoryWallet(id="default", balance=0.0, name="Main Factory Wallet", updated_at=datetime.utcnow())
+                db.add(wallet)
+                db.flush()
+            selected_wallet_id = wallet.id
+            
+        # 1. Create FactoryFund entry for compatibility
+        fund_count = db.query(func.count(FactoryFund.id)).filter(FactoryFund.date == target_date).scalar()
+        fund_id = f"FUND-{date_str}-{fund_count + 1:04d}"
+        
+        db_fund = FactoryFund(
+            fund_id=fund_id,
+            date=target_date,
+            amount=amount,
+            payment_method=payment_method,
+            reference_number=reference_number,
+            remarks=remarks,
+            attachment_url=attachment_url,
+            added_by=user_id
+        )
+        db.add(db_fund)
+        db.flush()
+        
+        # 2. Log transaction and update balance
+        db_txn = log_wallet_transaction(
+            db=db,
+            wallet_id=selected_wallet_id,
+            txn_type="FUND_ADDED",
+            money_added=amount,
+            expense_deducted=0.0,
+            remarks=remarks or "Owner Funding Injection",
+            ref_type="factory_fund",
+            ref_id=db_fund.id,
+            user_id=user_id,
+            txn_date=target_date
+        )
+        
+        db.commit()
+        db.refresh(db_txn)
+        
+        # 4. Sync to Cash Ledger (CashBook)
+        sync_cash_book_entry(db, "factory_fund", db_fund.id)
+        
+        # 5. Log activity
+        log_detailed_activity(db, user_id, "FactoryFund", "create", db_fund.id, f"Added owner funding {db_fund.fund_id} of amount {db_fund.amount} to Factory Wallet.")
+        
+        return db_txn
+    except Exception as e:
+        db.rollback()
+        raise e
+
 
 def create_factory_fund(db: Session, fund: FactoryFundCreate, user_id: str) -> FactoryFund:
     wallet_txn = add_wallet_funds(
@@ -3499,38 +3518,43 @@ def get_factory_financial_stats(db: Session) -> dict:
     }
 
 def create_project_payment(db: Session, payment: ProjectPaymentCreate, user_id: str) -> ProjectPayment:
-    target_date = payment.received_date or date.today()
-    date_str = target_date.strftime("%Y%m%d")
-    pay_count = db.query(func.count(ProjectPayment.id)).filter(ProjectPayment.received_date == target_date).scalar()
-    payment_id = f"PAY-{date_str}-{pay_count + 1:04d}"
-    pending = payment.invoice_amount - payment.received_amount
+    try:
+        target_date = payment.received_date or date.today()
+        date_str = target_date.strftime("%Y%m%d")
+        pay_count = db.query(func.count(ProjectPayment.id)).filter(ProjectPayment.received_date == target_date).scalar()
+        payment_id = f"PAY-{date_str}-{pay_count + 1:04d}"
+        pending = payment.invoice_amount - payment.received_amount
 
-    db_pay = ProjectPayment(
-        payment_id=payment_id,
-        project_id=payment.project_id,
-        client_id=payment.client_id,
-        invoice_number=payment.invoice_number,
-        invoice_amount=payment.invoice_amount,
-        received_amount=payment.received_amount,
-        pending_amount=pending,
-        payment_method=payment.payment_method,
-        reference_number=payment.reference_number,
-        bank_name=payment.bank_name,
-        received_date=target_date,
-        received_by=user_id,
-        attachment_url=payment.attachment_url,
-        remarks=payment.remarks,
-        receipt_type=payment.receipt_type or "Project Payment"
-    )
-    db.add(db_pay)
-    db.commit()
-    db.refresh(db_pay)
-    
-    # Sync to cash book!
-    sync_cash_book_entry(db, "project_payment", db_pay.id)
-    
-    log_detailed_activity(db, user_id, "ProjectPayment", "create", db_pay.id, f"Received project payment {db_pay.payment_id} of amount {db_pay.received_amount}")
-    return db_pay
+        db_pay = ProjectPayment(
+            payment_id=payment_id,
+            project_id=payment.project_id,
+            client_id=payment.client_id,
+            invoice_number=payment.invoice_number,
+            invoice_amount=payment.invoice_amount,
+            received_amount=payment.received_amount,
+            pending_amount=pending,
+            payment_method=payment.payment_method,
+            reference_number=payment.reference_number,
+            bank_name=payment.bank_name,
+            received_date=target_date,
+            received_by=user_id,
+            attachment_url=payment.attachment_url,
+            remarks=payment.remarks,
+            receipt_type=payment.receipt_type or "Project Payment"
+        )
+        db.add(db_pay)
+        db.commit()
+        db.refresh(db_pay)
+        
+        # Sync to cash book!
+        sync_cash_book_entry(db, "project_payment", db_pay.id)
+        
+        log_detailed_activity(db, user_id, "ProjectPayment", "create", db_pay.id, f"Received project payment {db_pay.payment_id} of amount {db_pay.received_amount}")
+        return db_pay
+    except Exception as e:
+        db.rollback()
+        raise e
+
 
 def get_project_payments(db: Session, project_id: Optional[str] = None) -> List[ProjectPayment]:
     query = db.query(ProjectPayment).options(
@@ -3548,8 +3572,8 @@ def get_financial_dashboard_stats(db: Session) -> dict:
     
     today = date.today()
     today_expenses = db.query(func.sum(DailyExpense.amount)).filter(DailyExpense.expense_date == today, DailyExpense.is_deleted == False).scalar() or 0.0
-    project_revenue = db.query(func.sum(ProjectPayment.received_amount)).scalar() or 0.0
-    pending_payments = db.query(func.sum(ProjectPayment.pending_amount)).scalar() or 0.0
+    project_revenue = db.query(func.sum(ProjectPayment.received_amount)).filter(ProjectPayment.is_deleted == False).scalar() or 0.0
+    pending_payments = db.query(func.sum(ProjectPayment.pending_amount)).filter(ProjectPayment.is_deleted == False).scalar() or 0.0
     
     # Calculate cash flow and profit using CashBook totals
     cash_flow = cash_stats["available_balance"]
@@ -3567,6 +3591,7 @@ def get_financial_dashboard_stats(db: Session) -> dict:
         "cash_flow": round(cash_flow, 2),
         "net_profit": round(net_profit, 2)
     }
+
 
 
 # ============================================================
@@ -3639,7 +3664,7 @@ def recalculate_wallet_balance(db: Session, wallet_id: str) -> float:
     if not wallet:
         return 0.0
     
-    txns = db.query(FactoryWalletTransaction).filter(FactoryWalletTransaction.wallet_id == wallet_id).all()
+    txns = db.query(FactoryWalletTransaction).filter(FactoryWalletTransaction.wallet_id == wallet_id, FactoryWalletTransaction.is_deleted == False).all()
     balance = wallet.opening_balance
     for t in txns:
         if t.transaction_type == "OPENING_BALANCE":
@@ -3717,69 +3742,77 @@ def log_wallet_transaction(
     return db_txn
 
 def create_factory_wallet(db: Session, wallet: FactoryWalletCreate, user_id: str) -> FactoryWallet:
-    target_date = wallet.activation_date or date.today()
-    
-    db_wallet = FactoryWallet(
-        id=generate_uuid(),
-        name=wallet.name,
-        opening_balance=wallet.opening_balance,
-        activation_date=target_date,
-        balance=wallet.opening_balance,
-        status=wallet.status or "active",
-        created_by=user_id,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
-    )
-    db.add(db_wallet)
-    db.flush()
-    
-    if wallet.opening_balance > 0:
-        db_txn = log_wallet_transaction(
-            db=db,
-            wallet_id=db_wallet.id,
-            txn_type="OPENING_BALANCE",
-            money_added=0.0,
-            expense_deducted=0.0,
-            remarks=f"Opening Balance for {wallet.name}",
-            user_id=user_id,
-            txn_date=target_date
-        )
-        db_wallet.opening_txn_id = db_txn.transaction_id
+    try:
+        target_date = wallet.activation_date or date.today()
         
-        entry_in = CashBookCreate(
-            date=target_date,
-            transaction_type="IN",
-            category="Owner Investment",
-            amount=wallet.opening_balance,
-            payment_method="Cash",
-            remarks=f"Opening Balance for Wallet: {wallet.name}"
+        db_wallet = FactoryWallet(
+            id=generate_uuid(),
+            name=wallet.name,
+            opening_balance=wallet.opening_balance,
+            activation_date=target_date,
+            balance=wallet.opening_balance,
+            status=wallet.status or "active",
+            created_by=user_id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
         )
-        db_entry = create_cash_book_entry(db, entry_in, user_id, ref_type="factory_fund", ref_id=db_txn.id)
-        db_txn.reference_id = db_entry.id
+        db.add(db_wallet)
+        db.flush()
         
-    db.commit()
-    db.refresh(db_wallet)
-    return db_wallet
+        if wallet.opening_balance > 0:
+            db_txn = log_wallet_transaction(
+                db=db,
+                wallet_id=db_wallet.id,
+                txn_type="OPENING_BALANCE",
+                money_added=0.0,
+                expense_deducted=0.0,
+                remarks=f"Opening Balance for {wallet.name}",
+                user_id=user_id,
+                txn_date=target_date
+            )
+            db_wallet.opening_txn_id = db_txn.transaction_id
+            
+            entry_in = CashBookCreate(
+                date=target_date,
+                transaction_type="IN",
+                category="Owner Investment",
+                amount=wallet.opening_balance,
+                payment_method="Cash",
+                remarks=f"Opening Balance for Wallet: {wallet.name}"
+            )
+            db_entry = create_cash_book_entry(db, entry_in, user_id, ref_type="factory_fund", ref_id=db_txn.id)
+            db_txn.reference_id = db_entry.id
+            
+        db.commit()
+        db.refresh(db_wallet)
+        return db_wallet
+    except Exception as e:
+        db.rollback()
+        raise e
 
 def update_factory_wallet(db: Session, wallet_id: str, update: FactoryWalletUpdate) -> Optional[FactoryWallet]:
-    db_wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
-    if not db_wallet:
-        return None
-        
-    if update.name is not None:
-        db_wallet.name = update.name
-    if update.activation_date is not None:
-        db_wallet.activation_date = update.activation_date
-    if update.status is not None:
-        db_wallet.status = update.status
-    if update.opening_balance is not None:
-        db_wallet.opening_balance = update.opening_balance
-        db_wallet.balance = recalculate_wallet_balance(db, wallet_id)
-        
-    db_wallet.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(db_wallet)
-    return db_wallet
+    try:
+        db_wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
+        if not db_wallet:
+            return None
+            
+        if update.name is not None:
+            db_wallet.name = update.name
+        if update.activation_date is not None:
+            db_wallet.activation_date = update.activation_date
+        if update.status is not None:
+            db_wallet.status = update.status
+        if update.opening_balance is not None:
+            db_wallet.opening_balance = update.opening_balance
+            db_wallet.balance = recalculate_wallet_balance(db, wallet_id)
+            
+        db_wallet.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(db_wallet)
+        return db_wallet
+    except Exception as e:
+        db.rollback()
+        raise e
 
 
 def create_cash_book_entry(db: Session, entry: CashBookCreate, added_by: Optional[str], ref_type: Optional[str] = None, ref_id: Optional[str] = None) -> CashBook:
@@ -4137,176 +4170,189 @@ def update_project_payment(
     user_id: str,
     reason: str
 ) -> Optional[ProjectPayment]:
-    db_pay = db.query(ProjectPayment).filter(ProjectPayment.id == payment_id, ProjectPayment.is_deleted == False).first()
-    if not db_pay:
-        return None
+    try:
+        db_pay = db.query(ProjectPayment).filter(ProjectPayment.id == payment_id, ProjectPayment.is_deleted == False).first()
+        if not db_pay:
+            return None
+            
+        import json
+        old_vals = {
+            "invoice_number": db_pay.invoice_number,
+            "invoice_amount": db_pay.invoice_amount,
+            "received_amount": db_pay.received_amount,
+            "payment_method": db_pay.payment_method,
+            "reference_number": db_pay.reference_number,
+            "bank_name": db_pay.bank_name,
+            "received_date": str(db_pay.received_date) if db_pay.received_date else None,
+            "remarks": db_pay.remarks,
+            "receipt_type": db_pay.receipt_type,
+            "project_id": db_pay.project_id,
+            "client_id": db_pay.client_id,
+            "attachment_url": db_pay.attachment_url
+        }
         
-    import json
-    old_vals = {
-        "invoice_number": db_pay.invoice_number,
-        "invoice_amount": db_pay.invoice_amount,
-        "received_amount": db_pay.received_amount,
-        "payment_method": db_pay.payment_method,
-        "reference_number": db_pay.reference_number,
-        "bank_name": db_pay.bank_name,
-        "received_date": str(db_pay.received_date) if db_pay.received_date else None,
-        "remarks": db_pay.remarks,
-        "receipt_type": db_pay.receipt_type,
-        "project_id": db_pay.project_id,
-        "client_id": db_pay.client_id,
-        "attachment_url": db_pay.attachment_url
-    }
-    
-    if invoice_number is not None: db_pay.invoice_number = invoice_number
-    if invoice_amount is not None: db_pay.invoice_amount = invoice_amount
-    if received_amount is not None: db_pay.received_amount = received_amount
-    if payment_method is not None: db_pay.payment_method = payment_method
-    if reference_number is not None: db_pay.reference_number = reference_number
-    if bank_name is not None: db_pay.bank_name = bank_name
-    if received_date is not None: db_pay.received_date = received_date
-    if remarks is not None: db_pay.remarks = remarks
-    if receipt_type is not None: db_pay.receipt_type = receipt_type
-    if project_id is not None: db_pay.project_id = project_id
-    if client_id is not None: db_pay.client_id = client_id
-    if attachment_url is not None: db_pay.attachment_url = attachment_url
-    
-    db_pay.pending_amount = db_pay.invoice_amount - db_pay.received_amount
-    
-    new_vals = {
-        "invoice_number": db_pay.invoice_number,
-        "invoice_amount": db_pay.invoice_amount,
-        "received_amount": db_pay.received_amount,
-        "payment_method": db_pay.payment_method,
-        "reference_number": db_pay.reference_number,
-        "bank_name": db_pay.bank_name,
-        "received_date": str(db_pay.received_date) if db_pay.received_date else None,
-        "remarks": db_pay.remarks,
-        "receipt_type": db_pay.receipt_type,
-        "project_id": db_pay.project_id,
-        "client_id": db_pay.client_id,
-        "attachment_url": db_pay.attachment_url
-    }
-    
-    version_log = ProjectPaymentVersion(
-        payment_id=db_pay.id,
-        old_values=json.dumps(old_vals),
-        new_values=json.dumps(new_vals),
-        user_id=user_id,
-        reason=reason
-    )
-    db.add(version_log)
-    
-    sync_cash_book_entry(
-        db=db,
-        ref_type="project_payment",
-        ref_id=db_pay.id,
-        txn_date=db_pay.received_date,
-        amount=db_pay.received_amount,
-        payment_method=db_pay.payment_method,
-        category="Project Payment" if db_pay.receipt_type == "Project Payment" else "Other",
-        txn_type="IN",
-        remarks=db_pay.remarks or f"Updated receipt {db_pay.payment_id}",
-        attachment_url=db_pay.attachment_url,
-        added_by=user_id,
-        ref_num=db_pay.reference_number
-    )
-    
-    db.commit()
-    db.refresh(db_pay)
-    return db_pay
+        if invoice_number is not None: db_pay.invoice_number = invoice_number
+        if invoice_amount is not None: db_pay.invoice_amount = invoice_amount
+        if received_amount is not None: db_pay.received_amount = received_amount
+        if payment_method is not None: db_pay.payment_method = payment_method
+        if reference_number is not None: db_pay.reference_number = reference_number
+        if bank_name is not None: db_pay.bank_name = bank_name
+        if received_date is not None: db_pay.received_date = received_date
+        if remarks is not None: db_pay.remarks = remarks
+        if receipt_type is not None: db_pay.receipt_type = receipt_type
+        if project_id is not None: db_pay.project_id = project_id
+        if client_id is not None: db_pay.client_id = client_id
+        if attachment_url is not None: db_pay.attachment_url = attachment_url
+        
+        db_pay.pending_amount = db_pay.invoice_amount - db_pay.received_amount
+        
+        new_vals = {
+            "invoice_number": db_pay.invoice_number,
+            "invoice_amount": db_pay.invoice_amount,
+            "received_amount": db_pay.received_amount,
+            "payment_method": db_pay.payment_method,
+            "reference_number": db_pay.reference_number,
+            "bank_name": db_pay.bank_name,
+            "received_date": str(db_pay.received_date) if db_pay.received_date else None,
+            "remarks": db_pay.remarks,
+            "receipt_type": db_pay.receipt_type,
+            "project_id": db_pay.project_id,
+            "client_id": db_pay.client_id,
+            "attachment_url": db_pay.attachment_url
+        }
+        
+        version_log = ProjectPaymentVersion(
+            payment_id=db_pay.id,
+            old_values=json.dumps(old_vals),
+            new_values=json.dumps(new_vals),
+            user_id=user_id,
+            reason=reason
+        )
+        db.add(version_log)
+        
+        sync_cash_book_entry(
+            db=db,
+            ref_type="project_payment",
+            ref_id=db_pay.id,
+            txn_date=db_pay.received_date,
+            amount=db_pay.received_amount,
+            payment_method=db_pay.payment_method,
+            category="Project Payment" if db_pay.receipt_type == "Project Payment" else "Other",
+            txn_type="IN",
+            remarks=db_pay.remarks or f"Updated receipt {db_pay.payment_id}",
+            attachment_url=db_pay.attachment_url,
+            added_by=user_id,
+            ref_num=db_pay.reference_number
+        )
+        
+        db.commit()
+        db.refresh(db_pay)
+        return db_pay
+    except Exception as e:
+        db.rollback()
+        raise e
+
 
 def delete_project_payment(db: Session, payment_id: str, user_id: str, reason: str) -> bool:
-    db_pay = db.query(ProjectPayment).filter(ProjectPayment.id == payment_id, ProjectPayment.is_deleted == False).first()
-    if not db_pay:
-        return False
+    try:
+        db_pay = db.query(ProjectPayment).filter(ProjectPayment.id == payment_id, ProjectPayment.is_deleted == False).first()
+        if not db_pay:
+            return False
+            
+        import json
+        old_vals = {
+            "invoice_number": db_pay.invoice_number,
+            "invoice_amount": db_pay.invoice_amount,
+            "received_amount": db_pay.received_amount,
+            "payment_method": db_pay.payment_method,
+            "remarks": db_pay.remarks,
+            "receipt_type": db_pay.receipt_type,
+            "is_deleted": False
+        }
+        new_vals = {
+            "is_deleted": True,
+            "deleted_at": datetime.utcnow().isoformat(),
+            "deleted_by": user_id
+        }
         
-    import json
-    old_vals = {
-        "invoice_number": db_pay.invoice_number,
-        "invoice_amount": db_pay.invoice_amount,
-        "received_amount": db_pay.received_amount,
-        "payment_method": db_pay.payment_method,
-        "remarks": db_pay.remarks,
-        "receipt_type": db_pay.receipt_type,
-        "is_deleted": False
-    }
-    new_vals = {
-        "is_deleted": True,
-        "deleted_at": datetime.utcnow().isoformat(),
-        "deleted_by": user_id
-    }
-    
-    db_pay.is_deleted = True
-    db_pay.deleted_at = datetime.utcnow()
-    db_pay.deleted_by = user_id
-    
-    version_log = ProjectPaymentVersion(
-        payment_id=db_pay.id,
-        old_values=json.dumps(old_vals),
-        new_values=json.dumps(new_vals),
-        user_id=user_id,
-        reason=reason
-    )
-    db.add(version_log)
-    
-    sync_cash_book_entry(
-        db=db,
-        ref_type="project_payment",
-        ref_id=db_pay.id,
-        txn_date=db_pay.received_date,
-        amount=db_pay.received_amount,
-        payment_method=db_pay.payment_method,
-        category="Project Payment",
-        txn_type="IN",
-        remarks=reason,
-        added_by=user_id,
-        action="delete"
-    )
-    db.commit()
-    return True
+        db_pay.is_deleted = True
+        db_pay.deleted_at = datetime.utcnow()
+        db_pay.deleted_by = user_id
+        
+        version_log = ProjectPaymentVersion(
+            payment_id=db_pay.id,
+            old_values=json.dumps(old_vals),
+            new_values=json.dumps(new_vals),
+            user_id=user_id,
+            reason=reason
+        )
+        db.add(version_log)
+        
+        sync_cash_book_entry(
+            db=db,
+            ref_type="project_payment",
+            ref_id=db_pay.id,
+            txn_date=db_pay.received_date,
+            amount=db_pay.received_amount,
+            payment_method=db_pay.payment_method,
+            category="Project Payment",
+            txn_type="IN",
+            remarks=reason,
+            added_by=user_id,
+            action="delete"
+        )
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        raise e
 
 def restore_project_payment(db: Session, payment_id: str, user_id: str, reason: str) -> bool:
-    db_pay = db.query(ProjectPayment).filter(ProjectPayment.id == payment_id, ProjectPayment.is_deleted == True).first()
-    if not db_pay:
-        return False
+    try:
+        db_pay = db.query(ProjectPayment).filter(ProjectPayment.id == payment_id, ProjectPayment.is_deleted == True).first()
+        if not db_pay:
+            return False
+            
+        import json
+        old_vals = {
+            "is_deleted": True
+        }
+        new_vals = {
+            "is_deleted": False
+        }
         
-    import json
-    old_vals = {
-        "is_deleted": True
-    }
-    new_vals = {
-        "is_deleted": False
-    }
-    
-    db_pay.is_deleted = False
-    db_pay.deleted_at = None
-    db_pay.deleted_by = None
-    
-    version_log = ProjectPaymentVersion(
-        payment_id=db_pay.id,
-        old_values=json.dumps(old_vals),
-        new_values=json.dumps(new_vals),
-        user_id=user_id,
-        reason=reason
-    )
-    db.add(version_log)
-    
-    sync_cash_book_entry(
-        db=db,
-        ref_type="project_payment",
-        ref_id=db_pay.id,
-        txn_date=db_pay.received_date,
-        amount=db_pay.received_amount,
-        payment_method=db_pay.payment_method,
-        category="Project Payment" if db_pay.receipt_type == "Project Payment" else "Other",
-        txn_type="IN",
-        remarks=db_pay.remarks or f"Restored receipt {db_pay.payment_id}",
-        attachment_url=db_pay.attachment_url,
-        added_by=user_id,
-        ref_num=db_pay.reference_number
-    )
-    db.commit()
-    return True
+        db_pay.is_deleted = False
+        db_pay.deleted_at = None
+        db_pay.deleted_by = None
+        
+        version_log = ProjectPaymentVersion(
+            payment_id=db_pay.id,
+            old_values=json.dumps(old_vals),
+            new_values=json.dumps(new_vals),
+            user_id=user_id,
+            reason=reason
+        )
+        db.add(version_log)
+        
+        sync_cash_book_entry(
+            db=db,
+            ref_type="project_payment",
+            ref_id=db_pay.id,
+            txn_date=db_pay.received_date,
+            amount=db_pay.received_amount,
+            payment_method=db_pay.payment_method,
+            category="Project Payment" if db_pay.receipt_type == "Project Payment" else "Other",
+            txn_type="IN",
+            remarks=db_pay.remarks or f"Restored receipt {db_pay.payment_id}",
+            attachment_url=db_pay.attachment_url,
+            added_by=user_id,
+            ref_num=db_pay.reference_number
+        )
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        raise e
 
 def get_inventory_receiving_history(
     db: Session,

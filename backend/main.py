@@ -4132,8 +4132,8 @@ def permanently_delete_archived_record(
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_admin)
 ):
-    if current_user.role != "super_admin":
-        raise HTTPException(status_code=403, detail="Only Super Admins can permanently delete records.")
+    if current_user.role not in ["super_admin", "admin"]:
+        raise HTTPException(status_code=403, detail="Only Admins and Super Admins can permanently delete records.")
     try:
         ip_addr = request.client.host if request and request.client else None
         user_agent = request.headers.get("user-agent") if request else None
@@ -7133,14 +7133,21 @@ def bulk_archive_action(
                 continue
                 
             if req.action == "archive":
-                item.is_deleted = True
-                item.deleted_at = datetime.utcnow()
-                item.deleted_by = current_user.id
-                db.flush()
-                if req.entity_type == "inventory":
-                    crud.update_inventory_reserved_and_available(db, item_id)
-                elif req.entity_type == "project":
-                    crud.recalculate_project_progress(db, item_id)
+                if req.entity_type == "expense":
+                    # Call delete_daily_expense which handles wallet reversion and cash book sync
+                    deleted_item = crud.delete_daily_expense(db, item_id, current_user.id)
+                    if not deleted_item:
+                        errors.append(f"Failed to delete expense ID {item_id}")
+                        continue
+                else:
+                    item.is_deleted = True
+                    item.deleted_at = datetime.utcnow()
+                    item.deleted_by = current_user.id
+                    db.flush()
+                    if req.entity_type == "inventory":
+                        crud.update_inventory_reserved_and_available(db, item_id)
+                    elif req.entity_type == "project":
+                        crud.recalculate_project_progress(db, item_id)
                 processed_count += 1
                 
             elif req.action == "restore":
@@ -7155,6 +7162,28 @@ def bulk_archive_action(
                         if cat and cat.is_deleted:
                             errors.append(f"Cannot restore {item.name}: associated category is archived.")
                             continue
+                elif req.entity_type == "expense":
+                    # Re-deduct from wallet if approved and linked
+                    if item.approval_status == "approved" and item.amount > 0 and item.wallet_linked:
+                        wallet = db.query(FactoryWallet).filter(FactoryWallet.id == item.wallet_id).first()
+                        if wallet and (not wallet.activation_date or item.expense_date >= wallet.activation_date):
+                            if item.amount > wallet.balance:
+                                errors.append(f"Insufficient Factory Wallet Balance to restore expense {item.expense_id} in '{wallet.name or wallet.id}'. Required: {format_inr(item.amount)}, Available: {format_inr(wallet.balance)}")
+                                continue
+                            crud.log_wallet_transaction(
+                                db=db,
+                                wallet_id=item.wallet_id,
+                                txn_type="EXPENSE_DEDUCTED",
+                                money_added=0.0,
+                                expense_deducted=item.amount,
+                                remarks=item.description or f"Expense: {item.expense_category} (Restored)",
+                                ref_type="daily_expense",
+                                ref_id=item.id,
+                                user_id=current_user.id,
+                                txn_date=item.expense_date
+                            )
+                            wallet.balance = crud.recalculate_wallet_balance(db, wallet.id)
+                            db.flush()
                 
                 item.is_deleted = False
                 item.deleted_at = None
@@ -7164,11 +7193,13 @@ def bulk_archive_action(
                     crud.update_inventory_reserved_and_available(db, item_id)
                 elif req.entity_type == "project":
                     crud.recalculate_project_progress(db, item_id)
+                elif req.entity_type == "expense":
+                    crud.sync_cash_book_entry(db, "daily_expense", item.id)
                 processed_count += 1
                 
             elif req.action == "delete_permanent":
-                if current_user.role != "super_admin":
-                    raise HTTPException(status_code=403, detail="Only Super Admins can permanently delete records.")
+                if current_user.role not in ["super_admin", "admin"]:
+                    raise HTTPException(status_code=403, detail="Only Admins and Super Admins can permanently delete records.")
                 entity_name = req.entity_type
                 if entity_name == "inventory":
                     entity_name = "inventory_item"
@@ -7188,6 +7219,9 @@ def bulk_archive_action(
                     processed_count += 1
                 else:
                     errors.append(f"Failed to permanently delete Item ID {item_id}")
+        except HTTPException as he:
+            db.rollback()
+            errors.append(f"HTTP Error processing item {item_id}: {he.detail}")
         except Exception as ex:
             db.rollback()
             errors.append(f"Error processing item {item_id}: {str(ex)}")
@@ -7231,15 +7265,55 @@ def bulk_archive_action(
 
 @app.post("/api/expenses/{expense_id}/restore")
 def restore_expense(expense_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
-    exp = db.query(DailyExpense).filter(DailyExpense.id == expense_id).first()
-    if not exp:
-        raise HTTPException(status_code=404, detail="Expense not found")
-    exp.is_deleted = False
-    exp.deleted_at = None
-    exp.deleted_by = None
-    db.commit()
-    broadcast_sync({"event": "expense_change"})
-    return {"status": "success", "message": "Expense restored"}
+    try:
+        exp = db.query(DailyExpense).filter(DailyExpense.id == expense_id).first()
+        if not exp:
+            raise HTTPException(status_code=404, detail="Expense not found")
+        if not exp.is_deleted:
+            return {"status": "success", "message": "Expense already restored"}
+            
+        # Re-deduct from wallet if approved and linked
+        if exp.approval_status == "approved" and exp.amount > 0 and exp.wallet_linked:
+            wallet = db.query(FactoryWallet).filter(FactoryWallet.id == exp.wallet_id).first()
+            if wallet and (not wallet.activation_date or exp.expense_date >= wallet.activation_date):
+                if exp.amount > wallet.balance:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Insufficient Factory Wallet Balance to restore this expense in '{wallet.name or wallet.id}'. Required: {format_inr(exp.amount)}, Available: {format_inr(wallet.balance)}"
+                    )
+                crud.log_wallet_transaction(
+                    db=db,
+                    wallet_id=exp.wallet_id,
+                    txn_type="EXPENSE_DEDUCTED",
+                    money_added=0.0,
+                    expense_deducted=exp.amount,
+                    remarks=exp.description or f"Expense: {exp.expense_category} (Restored)",
+                    ref_type="daily_expense",
+                    ref_id=exp.id,
+                    user_id=current_user.id,
+                    txn_date=exp.expense_date
+                )
+                # Recalculate wallet balance in db
+                wallet.balance = crud.recalculate_wallet_balance(db, wallet.id)
+                db.flush()
+                
+        exp.is_deleted = False
+        exp.deleted_at = None
+        exp.deleted_by = None
+        
+        db.commit()
+        
+        # Sync cash book
+        crud.sync_cash_book_entry(db, "daily_expense", exp.id)
+        
+        broadcast_sync({"event": "expense_change"})
+        return {"status": "success", "message": "Expense restored"}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/purchasing/{po_id}/restore")
 def restore_purchase_order(po_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
