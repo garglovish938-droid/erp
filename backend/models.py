@@ -764,7 +764,7 @@ class CashBook(Base):
     payment_method = Column(String(50), nullable=False, default="Cash")  # Cash, UPI, Bank, Cheque
     reference_number = Column(String(100), nullable=True)
     reference_type = Column(String(50), nullable=True)  # factory_fund, project_payment, daily_expense, direct
-    reference_id = Column(String(36), nullable=True, index=True)
+    reference_id = Column(String(100), nullable=True, index=True)
     added_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     remarks = Column(Text, nullable=True)
     attachment_url = Column(String(255), nullable=True)

@@ -186,6 +186,12 @@ try:
         inspector = inspect(engine)
         existing_tables = inspector.get_table_names()
         
+        # Upgrade cash_book.reference_id column type to VARCHAR(100) on PostgreSQL
+        if "cash_book" in existing_tables:
+            if dialect_name != "sqlite":
+                conn.execute(text("ALTER TABLE cash_book ALTER COLUMN reference_id TYPE VARCHAR(100)"))
+                conn.commit()
+        
         # Now find any missing columns in existing tables and ADD them!
         for mapper in Base.registry.mappers:
             model_class = mapper.class_
