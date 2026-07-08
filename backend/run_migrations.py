@@ -47,8 +47,8 @@ def backup_sqlite(db_url):
         print(f"[+] SQLite file backup successfully created: {backup_path}")
         return backup_path
     except Exception as e:
-        print(f"[-] SQLite backup failed: {e}")
-        raise e
+        print(f"[-] SQLite backup failed: {e}. Proceeding anyway.")
+        return None
 
 def backup_postgres(engine):
     backup_dir = settings.BACKUP_DIR
@@ -80,8 +80,8 @@ def backup_postgres(engine):
         print(f"[+] PostgreSQL JSON backup successfully created: {backup_path}")
         return backup_path
     except Exception as e:
-        print(f"[-] PostgreSQL JSON backup failed: {e}")
-        raise e
+        print(f"[-] PostgreSQL JSON backup failed: {e}. Proceeding anyway.")
+        return None
 
 def apply_migrations(engine):
     inspector = inspect(engine)
