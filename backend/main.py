@@ -569,39 +569,6 @@ crud.register_notification_callback(broadcast_sync)
 def read_root():
     return {"message": "Welcome to Allure Living ERP API System", "status": "running"}
 
-@app.get("/api/inspect-db")
-def inspect_db(db: Session = Depends(get_db)):
-    try:
-        # Check columns of daily_expenses
-        res = db.execute(text("SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = 'daily_expenses'"))
-        columns = [{"column_name": row[0], "data_type": row[1], "is_nullable": row[2]} for row in res.fetchall()]
-        
-        # Check wallets count and balance
-        wallets_res = db.execute(text("SELECT id, name, balance, activation_date FROM factory_wallet"))
-        wallets = [{"id": row[0], "name": row[1], "balance": row[2], "activation_date": str(row[3])} for row in wallets_res.fetchall()]
-        
-        return {
-            "status": "success",
-            "daily_expenses_columns": columns,
-            "wallets": wallets
-        }
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
-
-@app.get("/api/run-migrations")
-def trigger_run_migrations():
-    import traceback
-    try:
-        from run_migrations import apply_migrations
-        apply_migrations(engine)
-        return {"status": "success", "message": "Schema migrations executed successfully!"}
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e),
-            "traceback": traceback.format_exc()
-        }
-
 # --- AUTH & USER MANAGEMENT ---
 @app.post("/api/auth/register", response_model=schemas.UserResponse)
 def register_user(user_in: schemas.UserCreate, request: Request, db: Session = Depends(get_db)):
