@@ -2331,11 +2331,11 @@ def delete_daily_expense(db: Session, expense_id: str, user_id: str) -> Optional
                 )
                 
         log_detailed_activity(db, user_id, "DailyExpense", "delete", db_exp.id, f"Deleted expense {db_exp.expense_id}")
-        db.commit()
         
         # Sync Cash Book!
         sync_cash_book_entry(db, "daily_expense", db_exp.id)
         
+        db.commit()
         return db_exp
     except Exception as e:
         db.rollback()

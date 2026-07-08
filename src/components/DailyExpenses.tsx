@@ -449,7 +449,7 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
             Record Expense
           </button>
           <button
-            onClick={loadData}
+            onClick={() => loadData()}
             className="border border-slate-200 dark:border-slate-800 p-2 rounded-lg text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
           >
             <RefreshCw className="h-4 w-4" />
