@@ -7929,11 +7929,30 @@ def delete_cash_book_entry(txn_id: str, db: Session = Depends(get_db), current_u
     db_entry = db.query(CashBook).filter(CashBook.id == txn_id, CashBook.is_deleted == False).first()
     if not db_entry:
         raise HTTPException(status_code=404, detail="Cash book entry not found")
+    
     db_entry.is_deleted = True
     db_entry.deleted_at = datetime.utcnow()
     db_entry.deleted_by = current_user.id
+    
+    if db_entry.reference_type == "factory_fund":
+        fund = db.query(models.FactoryFund).filter(models.FactoryFund.id == db_entry.reference_id).first()
+        if fund:
+            fund.is_deleted = True
+            fund.deleted_at = datetime.utcnow()
+            fund.deleted_by = current_user.id
+            
+            txn = db.query(models.FactoryWalletTransaction).filter(
+                models.FactoryWalletTransaction.reference_type == "factory_fund",
+                models.FactoryWalletTransaction.reference_id == fund.id
+            ).first()
+            if txn:
+                txn.is_deleted = True
+                db.flush()
+                crud.recalculate_wallet_balance(db, txn.wallet_id)
+                
     db.commit()
     broadcast_sync({"event": "financial_change"})
+    broadcast_sync({"event": "wallet_change"})
     return {"status": "success", "message": "Transaction deleted successfully"}
 
 @app.get("/api/cash-book/export")

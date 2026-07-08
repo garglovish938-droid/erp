@@ -368,7 +368,7 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
   };
 
   const handleDeleteTransaction = async (id: string) => {
-    if (!window.confirm("Are you sure you want to delete this manual transaction entry?")) return;
+    if (!window.confirm("Are you sure you want to delete this transaction entry?")) return;
     try {
       const savedUser = localStorage.getItem("allure_erp_user");
       const userToken = savedUser ? JSON.parse(savedUser).token : token;
@@ -931,14 +931,16 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
                           )}
                         </td>
                         <td className="p-4 text-right">
-                          {t.reference_type === "direct_txn" && ["admin", "super_admin"].includes(role) ? (
+                          {(t.reference_type === "direct_txn" || t.reference_type === "factory_fund") && ["admin", "super_admin"].includes(role) ? (
                             <div className="flex justify-end gap-1.5">
-                              <button
-                                onClick={() => handleEditClick(t)}
-                                className="p-1.5 text-slate-400 hover:text-emerald-500 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-md transition-colors"
-                              >
-                                <Edit3 className="h-4 w-4" />
-                              </button>
+                              {t.reference_type === "direct_txn" && (
+                                <button
+                                  onClick={() => handleEditClick(t)}
+                                  className="p-1.5 text-slate-400 hover:text-emerald-500 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-md transition-colors"
+                                >
+                                  <Edit3 className="h-4 w-4" />
+                                </button>
+                              )}
                               <button
                                 onClick={() => handleDeleteTransaction(t.id)}
                                 className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-md transition-colors"
