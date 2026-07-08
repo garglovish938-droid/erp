@@ -588,6 +588,20 @@ def inspect_db(db: Session = Depends(get_db)):
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
+@app.get("/api/run-migrations")
+def trigger_run_migrations():
+    import traceback
+    try:
+        from run_migrations import apply_migrations
+        apply_migrations(engine)
+        return {"status": "success", "message": "Schema migrations executed successfully!"}
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        }
+
 # --- AUTH & USER MANAGEMENT ---
 @app.post("/api/auth/register", response_model=schemas.UserResponse)
 def register_user(user_in: schemas.UserCreate, request: Request, db: Session = Depends(get_db)):
