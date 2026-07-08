@@ -896,6 +896,7 @@ class DailyExpenseCreate(BaseModel):
     # Wallet integration
     wallet_id: Optional[str] = None
     wallet_linked: Optional[bool] = False
+    settlement_status: Optional[str] = "settled"
 
     @field_validator('amount')
     @classmethod
@@ -934,6 +935,7 @@ class DailyExpenseUpdate(BaseModel):
     # Wallet integration
     wallet_id: Optional[str] = None
     wallet_linked: Optional[bool] = None
+    settlement_status: Optional[str] = None
 
     @field_validator('amount')
     @classmethod
@@ -979,6 +981,7 @@ class DailyExpenseResponse(BaseSchema):
     approved_by: Optional[str]
     approved_at: Optional[datetime]
     supervisor_comment: Optional[str]
+    settlement_status: str
 
     # Wallet integration fields
     wallet_id: Optional[str] = None
@@ -1209,6 +1212,8 @@ class ProjectPaymentCreate(BaseModel):
     remarks: Optional[str] = None
     attachment_url: Optional[str] = None
     receipt_type: Optional[str] = "Project Payment"
+    wallet_id: Optional[str] = None
+    wallet_linked: Optional[bool] = False
 
     @field_validator('invoice_amount', 'received_amount')
     @classmethod
@@ -1248,6 +1253,8 @@ class ProjectPaymentResponse(BaseSchema):
     created_at: datetime
     receipt_type: str
     is_deleted: bool = False
+    wallet_id: Optional[str] = None
+    wallet_linked: bool = False
     deleted_at: Optional[datetime] = None
     deleted_by: Optional[str] = None
     project: Optional[ProjectResponse] = None
@@ -1282,6 +1289,8 @@ class StockTransactionResponse(BaseSchema):
     unit_cost: Optional[float] = None
     invoice_number: Optional[str] = None
     attachment_url: Optional[str] = None
+    opening_stock: Optional[float] = None
+    remaining_quantity: Optional[float] = None
     project: Optional[ProjectResponse] = None
     user: Optional[UserResponse] = None
     supplier: Optional[SupplierResponse] = None

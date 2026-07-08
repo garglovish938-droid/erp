@@ -185,6 +185,38 @@ def apply_migrations(engine):
                 col_type = "TEXT" if is_sqlite else "VARCHAR(50)"
                 conn.execute(text(f"ALTER TABLE {de_table} ADD COLUMN transaction_source {col_type}"))
                 print(f"  [+] Added column '{de_table}.transaction_source'")
+            if "settlement_status" not in de_columns:
+                col_type = "TEXT" if is_sqlite else "VARCHAR(20)"
+                conn.execute(text(f"ALTER TABLE {de_table} ADD COLUMN settlement_status {col_type} DEFAULT 'settled'"))
+                print(f"  [+] Added column '{de_table}.settlement_status'")
+
+    # 5. project_payments table migrations
+    pp_table = "project_payments"
+    if pp_table in inspector.get_table_names():
+        pp_columns = [col['name'] for col in inspector.get_columns(pp_table)]
+        with engine.begin() as conn:
+            if "wallet_id" not in pp_columns:
+                col_type = "TEXT" if is_sqlite else "VARCHAR(36)"
+                conn.execute(text(f"ALTER TABLE {pp_table} ADD COLUMN wallet_id {col_type}"))
+                print(f"  [+] Added column '{pp_table}.wallet_id'")
+            if "wallet_linked" not in pp_columns:
+                col_type = "BOOLEAN" if is_sqlite else "BOOLEAN"
+                conn.execute(text(f"ALTER TABLE {pp_table} ADD COLUMN wallet_linked {col_type} DEFAULT FALSE"))
+                print(f"  [+] Added column '{pp_table}.wallet_linked'")
+
+    # 6. stock_transactions table migrations
+    st_table = "stock_transactions"
+    if st_table in inspector.get_table_names():
+        st_columns = [col['name'] for col in inspector.get_columns(st_table)]
+        with engine.begin() as conn:
+            if "opening_stock" not in st_columns:
+                col_type = "REAL" if is_sqlite else "DOUBLE PRECISION"
+                conn.execute(text(f"ALTER TABLE {st_table} ADD COLUMN opening_stock {col_type}"))
+                print(f"  [+] Added column '{st_table}.opening_stock'")
+            if "remaining_quantity" not in st_columns:
+                col_type = "REAL" if is_sqlite else "DOUBLE PRECISION"
+                conn.execute(text(f"ALTER TABLE {st_table} ADD COLUMN remaining_quantity {col_type}"))
+                print(f"  [+] Added column '{st_table}.remaining_quantity'")
 
 def main():
     print("=== STARTING DATABASE MIGRATION ===")

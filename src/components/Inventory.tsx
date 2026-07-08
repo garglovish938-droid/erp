@@ -101,6 +101,7 @@ export default function Inventory({ token, role }: { token: string; role: string
   const [bulkPassword, setBulkPassword] = useState("");
   const [bulkReason, setBulkReason] = useState("");
   const [submitLoading, setSubmitLoading] = useState(false);
+  const [importLogs, setImportLogs] = useState<string[]>([]);
 
   // Pagination & Sorting
   const [currentPage, setCurrentPage] = useState(1);
@@ -202,27 +203,67 @@ export default function Inventory({ token, role }: { token: string; role: string
     }
   };
 
-  const handleExportReceiving = (format: "csv" | "excel" | "pdf") => {
+  const handleExportReceiving = async (format: "csv" | "excel" | "pdf") => {
     if (!currentItem) return;
-    const q = new URLSearchParams();
-    q.set("format", format);
-    if (recFilters.start_date) q.set("start_date", recFilters.start_date);
-    if (recFilters.end_date) q.set("end_date", recFilters.end_date);
-    if (recFilters.supplier_id) q.set("supplier_id", recFilters.supplier_id);
-    if (recFilters.warehouse) q.set("warehouse", recFilters.warehouse);
-    if (recFilters.project_id) q.set("project_id", recFilters.project_id);
-    if (recFilters.grn_number) q.set("grn_number", recFilters.grn_number);
+    try {
+      const q = new URLSearchParams();
+      q.set("format", format);
+      if (recFilters.start_date) q.set("start_date", recFilters.start_date);
+      if (recFilters.end_date) q.set("end_date", recFilters.end_date);
+      if (recFilters.supplier_id) q.set("supplier_id", recFilters.supplier_id);
+      if (recFilters.warehouse) q.set("warehouse", recFilters.warehouse);
+      if (recFilters.project_id) q.set("project_id", recFilters.project_id);
+      if (recFilters.grn_number) q.set("grn_number", recFilters.grn_number);
 
-    window.open(`${API_BASE_URL}/api/inventory/${currentItem.id}/receiving-history/export?${q}`);
+      const userToken = getAuthToken();
+      const response = await fetch(`${API_BASE_URL}/api/inventory/${currentItem.id}/receiving-history/export?${q}`, {
+        headers: { Authorization: `Bearer ${userToken}` }
+      });
+      if (!response.ok) throw new Error("Export failed");
+      const blob = await response.blob();
+      const ext = format === "excel" ? "xlsx" : format;
+      const filename = `receiving_history_${currentItem.sku}_${new Date().toISOString().slice(0, 10)}.${ext}`;
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      showToast("Receiving history exported successfully.", "success");
+    } catch (e: any) {
+      showToast(e.message || "Failed to export receiving history.", "error");
+    }
   };
 
-  const handleExportTimeline = (format: "csv" | "excel" | "pdf") => {
+  const handleExportTimeline = async (format: "csv" | "excel" | "pdf") => {
     if (!currentItem) return;
-    const q = new URLSearchParams();
-    q.set("format", format);
-    if (timelineTypeFilter) q.set("transaction_type", timelineTypeFilter);
+    try {
+      const q = new URLSearchParams();
+      q.set("format", format);
+      if (timelineTypeFilter) q.set("transaction_type", timelineTypeFilter);
 
-    window.open(`${API_BASE_URL}/api/inventory/${currentItem.id}/timeline/export?${q}`);
+      const userToken = getAuthToken();
+      const response = await fetch(`${API_BASE_URL}/api/inventory/${currentItem.id}/timeline/export?${q}`, {
+        headers: { Authorization: `Bearer ${userToken}` }
+      });
+      if (!response.ok) throw new Error("Export failed");
+      const blob = await response.blob();
+      const ext = format === "excel" ? "xlsx" : format;
+      const filename = `timeline_${currentItem.sku}_${new Date().toISOString().slice(0, 10)}.${ext}`;
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      showToast("Timeline exported successfully.", "success");
+    } catch (e: any) {
+      showToast(e.message || "Failed to export timeline.", "error");
+    }
   };
 
   const handleAdjustFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -301,13 +342,10 @@ export default function Inventory({ token, role }: { token: string; role: string
     try {
       const res = await inventoryService.importCSV(csvFile);
       setImportSuccess(res.message);
+      setImportLogs(res.logs || []);
       showToast("CSV materials import completed", "success");
       setCsvFile(null);
       fetchData();
-      setTimeout(() => {
-        setShowImportModal(false);
-        setImportSuccess("");
-      }, 3000);
     } catch (err: any) {
       setSubmitError(err.message || "CSV Import failed");
     } finally {
@@ -835,26 +873,49 @@ export default function Inventory({ token, role }: { token: string; role: string
         </div>
       </div>
 
-      {/* Pagination control */}
-      {totalPages > 1 && (
+      {processedItems.length > 0 && (
         <div className="flex justify-between items-center bg-slate-50 dark:bg-slate-900 p-4 rounded-2xl text-xs font-semibold">
-          <span className="text-slate-400">Page {currentPage} of {totalPages} ({processedItems.length} total materials)</span>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-              disabled={currentPage === 1}
-              className="border p-1.5 rounded-lg disabled:opacity-50 hover:bg-white dark:hover:bg-slate-800"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-              disabled={currentPage === totalPages}
-              className="border p-1.5 rounded-lg disabled:opacity-50 hover:bg-white dark:hover:bg-slate-800"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
+          <div className="flex items-center gap-4">
+            <span className="text-slate-400">Page {currentPage} of {totalPages} ({processedItems.length} total materials)</span>
+            <div className="flex items-center gap-1.5 text-slate-500">
+              <span>Show:</span>
+              <select
+                value={itemsPerPage}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setItemsPerPage(val === "ALL" ? "ALL" : parseInt(val));
+                  setCurrentPage(1);
+                }}
+                className="bg-white dark:bg-slate-800 border dark:border-slate-700 rounded px-1.5 py-0.5 font-bold outline-none cursor-pointer"
+              >
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+                <option value={250}>250</option>
+                <option value={500}>500</option>
+                <option value={1000}>1000</option>
+                <option value="ALL">ALL</option>
+              </select>
+            </div>
           </div>
+          {totalPages > 1 && (
+            <div className="flex gap-2">
+              <button
+                onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                disabled={currentPage === 1}
+                className="border p-1.5 rounded-lg disabled:opacity-50 hover:bg-white dark:hover:bg-slate-800"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                disabled={currentPage === totalPages}
+                className="border p-1.5 rounded-lg disabled:opacity-50 hover:bg-white dark:hover:bg-slate-800"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -1346,29 +1407,50 @@ export default function Inventory({ token, role }: { token: string; role: string
       {/* CSV BULK IMPORT MODAL */}
       {showImportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in zoom-in-95 duration-200">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-lg p-6 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-101 dark:border-slate-800 pb-3 mb-4">
               <h3 className="text-base font-bold">Bulk CSV Master Import</h3>
-              <button title="Close" onClick={() => setShowImportModal(false)} className="text-slate-400 hover:bg-slate-150 p-1.5 rounded"><X className="w-5 h-5" /></button>
+              <button title="Close" onClick={() => { setShowImportModal(false); setImportLogs([]); setImportSuccess(""); }} className="text-slate-400 hover:bg-slate-150 p-1.5 rounded"><X className="w-5 h-5" /></button>
             </div>
 
             {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
             {importSuccess && <div className="bg-emerald-500/10 text-emerald-600 p-2.5 border rounded-lg text-xs mb-3">{importSuccess}</div>}
 
-            <form onSubmit={handleImportCSV} className="space-y-4">
-              <div>
-                <label className="text-xs font-semibold text-slate-400 block mb-1">Select Excel / CSV Data File*</label>
-                <input type="file" required accept=".csv" onChange={e=>setCsvFile(e.target.files?.[0] || null)} className="w-full text-xs text-slate-500 file:mr-2 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-slate-100" />
+            {importLogs.length > 0 ? (
+              <div className="space-y-4">
+                <div className="text-xs font-semibold text-slate-450 block mb-1">Import Log Details:</div>
+                <div className="bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-100 dark:border-slate-800 max-h-60 overflow-y-auto font-mono text-[10px] space-y-1">
+                  {importLogs.map((log, idx) => (
+                    <div key={idx} className={log.includes("skipped") || log.includes("error") ? "text-rose-500" : log.includes("Warning") ? "text-amber-500" : "text-slate-600 dark:text-slate-400"}>
+                      {log}
+                    </div>
+                  ))}
+                </div>
+                <div className="flex justify-end pt-4 border-t">
+                  <button
+                    onClick={() => { setShowImportModal(false); setImportLogs([]); setImportSuccess(""); }}
+                    className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow"
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
+            ) : (
+              <form onSubmit={handleImportCSV} className="space-y-4">
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Select Excel / CSV Data File*</label>
+                  <input type="file" required accept=".csv" onChange={e=>setCsvFile(e.target.files?.[0] || null)} className="w-full text-xs text-slate-500 file:mr-2 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-slate-100" />
+                </div>
 
-              <div className="flex gap-3 justify-end pt-4 border-t mt-6">
-                <button title="Close" type="button" onClick={() => setShowImportModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
-                <button type="submit" disabled={importLoading} className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow">
-                  {importLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                  Import Data
-                </button>
-              </div>
-            </form>
+                <div className="flex gap-3 justify-end pt-4 border-t mt-6">
+                  <button title="Close" type="button" onClick={() => setShowImportModal(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
+                  <button type="submit" disabled={importLoading} className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow">
+                    {importLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    Import Data
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

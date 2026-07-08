@@ -93,7 +93,19 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
     "Office Expense", "Salary", "Misc Expense", "Cash Returned", "Daily Expenses", "Other"
   ];
 
-  const loadData = useCallback(async () => {
+  // Load initial cached expenses if any
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem("allure_expenses_cache");
+      if (cached) {
+        setExpenses(JSON.parse(cached));
+      }
+    } catch (e) {
+      console.error("Failed to load cached expenses:", e);
+    }
+  }, []);
+
+  const loadData = useCallback(async (retryCount = 0) => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
@@ -107,12 +119,24 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
         apiRequest("/api/expenses/dashboard"),
         apiRequest("/api/projects")
       ]);
-      setExpenses(list || []);
+      const activeExpenses = list || [];
+      setExpenses(activeExpenses);
       setStats(statsData || { today_total: 0, weekly_total: 0, monthly_total: 0, category_breakdown: [] });
       setProjects(projList?.filter((p: any) => !p.is_deleted) || []);
+      
+      try {
+        localStorage.setItem("allure_expenses_cache", JSON.stringify(activeExpenses));
+      } catch (cacheErr) {
+        console.warn("Failed to write daily expenses cache:", cacheErr);
+      }
     } catch (e) {
       console.error("Failed to load expenses:", e);
-      showToast("Error loading expenses records.", "error");
+      if (retryCount < 2) {
+        console.log(`Retrying to fetch expenses... Attempt ${retryCount + 1}`);
+        setTimeout(() => loadData(retryCount + 1), 1000);
+      } else {
+        showToast("Error loading expenses records. Displaying cached/offline view.", "error");
+      }
     } finally {
       setLoading(false);
     }
@@ -304,11 +328,14 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
 
   const handleDeleteExpense = async (id: string) => {
     if (!confirm("Are you sure you want to archive/delete this expense record?")) return;
+    const oldExpenses = [...expenses];
+    setExpenses(prev => prev.filter(e => e.id !== id));
     try {
       await apiRequest(`/api/expenses/${id}`, { method: "DELETE" });
       showToast("Expense record archived successfully.", "success");
       loadData();
     } catch (e: any) {
+      setExpenses(oldExpenses);
       showToast(e.message || "Failed to delete expense record.", "error");
     }
   };

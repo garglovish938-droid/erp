@@ -1564,10 +1564,12 @@ export default function Projects({ token, role }: { token: string; role: string 
                           </div>
                         </div>
 
-                        <div className="border-t border-slate-100 dark:border-slate-800 pt-4">
+                        <div className="border-t border-slate-101 dark:border-slate-800 pt-4">
                           <div className="flex items-center justify-between mb-2">
                             <div className="flex items-center gap-2">
-                              <span className="text-[10px] text-slate-400 uppercase font-bold block">Completion Percentage ({proj.completion_percentage || 0}%)</span>
+                              <span className="text-[10px] text-slate-400 uppercase font-bold block">
+                                Completion Percentage ({tempCompletion[proj.id] !== undefined ? tempCompletion[proj.id] : (proj.completion_percentage || 0)}%)
+                              </span>
                               {isManagerOrHigher && statusFilter === "active" && (
                                 <select
                                   value={proj.progress_mode || "manual"}
@@ -1585,23 +1587,18 @@ export default function Projects({ token, role }: { token: string; role: string 
                             <div className="flex-1 bg-slate-200 dark:bg-slate-800 h-3 rounded-full overflow-hidden">
                               <div 
                                 className="bg-gradient-to-r from-indigo-500 to-purple-600 h-full rounded-full transition-all duration-300 progress-bar-fill"
-                                style={{ width: `${proj.completion_percentage || 0}%` }}
+                                style={{ width: `${tempCompletion[proj.id] !== undefined ? tempCompletion[proj.id] : (proj.completion_percentage || 0)}%` }}
                               ></div>
                             </div>
                             {isManagerOrHigher && statusFilter === "active" && (
                               <input 
-                                key={`${proj.id}-${proj.completion_percentage}`}
                                 type="range" 
                                 min="0" 
                                 max="100" 
-                                defaultValue={proj.completion_percentage || 0} 
+                                value={tempCompletion[proj.id] !== undefined ? tempCompletion[proj.id] : (proj.completion_percentage || 0)} 
                                 onChange={(e) => {
                                   const val = parseInt(e.target.value);
-                                  const container = e.target.parentElement;
-                                  const progressBar = container?.querySelector('.progress-bar-fill') as HTMLDivElement;
-                                  if (progressBar) {
-                                    progressBar.style.width = `${val}%`;
-                                  }
+                                  setTempCompletion(prev => ({ ...prev, [proj.id]: val }));
                                   if (sliderTimeoutRefs.current[proj.id]) {
                                     clearTimeout(sliderTimeoutRefs.current[proj.id]);
                                   }

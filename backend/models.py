@@ -195,6 +195,8 @@ class StockTransaction(Base):
     unit_cost = Column(Float, nullable=True)
     invoice_number = Column(String(100), nullable=True)
     attachment_url = Column(String(255), nullable=True)
+    opening_stock = Column(Float, nullable=True)
+    remaining_quantity = Column(Float, nullable=True)
 
     # Relationships
     inventory = relationship("InventoryItem", back_populates="stock_transactions")
@@ -602,6 +604,7 @@ class DailyExpense(Base):
     # Cash received reconciliation columns
     cash_received = Column(Float, default=0.0, nullable=False)
     returned_cash = Column(Float, default=0.0, nullable=False)
+    settlement_status = Column(String(20), default="settled", nullable=False)
     
     # Expense approval columns
     approval_status = Column(String(20), default="approved", nullable=False)
@@ -720,6 +723,10 @@ class ProjectPayment(Base):
     # Client Receipts payment types
     receipt_type = Column(String(50), default="Project Payment", nullable=False)
 
+    # Wallet integration
+    wallet_id = Column(String(36), ForeignKey("factory_wallet.id", ondelete="SET NULL"), nullable=True, index=True)
+    wallet_linked = Column(Boolean, default=False, nullable=False)
+
     # Soft delete columns
     is_deleted = Column(Boolean, default=False, nullable=False)
     deleted_at = Column(DateTime, nullable=True)
@@ -728,6 +735,7 @@ class ProjectPayment(Base):
     project = relationship("Project")
     client = relationship("Client")
     receiver = relationship("User")
+    wallet = relationship("FactoryWallet", foreign_keys=[wallet_id])
 
 
 class ProjectPaymentVersion(Base):

@@ -1956,7 +1956,9 @@ def read_categories(db: Session = Depends(get_db), current_user: User = Depends(
 @app.post("/api/categories", response_model=schemas.CategoryResponse)
 def create_category(cat_in: schemas.CategoryCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_store_or_higher)):
     try:
-        return crud.create_category(db=db, category=cat_in)
+        res = crud.create_category(db=db, category=cat_in)
+        broadcast_sync({"event": "inventory_change"})
+        return res
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1966,6 +1968,7 @@ def update_category(category_id: str, cat_in: schemas.CategoryUpdate, db: Sessio
         cat = crud.update_category(db=db, category_id=category_id, category_in=cat_in)
         if not cat:
             raise HTTPException(status_code=404, detail="Category not found")
+        broadcast_sync({"event": "inventory_change"})
         return cat
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1976,7 +1979,39 @@ def delete_category(category_id: str, db: Session = Depends(get_db), current_use
         success = crud.delete_category(db=db, category_id=category_id, actor_id=current_user.id)
         if not success:
             raise HTTPException(status_code=404, detail="Category not found")
+        broadcast_sync({"event": "inventory_change"})
         return {"status": "success", "message": "Category soft-deleted"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/categories/{category_id}/restore")
+def restore_category_endpoint(category_id: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_store_or_higher)):
+    try:
+        success = crud.restore_category(db=db, category_id=category_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Category not found or is not archived")
+        broadcast_sync({"event": "inventory_change"})
+        return {"status": "success", "message": "Category restored successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/api/categories/{category_id}/permanent")
+def permanent_delete_category_endpoint(
+    category_id: str,
+    password: str = Query(...),
+    reason: str = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    """Permanently delete an archived category (Admins only, password required)."""
+    user = db.query(models.User).filter(models.User.id == current_user.id).first()
+    if not user or not auth.verify_password(password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Invalid confirmation password")
+        
+    try:
+        crud.permanently_delete_record(db=db, entity_type="category", entity_id=category_id, actor_id=current_user.id, reason=reason)
+        broadcast_sync({"event": "inventory_change"})
+        return {"status": "success", "message": "Category permanently deleted"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1986,6 +2021,7 @@ def merge_categories(req_in: schemas.CategoryMergeRequest, db: Session = Depends
         success = crud.merge_categories(db=db, source_id=req_in.source_id, target_id=req_in.target_id, actor_id=current_user.id)
         if not success:
             raise HTTPException(status_code=404, detail="Source or target category not found")
+        broadcast_sync({"event": "inventory_change"})
         return {"status": "success", "message": "Categories merged successfully"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1995,6 +2031,7 @@ def move_materials_category(req_in: schemas.CategoryMoveMaterialsRequest, db: Se
     success = crud.move_materials_category(db=db, material_ids=req_in.material_ids, target_id=req_in.target_id)
     if not success:
         raise HTTPException(status_code=404, detail="Target category not found")
+    broadcast_sync({"event": "inventory_change"})
     return {"status": "success", "message": "Materials moved to new category successfully"}
 
 
@@ -6158,21 +6195,51 @@ def get_expenses_dashboard(db: Session = Depends(get_db), current_user: User = D
     start_of_week = today_dt - timedelta(days=today_dt.weekday())
     start_of_month = date(today_dt.year, today_dt.month, 1)
 
-    expenses = db.query(DailyExpense).filter(DailyExpense.is_deleted == False).all()
+    is_worker = current_user.role in ["worker", "carpenter", "operator", "employee"]
     
-    today_tot = sum(e.amount for e in expenses if e.expense_date == today_dt)
-    week_tot = sum(e.amount for e in expenses if e.expense_date >= start_of_week)
-    month_tot = sum(e.amount for e in expenses if e.expense_date >= start_of_month)
+    # today total
+    today_q = db.query(func.sum(DailyExpense.amount)).filter(
+        DailyExpense.is_deleted == False,
+        DailyExpense.expense_date == today_dt
+    )
+    if is_worker:
+        today_q = today_q.filter(DailyExpense.created_by == current_user.id)
+    today_tot = today_q.scalar() or 0.0
 
-    cat_breakdown = {}
-    for e in expenses:
-        cat_breakdown[e.expense_category] = cat_breakdown.get(e.expense_category, 0.0) + e.amount
+    # week total
+    week_q = db.query(func.sum(DailyExpense.amount)).filter(
+        DailyExpense.is_deleted == False,
+        DailyExpense.expense_date >= start_of_week
+    )
+    if is_worker:
+        week_q = week_q.filter(DailyExpense.created_by == current_user.id)
+    week_tot = week_q.scalar() or 0.0
+
+    # month total
+    month_q = db.query(func.sum(DailyExpense.amount)).filter(
+        DailyExpense.is_deleted == False,
+        DailyExpense.expense_date >= start_of_month
+    )
+    if is_worker:
+        month_q = month_q.filter(DailyExpense.created_by == current_user.id)
+    month_tot = month_q.scalar() or 0.0
+
+    # category breakdown
+    cat_q = db.query(
+        DailyExpense.expense_category,
+        func.sum(DailyExpense.amount)
+    ).filter(
+        DailyExpense.is_deleted == False
+    )
+    if is_worker:
+        cat_q = cat_q.filter(DailyExpense.created_by == current_user.id)
+    cat_breakdown = cat_q.group_by(DailyExpense.expense_category).all()
 
     return {
         "today_total": today_tot,
         "weekly_total": week_tot,
         "monthly_total": month_tot,
-        "category_breakdown": [{"category": k, "amount": v} for k, v in cat_breakdown.items()]
+        "category_breakdown": [{"category": row[0], "amount": row[1]} for row in cat_breakdown]
     }
 
 

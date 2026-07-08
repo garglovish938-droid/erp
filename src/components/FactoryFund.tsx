@@ -121,7 +121,7 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
           return { ...t, running_balance: currentBal };
         });
 
-        setEntries(enrichedEntries);
+        setEntries([...enrichedEntries].reverse());
         setStats(statsData || {
           available_balance: 0,
           opening_balance: 0,
@@ -387,19 +387,46 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
     }
   };
 
-  const handleExport = (format: string) => {
-    const params = new URLSearchParams();
-    if (startDate) params.append("start_date", startDate);
-    if (endDate) params.append("end_date", endDate);
-    if (category) params.append("category", category);
-    if (paymentMethod) params.append("payment_method", paymentMethod);
-    if (txnType) params.append("transaction_type", txnType);
-    params.append("format", format);
+  const [exporting, setExporting] = useState<string | null>(null);
 
-    const savedUser = localStorage.getItem("allure_erp_user");
-    const userToken = savedUser ? JSON.parse(savedUser).token : token;
+  const handleExport = async (format: string) => {
+    setExporting(format);
+    try {
+      const params = new URLSearchParams();
+      if (startDate) params.append("start_date", startDate);
+      if (endDate) params.append("end_date", endDate);
+      if (category) params.append("category", category);
+      if (paymentMethod) params.append("payment_method", paymentMethod);
+      if (txnType) params.append("transaction_type", txnType);
+      params.append("format", format);
 
-    window.open(`${API_BASE_URL}/api/cash-book/export?${params.toString()}&token=${userToken}`, "_blank");
+      const savedUser = localStorage.getItem("allure_erp_user");
+      const userToken = savedUser ? JSON.parse(savedUser).token : token;
+
+      const response = await fetch(`${API_BASE_URL}/api/cash-book/export?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${userToken}` }
+      });
+      if (!response.ok) {
+        throw new Error("Failed to export capital ledger records");
+      }
+      const blob = await response.blob();
+      const ext = format === "excel" ? "xlsx" : format;
+      const filename = `cash_book_report_${new Date().toISOString().slice(0, 10)}.${ext}`;
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      showToast(`${format.toUpperCase()} export completed successfully.`, "success");
+    } catch (e: any) {
+      console.error(e);
+      showToast(e.message || "Failed to export records.", "error");
+    } finally {
+      setExporting(null);
+    }
   };
 
   const formatTxnId = (id: string, type: string) => {
