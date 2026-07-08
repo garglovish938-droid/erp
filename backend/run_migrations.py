@@ -219,20 +219,23 @@ def apply_migrations(engine):
                 print(f"  [+] Added column '{st_table}.remaining_quantity'")
 
 def main():
-    print("=== STARTING DATABASE MIGRATION ===")
-    engine = get_engine()
-    
-    # 1. Automatic Backup
-    if engine.url.drivername == "sqlite":
-        backup_sqlite(settings.DATABASE_URL)
-    else:
-        backup_postgres(engine)
+    try:
+        print("=== STARTING DATABASE MIGRATION ===")
+        engine = get_engine()
         
-    # 2. Apply migrations
-    print("\nApplying additive schema updates...")
-    apply_migrations(engine)
-    
-    print("\n[+] Migration run complete!")
+        # 1. Automatic Backup
+        if engine.url.drivername == "sqlite":
+            backup_sqlite(settings.DATABASE_URL)
+        else:
+            backup_postgres(engine)
+            
+        # 2. Apply migrations
+        print("\nApplying additive schema updates...")
+        apply_migrations(engine)
+        
+        print("\n[+] Migration run complete!")
+    except Exception as e:
+        print(f"[-] Migration failed: {e}. Continuing to start uvicorn...")
 
 if __name__ == "__main__":
     main()
