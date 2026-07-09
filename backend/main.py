@@ -6046,6 +6046,8 @@ async def create_expense(
     remarks: Optional[str] = Form(None),
     cash_received: Optional[float] = Form(0.0),
     returned_cash: Optional[float] = Form(0.0),
+    wallet_id: Optional[str] = Form(None),
+    wallet_linked: Optional[bool] = Form(False),
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_any_authenticated)
@@ -6079,7 +6081,9 @@ async def create_expense(
         payment_mode=payment_mode,
         remarks=remarks,
         cash_received=cash_received,
-        returned_cash=returned_cash
+        returned_cash=returned_cash,
+        wallet_id=wallet_id,
+        wallet_linked=wallet_linked
     )
     try:
         db_exp = crud.create_daily_expense(db, exp_in, current_user.id)
@@ -6118,6 +6122,8 @@ async def update_expense(
     remarks: Optional[str] = Form(None),
     cash_received: Optional[float] = Form(None),
     returned_cash: Optional[float] = Form(None),
+    wallet_id: Optional[str] = Form(None),
+    wallet_linked: Optional[bool] = Form(None),
     file: Optional[UploadFile] = File(None),
     request: Request = None,
     db: Session = Depends(get_db),
@@ -6152,7 +6158,9 @@ async def update_expense(
         remarks=remarks,
         reason=reason,
         cash_received=cash_received,
-        returned_cash=returned_cash
+        returned_cash=returned_cash,
+        wallet_id=wallet_id,
+        wallet_linked=wallet_linked
     )
     
     ip_addr = request.client.host if request and request.client else None
