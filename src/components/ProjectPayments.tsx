@@ -171,7 +171,7 @@ export default function ProjectPayments({ token, role }: ProjectPaymentsProps) {
       const fd = new FormData();
       if (form.project_id) fd.append("project_id", form.project_id);
       fd.append("client_id", form.client_id);
-      fd.append("invoice_amount", form.invoice_amount || form.received_amount);
+      fd.append("invoice_amount", form.invoice_amount || "0");
       fd.append("received_amount", form.received_amount);
       fd.append("payment_method", form.payment_method);
       fd.append("receipt_type", form.receipt_type);

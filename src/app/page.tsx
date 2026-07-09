@@ -9,7 +9,6 @@ import Projects from "@/components/Projects";
 import MaterialRequests from "@/components/MaterialRequests";
 import Purchasing from "@/components/Purchasing";
 import CRM from "@/components/CRM";
-import Suppliers from "@/components/Suppliers";
 import Team from "@/components/Team";
 import Reports from "@/components/Reports";
 import Settings from "@/components/Settings";

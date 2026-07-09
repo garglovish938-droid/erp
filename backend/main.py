@@ -4283,21 +4283,31 @@ def read_activity_logs(db: Session = Depends(get_db), current_user: User = Depen
 # --- LOGIN HISTORY & ACTIVE USER MONITORING ---
 @app.get("/api/settings/login-history")
 def get_login_history(limit: int = 50, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
-    """Return last N login activity logs."""
-    logs = db.query(ActivityLog).filter(
+    """Return last N login activity logs with N+1 optimization and JSON parsed details."""
+    from sqlalchemy.orm import joinedload
+    import json
+    logs = db.query(ActivityLog).options(joinedload(ActivityLog.user)).filter(
         ActivityLog.action == "login"
     ).order_by(ActivityLog.created_at.desc()).limit(limit).all()
     
     result = []
     for log in logs:
-        user = db.query(User).filter(User.id == log.user_id).first() if log.user_id else None
+        user = log.user
+        details_text = log.details
+        try:
+            details_json = json.loads(log.details)
+            if isinstance(details_json, dict) and "message" in details_json:
+                details_text = details_json["message"]
+        except Exception:
+            pass
+            
         result.append({
             "id": log.id,
-            "user_email": user.email if user else "Unknown",
-            "user_name": user.full_name if user else "Unknown",
+            "user_email": user.email if user else "—",
+            "user_name": user.full_name if user else "Unknown User",
             "user_role": user.role if user else "unknown",
             "action": log.action,
-            "details": log.details,
+            "details": f"{details_text or ''} (IP: {log.ip_address or 'N/A'})",
             "timestamp": log.created_at.isoformat() if log.created_at else None
         })
     return result
@@ -5039,7 +5049,7 @@ def get_attendance_rules(db: Session = Depends(get_db), current_user: User = Dep
     return crud.get_attendance_rules(db)
 
 @app.put("/api/settings/attendance-rules", response_model=schemas.AttendanceRuleResponse)
-def update_attendance_rule(rule_in: schemas.AttendanceRuleUpdate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_manager_or_higher)):
+def update_attendance_rule(rule_in: schemas.AttendanceRuleUpdate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
     return crud.update_attendance_rule(db, rule_in)
 
 
@@ -6189,11 +6199,9 @@ async def update_expense(
 def delete_expense(
     expense_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(auth.require_any_authenticated)
+    current_user: User = Depends(auth.require_admin)
 ):
     """Delete an expense record."""
-    if current_user.role in ["worker", "carpenter", "operator", "employee"]:
-        raise HTTPException(status_code=403, detail="Employees cannot delete expenses")
     deleted = crud.delete_daily_expense(db, expense_id, current_user.id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Expense not found")
@@ -6708,7 +6716,7 @@ async def approve_project_daily_log(
 def get_project_audit_trail(
     project_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(auth.require_any_authenticated)
+    current_user: User = Depends(auth.require_manager_or_higher)
 ):
     from models import AuditLog
     project = db.query(Project).filter(Project.id == project_id, Project.is_deleted == False).first()
@@ -7573,8 +7581,8 @@ def list_project_payments(project_id: Optional[str] = Query(None), db: Session =
 @app.post("/api/project-payments", response_model=schemas.ProjectPaymentResponse)
 async def add_project_payment(
     project_id: Optional[str] = Form(None),
-    client_id: str = Form(...),
-    invoice_amount: float = Form(...),
+    client_id: Optional[str] = Form(None),
+    invoice_amount: Optional[float] = Form(0.0),
     received_amount: float = Form(...),
     payment_method: str = Form(...),
     invoice_number: Optional[str] = Form(None),
@@ -7584,6 +7592,8 @@ async def add_project_payment(
     remarks: Optional[str] = Form(None),
     receipt_type: Optional[str] = Form("Project Payment"),
     file: Optional[UploadFile] = File(None),
+    wallet_id: Optional[str] = Form(None),
+    wallet_linked: Optional[bool] = Form(False),
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_admin)
 ):
@@ -7616,7 +7626,9 @@ async def add_project_payment(
         received_date=received_date,
         remarks=remarks,
         attachment_url=attachment_url,
-        receipt_type=receipt_type
+        receipt_type=receipt_type,
+        wallet_id=wallet_id,
+        wallet_linked=wallet_linked
     )
     db_pay = crud.create_project_payment(db, pay_in, current_user.id)
     broadcast_sync({"event": "financial_change"})
@@ -7660,6 +7672,8 @@ async def update_project_payment_endpoint(
     remarks: Optional[str] = Form(None),
     receipt_type: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
+    wallet_id: Optional[str] = Form(None),
+    wallet_linked: Optional[bool] = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_admin)
 ):
@@ -7700,7 +7714,9 @@ async def update_project_payment_endpoint(
         client_id=client_id,
         attachment_url=attachment_url,
         user_id=current_user.id,
-        reason=reason
+        reason=reason,
+        wallet_id=wallet_id,
+        wallet_linked=wallet_linked
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Payment record not found")
@@ -8097,6 +8113,124 @@ def approve_expense(
     broadcast_sync({"event": "expense_change"})
     broadcast_sync({"event": "financial_change"})
     return updated
+
+
+# --- WALLET, CASH BOOK, & SUPPLIER TIMELINE ENDPOINTS ---
+
+@app.post("/api/factory-wallet/transfer")
+def transfer_wallet_funds(
+    req: schemas.WalletTransferRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    # If source is cash_book or None, restrict to Admin only
+    is_cash_book_source = req.source_wallet_id is None or req.source_wallet_id == "cash_book"
+    if is_cash_book_source and current_user.role not in ["admin", "super_admin"]:
+        raise HTTPException(status_code=403, detail="Only Admins can transfer funds from Company Capital/Cash Book")
+        
+    try:
+        res = crud.create_wallet_transfer(
+            db=db,
+            source_wallet_id=req.source_wallet_id,
+            destination_wallet_id=req.destination_wallet_id,
+            amount=req.amount,
+            user_id=current_user.id,
+            remarks=req.remarks,
+            txn_date=req.date
+        )
+        db.commit()
+        broadcast_sync({"event": "financial_change"})
+        broadcast_sync({"event": "wallet_change"})
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/factory-wallet/{wallet_id}/restore")
+def restore_factory_wallet_api(
+    wallet_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id, FactoryWallet.is_deleted == True).first()
+    if not wallet:
+        raise HTTPException(status_code=404, detail="Archived wallet not found")
+        
+    wallet.is_deleted = False
+    wallet.deleted_at = None
+    wallet.deleted_by = None
+    
+    # Restore all transactions
+    db.query(FactoryWalletTransaction).filter(FactoryWalletTransaction.wallet_id == wallet_id).update({
+        "is_deleted": False
+    })
+    
+    db.flush()
+    crud.recalculate_wallet_running_balances(db, wallet_id)
+    
+    db.commit()
+    broadcast_sync({"event": "financial_change"})
+    broadcast_sync({"event": "wallet_change"})
+    return {"status": "success", "message": "Wallet restored successfully"}
+
+
+@app.post("/api/cash-book/{txn_id}/restore")
+def restore_cash_book_entry_api(
+    txn_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    entry = db.query(CashBook).filter(CashBook.id == txn_id, CashBook.is_deleted == True).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Archived Cash Book entry not found")
+        
+    entry.is_deleted = False
+    entry.deleted_at = None
+    entry.deleted_by = None
+    
+    # If it is of reference_type "factory_fund", restore the FactoryFund and FactoryWalletTransaction
+    if entry.reference_type == "factory_fund":
+        fund = db.query(models.FactoryFund).filter(models.FactoryFund.id == entry.reference_id).first()
+        if fund:
+            fund.is_deleted = False
+            fund.deleted_at = None
+            fund.deleted_by = None
+            
+            txn = db.query(models.FactoryWalletTransaction).filter(
+                models.FactoryWalletTransaction.reference_type == "factory_fund",
+                models.FactoryWalletTransaction.reference_id == fund.id
+            ).first()
+            if txn:
+                txn.is_deleted = False
+                db.flush()
+                crud.recalculate_wallet_running_balances(db, txn.wallet_id)
+                
+    db.commit()
+    broadcast_sync({"event": "financial_change"})
+    broadcast_sync({"event": "wallet_change"})
+    return {"status": "success", "message": "Cash Book entry restored successfully"}
+
+
+@app.get("/api/suppliers/{supplier_id}/timeline")
+def get_supplier_timeline_api(
+    supplier_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    supplier = db.query(models.Supplier).filter(models.Supplier.id == supplier_id).first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    return crud.get_supplier_timeline(db, supplier_id)
+
+
+@app.get("/api/factory-wallet/deleted", response_model=List[schemas.FactoryWalletResponse])
+def list_deleted_factory_wallets(db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    return db.query(FactoryWallet).filter(FactoryWallet.is_deleted == True).all()
+
+
+@app.get("/api/cash-book/deleted", response_model=List[schemas.CashBookResponse])
+def list_deleted_cash_book_entries(db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    return db.query(CashBook).filter(CashBook.is_deleted == True).order_by(CashBook.deleted_at.desc()).all()
 
 
 

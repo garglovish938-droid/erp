@@ -51,6 +51,22 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
   const [deleteWalletPassword, setDeleteWalletPassword] = useState("");
   const [deleteWalletConfirm, setDeleteWalletConfirm] = useState(false);
 
+  // Wallet Transfer Modal states
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [transferForm, setTransferForm] = useState({
+    source_wallet_id: "cash_book",
+    destination_wallet_id: "",
+    amount: "",
+    date: new Date().toISOString().split("T")[0],
+    remarks: ""
+  });
+
+  // Archive & Restore states
+  const [showArchiveModal, setShowArchiveModal] = useState(false);
+  const [archivedWallets, setArchivedWallets] = useState<any[]>([]);
+  const [archivedCashBook, setArchivedCashBook] = useState<any[]>([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
+
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -84,8 +100,11 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
       const wList = await apiRequest("/api/factory-wallet").catch(() => []);
       setWallets(wList || []);
       
-      if (wList && wList.length > 0 && !formWalletId) {
-        setFormWalletId(wList[0].id);
+      if (wList && wList.length > 0) {
+        if (!formWalletId) setFormWalletId(wList[0].id);
+        if (!transferForm.destination_wallet_id) {
+          setTransferForm(prev => ({ ...prev, destination_wallet_id: wList[0].id }));
+        }
       }
 
       if (activeSubTab === "wallet") {
@@ -110,18 +129,7 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
           apiRequest(`/api/cash-book/stats?${startDate ? `start_date=${startDate}` : ""}${endDate ? `&end_date=${endDate}` : ""}`)
         ]);
 
-        // Calculate running balance locally for display
-        let currentBal = statsData?.opening_balance || 0;
-        const enrichedEntries = (list || []).map((t: any) => {
-          if (t.transaction_type === "IN") {
-            currentBal += t.amount;
-          } else {
-            currentBal -= t.amount;
-          }
-          return { ...t, running_balance: currentBal };
-        });
-
-        setEntries([...enrichedEntries].reverse());
+        setEntries([...(list || [])].reverse());
         setStats(statsData || {
           available_balance: 0,
           opening_balance: 0,
@@ -310,6 +318,117 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
     }
   };
 
+  const handleTransfer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!transferForm.amount || parseFloat(transferForm.amount) <= 0) {
+      showToast("Please enter a valid amount.", "error");
+      return;
+    }
+    if (transferForm.source_wallet_id === transferForm.destination_wallet_id) {
+      showToast("Source and destination wallets must be different.", "error");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const savedUser = localStorage.getItem("allure_erp_user");
+      const userToken = savedUser ? JSON.parse(savedUser).token : token;
+      
+      const res = await fetch(`${API_BASE_URL}/api/factory-wallet/transfer`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${userToken}`
+        },
+        body: JSON.stringify({
+          source_wallet_id: transferForm.source_wallet_id === "cash_book" ? null : transferForm.source_wallet_id,
+          destination_wallet_id: transferForm.destination_wallet_id,
+          amount: parseFloat(transferForm.amount),
+          date: transferForm.date,
+          remarks: transferForm.remarks
+        })
+      });
+      
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Transfer failed");
+      }
+      
+      showToast("Funds transferred successfully!", "success");
+      setShowTransferModal(false);
+      setTransferForm({
+        source_wallet_id: "cash_book",
+        destination_wallet_id: wallets[0]?.id || "",
+        amount: "",
+        date: new Date().toISOString().split("T")[0],
+        remarks: ""
+      });
+      loadData();
+    } catch (err: any) {
+      showToast(err.message || "Failed to transfer funds.", "error");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const fetchArchivedData = async () => {
+    setArchivedLoading(true);
+    try {
+      const [delWallets, delCashBook] = await Promise.all([
+        apiRequest("/api/factory-wallet/deleted").catch(() => []),
+        apiRequest("/api/cash-book/deleted").catch(() => [])
+      ]);
+      setArchivedWallets(delWallets || []);
+      setArchivedCashBook(delCashBook || []);
+    } catch (err) {
+      console.error("Failed to fetch archives", err);
+      showToast("Failed to fetch archives.", "error");
+    } finally {
+      setArchivedLoading(false);
+    }
+  };
+
+  const handleRestoreWallet = async (walletId: string) => {
+    try {
+      const savedUser = localStorage.getItem("allure_erp_user");
+      const userToken = savedUser ? JSON.parse(savedUser).token : token;
+      
+      const res = await fetch(`${API_BASE_URL}/api/factory-wallet/${walletId}/restore`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${userToken}` }
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to restore wallet");
+      }
+      showToast("Wallet restored successfully!", "success");
+      fetchArchivedData();
+      loadData();
+    } catch (err: any) {
+      showToast(err.message || "Failed to restore wallet.", "error");
+    }
+  };
+
+  const handleRestoreCashBook = async (txnId: string) => {
+    try {
+      const savedUser = localStorage.getItem("allure_erp_user");
+      const userToken = savedUser ? JSON.parse(savedUser).token : token;
+      
+      const res = await fetch(`${API_BASE_URL}/api/cash-book/${txnId}/restore`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${userToken}` }
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to restore entry");
+      }
+      showToast("Cash Book entry restored successfully!", "success");
+      fetchArchivedData();
+      loadData();
+    } catch (err: any) {
+      showToast(err.message || "Failed to restore entry.", "error");
+    }
+  };
+
   const handleEditClick = (txn: any) => {
     setSelectedTxn(txn);
     setForm({
@@ -452,6 +571,15 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
           </p>
         </div>
         <div className="flex gap-2">
+          {["admin", "super_admin", "manager"].includes(role) && (
+            <button
+              onClick={() => setShowTransferModal(true)}
+              className="border border-emerald-600 dark:border-emerald-800 hover:bg-emerald-50 dark:hover:bg-slate-900 text-emerald-600 dark:text-emerald-400 px-3.5 py-2 rounded-lg flex items-center gap-1.5 text-sm font-semibold transition-all duration-200"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Transfer Funds
+            </button>
+          )}
           {["admin", "super_admin"].includes(role) && (
             <button
               onClick={() => { resetForm(); setShowAddModal(true); }}
@@ -461,9 +589,18 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
               Add Transaction
             </button>
           )}
+          {["admin", "super_admin"].includes(role) && (
+            <button
+              onClick={() => { fetchArchivedData(); setShowArchiveModal(true); }}
+              className="border border-slate-200 dark:border-slate-800 text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-900 px-3.5 py-2 rounded-lg flex items-center gap-1.5 text-sm font-semibold transition-all duration-200"
+            >
+              View Archives
+            </button>
+          )}
           <button
             onClick={loadData}
             className="border border-slate-200 dark:border-slate-800 p-2 rounded-lg text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
+            title="Refresh page"
           >
             <RefreshCw className="h-4 w-4" />
           </button>
@@ -1413,6 +1550,219 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Transfer Funds Modal */}
+      {showTransferModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-950 w-full max-w-md rounded-2xl shadow-xl border dark:border-slate-800 overflow-hidden">
+            <div className="flex justify-between items-center p-5 border-b dark:border-slate-800">
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">Transfer Monetary Funds</h2>
+              <button onClick={() => setShowTransferModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={handleTransfer} className="p-6 space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-400 block mb-1">Source Wallet / Account *</label>
+                <select
+                  value={transferForm.source_wallet_id}
+                  onChange={(e) => setTransferForm(prev => ({ ...prev, source_wallet_id: e.target.value }))}
+                  className="w-full text-sm border rounded-lg p-2.5 focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+                >
+                  {["admin", "super_admin"].includes(role) && (
+                    <option value="cash_book">Company Capital Cash (Cash Book)</option>
+                  )}
+                  {wallets.map(w => (
+                    <option key={w.id} value={w.id}>{w.name || w.id} (Bal: ₹{w.balance})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-400 block mb-1">Destination Factory Wallet *</label>
+                <select
+                  value={transferForm.destination_wallet_id}
+                  onChange={(e) => setTransferForm(prev => ({ ...prev, destination_wallet_id: e.target.value }))}
+                  className="w-full text-sm border rounded-lg p-2.5 focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+                >
+                  {wallets.map(w => (
+                    <option key={w.id} value={w.id}>{w.name || w.id} (Bal: ₹{w.balance})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-400 block mb-1">Transfer Amount (INR) *</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  required
+                  value={transferForm.amount}
+                  onChange={(e) => setTransferForm(prev => ({ ...prev, amount: e.target.value }))}
+                  className="w-full text-sm border rounded-lg p-2.5 focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+                  placeholder="0.00"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-400 block mb-1">Date *</label>
+                <input
+                  type="date"
+                  required
+                  value={transferForm.date}
+                  onChange={(e) => setTransferForm(prev => ({ ...prev, date: e.target.value }))}
+                  className="w-full text-sm border rounded-lg p-2.5 focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-400 block mb-1">Remarks / Description</label>
+                <textarea
+                  value={transferForm.remarks}
+                  onChange={(e) => setTransferForm(prev => ({ ...prev, remarks: e.target.value }))}
+                  className="w-full text-sm border rounded-lg p-2.5 focus:outline-none dark:bg-slate-900 dark:border-slate-800 h-20"
+                  placeholder="Provide transfer justification..."
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowTransferModal(false)}
+                  className="border dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-900 px-4 py-2 rounded-lg text-sm font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50"
+                >
+                  {submitting ? "Transferring..." : "Confirm Transfer"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Archived Items & Restore Modal */}
+      {showArchiveModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-950 w-full max-w-4xl max-h-[85vh] rounded-2xl shadow-xl border dark:border-slate-800 overflow-hidden flex flex-col">
+            <div className="flex justify-between items-center p-5 border-b dark:border-slate-800">
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">Archived / Deleted Capital & Wallet Records</h2>
+              <button onClick={() => setShowArchiveModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto space-y-6 flex-1">
+              {archivedLoading ? (
+                <div className="p-8 text-center text-slate-400">
+                  <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2 text-slate-300" />
+                  Loading archived database items...
+                </div>
+              ) : (
+                <>
+                  {/* Archived Wallets */}
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-700 dark:text-slate-300 mb-3 uppercase tracking-wider">Archived Factory Wallets</h3>
+                    {archivedWallets.length === 0 ? (
+                      <p className="text-xs text-slate-400 bg-slate-50 dark:bg-slate-900 p-4 rounded-xl border border-slate-100 dark:border-slate-950">
+                        No archived wallets found.
+                      </p>
+                    ) : (
+                      <div className="border border-slate-100 dark:border-slate-900 rounded-xl overflow-hidden">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50 dark:bg-slate-900 text-slate-500 font-semibold border-b dark:border-slate-950">
+                              <th className="p-3">Wallet Name</th>
+                              <th className="p-3">Opening Bal</th>
+                              <th className="p-3">Closing Bal</th>
+                              <th className="p-3 text-right">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {archivedWallets.map(w => (
+                              <tr key={w.id} className="border-b dark:border-slate-900 hover:bg-slate-50/50">
+                                <td className="p-3 font-semibold text-slate-800 dark:text-slate-200">{w.name}</td>
+                                <td className="p-3">{formatCurrency(w.opening_balance)}</td>
+                                <td className="p-3 font-bold">{formatCurrency(w.balance)}</td>
+                                <td className="p-3 text-right">
+                                  <button
+                                    onClick={() => handleRestoreWallet(w.id)}
+                                    className="bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 px-3 py-1.5 rounded-lg font-semibold hover:bg-emerald-100 transition-colors"
+                                  >
+                                    Restore Wallet
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Archived Cash Book Entries */}
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-700 dark:text-slate-300 mb-3 uppercase tracking-wider">Archived Cash Book Entries</h3>
+                    {archivedCashBook.length === 0 ? (
+                      <p className="text-xs text-slate-400 bg-slate-50 dark:bg-slate-900 p-4 rounded-xl border border-slate-100 dark:border-slate-950">
+                        No archived cash book transactions found.
+                      </p>
+                    ) : (
+                      <div className="border border-slate-100 dark:border-slate-900 rounded-xl overflow-hidden">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50 dark:bg-slate-900 text-slate-500 font-semibold border-b dark:border-slate-950">
+                              <th className="p-3">Txn ID</th>
+                              <th className="p-3">Date</th>
+                              <th className="p-3">Type</th>
+                              <th className="p-3">Category</th>
+                              <th className="p-3">Remarks</th>
+                              <th className="p-3 text-right">Amount</th>
+                              <th className="p-3 text-right">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {archivedCashBook.map(t => (
+                              <tr key={t.id} className="border-b dark:border-slate-900 hover:bg-slate-50/50">
+                                <td className="p-3 font-mono font-bold">{t.transaction_id}</td>
+                                <td className="p-3">{t.date}</td>
+                                <td className="p-3 font-semibold text-slate-700">{t.transaction_type}</td>
+                                <td className="p-3">{t.category}</td>
+                                <td className="p-3 max-w-[150px] truncate" title={t.remarks}>{t.remarks}</td>
+                                <td className="p-3 font-bold text-right">{formatCurrency(t.amount)}</td>
+                                <td className="p-3 text-right">
+                                  <button
+                                    onClick={() => handleRestoreCashBook(t.id)}
+                                    className="bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 px-3 py-1.5 rounded-lg font-semibold hover:bg-emerald-100 transition-colors"
+                                  >
+                                    Restore Entry
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="p-5 border-t dark:border-slate-800 flex justify-end">
+              <button
+                onClick={() => setShowArchiveModal(false)}
+                className="bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-900 text-slate-800 dark:text-white px-4 py-2 rounded-lg text-sm font-semibold"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

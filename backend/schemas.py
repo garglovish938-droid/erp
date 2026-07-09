@@ -1162,6 +1162,21 @@ class FactoryWalletUpdate(BaseModel):
     status: Optional[str] = None
 
 
+class WalletTransferRequest(BaseModel):
+    source_wallet_id: Optional[str] = None  # None or "cash_book" means from company cash book
+    destination_wallet_id: str
+    amount: float
+    date: Optional[dt_date] = None
+    remarks: Optional[str] = None
+
+    @field_validator('amount')
+    @classmethod
+    def validate_positive_amount(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("Transfer amount must be greater than 0")
+        return v
+
+
 class FactoryWalletResponse(BaseSchema):
     id: str
     name: Optional[str]
@@ -1201,9 +1216,9 @@ class FactoryWalletTransactionResponse(BaseSchema):
 
 class ProjectPaymentCreate(BaseModel):
     project_id: Optional[str] = None
-    client_id: str
+    client_id: Optional[str] = None
     invoice_number: Optional[str] = None
-    invoice_amount: float
+    invoice_amount: Optional[float] = 0.0
     received_amount: float
     payment_method: str
     reference_number: Optional[str] = None
@@ -1331,6 +1346,7 @@ class CashBookResponse(BaseSchema):
     attachment_url: Optional[str]
     created_at: datetime
     is_deleted: bool
+    running_balance: Optional[float] = None
     user: Optional[UserResponse] = None
 
 

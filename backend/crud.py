@@ -3696,30 +3696,42 @@ def get_factory_wallets(db: Session) -> List[FactoryWallet]:
 def get_factory_wallet(db: Session, wallet_id: str) -> Optional[FactoryWallet]:
     return db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id, FactoryWallet.is_deleted == False).first()
 
-def recalculate_wallet_balance(db: Session, wallet_id: str) -> float:
+def recalculate_wallet_running_balances(db: Session, wallet_id: str) -> float:
     wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
     if not wallet:
         return 0.0
     
-    query = db.query(FactoryWalletTransaction).filter(
+    # Query transactions in chronological order
+    txns = db.query(FactoryWalletTransaction).filter(
         FactoryWalletTransaction.wallet_id == wallet_id,
         FactoryWalletTransaction.is_deleted == False
-    )
-    if wallet.activation_date:
-        query = query.filter(FactoryWalletTransaction.date >= wallet.activation_date)
-        
-    txns = query.all()
-    balance = wallet.opening_balance or 0.0
+    ).order_by(
+        FactoryWalletTransaction.date.asc(),
+        FactoryWalletTransaction.created_at.asc()
+    ).all()
+    
+    running = wallet.opening_balance or 0.0
     for t in txns:
         if t.transaction_type == "OPENING_BALANCE":
+            t.running_balance = wallet.opening_balance or 0.0
+            running = wallet.opening_balance or 0.0
             continue
-        balance += t.money_added
-        balance -= t.expense_deducted
         
-    wallet.balance = balance
+        if wallet.activation_date and t.date < wallet.activation_date:
+            t.running_balance = wallet.opening_balance or 0.0
+            continue
+            
+        running += t.money_added
+        running -= t.expense_deducted
+        t.running_balance = running
+        
+    wallet.balance = running
     wallet.updated_at = datetime.utcnow()
     db.flush()
-    return balance
+    return running
+
+def recalculate_wallet_balance(db: Session, wallet_id: str) -> float:
+    return recalculate_wallet_running_balances(db, wallet_id)
 
 def handle_project_payment_wallet_sync(db: Session, db_pay: ProjectPayment, user_id: str, action: str = "upsert") -> None:
     txn = db.query(FactoryWalletTransaction).filter(
@@ -3949,27 +3961,41 @@ def get_cash_book_entries(
     transaction_type: Optional[str] = None,
     search: Optional[str] = None
 ) -> List[CashBook]:
-    query = db.query(CashBook).options(joinedload(CashBook.user)).filter(CashBook.is_deleted == False)
+    # 1. Fetch all active entries sorted chronologically
+    all_entries = db.query(CashBook).options(joinedload(CashBook.user)).filter(CashBook.is_deleted == False).order_by(CashBook.date.asc(), CashBook.created_at.asc()).all()
     
-    if start_date:
-        query = query.filter(CashBook.date >= start_date)
-    if end_date:
-        query = query.filter(CashBook.date <= end_date)
-    if category:
-        query = query.filter(CashBook.category == category)
-    if payment_method:
-        query = query.filter(CashBook.payment_method == payment_method)
-    if transaction_type:
-        query = query.filter(CashBook.transaction_type == transaction_type.upper())
-    if search:
-        q = f"%{search}%"
-        query = query.filter(
-            (CashBook.transaction_id.like(q)) |
-            (CashBook.remarks.like(q)) |
-            (CashBook.reference_number.like(q))
-        )
+    # 2. Compute chronological running balance
+    running = 0.0
+    for e in all_entries:
+        if e.transaction_type == "IN":
+            running += e.amount
+        else:
+            running -= e.amount
+        e.running_balance = round(running, 2)
         
-    return query.order_by(CashBook.date.asc(), CashBook.created_at.asc()).all()
+    # 3. Filter entries in memory
+    filtered = all_entries
+    if start_date:
+        filtered = [e for e in filtered if e.date >= start_date]
+    if end_date:
+        filtered = [e for e in filtered if e.date <= end_date]
+    if category:
+        filtered = [e for e in filtered if e.category == category]
+    if payment_method:
+        filtered = [e for e in filtered if e.payment_method == payment_method]
+    if transaction_type:
+        t_type = transaction_type.upper()
+        filtered = [e for e in filtered if e.transaction_type == t_type]
+    if search:
+        q = search.lower()
+        filtered = [
+            e for e in filtered
+            if (e.transaction_id and q in e.transaction_id.lower())
+            or (e.remarks and q in e.remarks.lower())
+            or (e.reference_number and q in e.reference_number.lower())
+        ]
+        
+    return filtered
 
 def get_cash_book_stats(db: Session, start_date: Optional[date] = None, end_date: Optional[date] = None) -> dict:
     total_in = db.query(func.sum(CashBook.amount)).filter(CashBook.transaction_type == "IN", CashBook.is_deleted == False).scalar() or 0.0
@@ -4084,112 +4110,13 @@ def sync_cash_book_entry(db: Session, ref_type: str, ref_id: str, action: str = 
         added_by = payment.received_by
         ref_num = payment.reference_number
     elif ref_type == "daily_expense":
-        expense = db.query(DailyExpense).filter(DailyExpense.id == ref_id).first()
-        if not expense or expense.is_deleted or expense.approval_status != "approved":
-            db.query(CashBook).filter(
-                (CashBook.reference_id == ref_id) |
-                (CashBook.reference_id == f"{ref_id}-out") |
-                (CashBook.reference_id == f"{ref_id}-in")
-            ).update({"is_deleted": True, "deleted_at": datetime.utcnow()})
-            db.flush()
-            return
-            
-        if expense.cash_received > 0:
-            db.query(CashBook).filter(CashBook.reference_id == ref_id).update({"is_deleted": True, "deleted_at": datetime.utcnow()})
-            
-            db_out = db.query(CashBook).filter(CashBook.reference_id == f"{ref_id}-out").first()
-            if not db_out:
-                target_date = expense.expense_date or date.today()
-                date_str = target_date.strftime("%Y%m%d")
-                txn_id = generate_next_transaction_id(db, date_str)
-                db_out = CashBook(
-                    transaction_id=txn_id,
-                    date=target_date,
-                    transaction_type="OUT",
-                    category=expense.expense_category,
-                    amount=expense.cash_received,
-                    payment_method=expense.payment_mode or "Cash",
-                    reference_number=expense.expense_id,
-                    reference_type="daily_expense_advance",
-                    reference_id=f"{ref_id}-out",
-                    added_by=expense.created_by,
-                    remarks=f"Cash Advance issued: {expense.description or ''}",
-                    attachment_url=expense.attachment_url,
-                    created_at=datetime.utcnow()
-                )
-                db.add(db_out)
-            else:
-                db_out.amount = expense.cash_received
-                db_out.category = expense.expense_category
-                db_out.date = expense.expense_date
-                db_out.is_deleted = False
-                db_out.deleted_at = None
-                
-            db_in = db.query(CashBook).filter(CashBook.reference_id == f"{ref_id}-in").first()
-            if expense.returned_cash > 0:
-                if not db_in:
-                    target_date = expense.expense_date or date.today()
-                    date_str = target_date.strftime("%Y%m%d")
-                    txn_id = generate_next_transaction_id(db, date_str)
-                    db_in = CashBook(
-                        transaction_id=txn_id,
-                        date=target_date,
-                        transaction_type="IN",
-                        category="Cash Returned",
-                        amount=expense.returned_cash,
-                        payment_method="Cash",
-                        reference_number=expense.expense_id,
-                        reference_type="daily_expense_return",
-                        reference_id=f"{ref_id}-in",
-                        added_by=expense.created_by,
-                        remarks=f"Cash Returned from advance: {expense.remarks or ''}",
-                        attachment_url=expense.attachment_url,
-                        created_at=datetime.utcnow()
-                    )
-                    db.add(db_in)
-                else:
-                    db_in.amount = expense.returned_cash
-                    db_in.date = expense.expense_date
-                    db_in.is_deleted = False
-                    db_in.deleted_at = None
-            else:
-                if db_in:
-                    db_in.is_deleted = True
-                    db_in.deleted_at = datetime.utcnow()
-        else:
-            db.query(CashBook).filter(
-                (CashBook.reference_id == f"{ref_id}-out") |
-                (CashBook.reference_id == f"{ref_id}-in")
-            ).update({"is_deleted": True, "deleted_at": datetime.utcnow()})
-            
-            db_entry = db.query(CashBook).filter(CashBook.reference_id == ref_id).first()
-            if not db_entry:
-                target_date = expense.expense_date or date.today()
-                date_str = target_date.strftime("%Y%m%d")
-                txn_id = generate_next_transaction_id(db, date_str)
-                db_entry = CashBook(
-                    transaction_id=txn_id,
-                    date=target_date,
-                    transaction_type="OUT",
-                    category=expense.expense_category,
-                    amount=expense.amount,
-                    payment_method=expense.payment_mode or "Cash",
-                    reference_number=expense.expense_id,
-                    reference_type="daily_expense",
-                    reference_id=ref_id,
-                    added_by=expense.created_by,
-                    remarks=expense.description or "",
-                    attachment_url=expense.attachment_url,
-                    created_at=datetime.utcnow()
-                )
-                db.add(db_entry)
-            else:
-                db_entry.amount = expense.amount
-                db_entry.category = expense.expense_category
-                db_entry.date = expense.expense_date
-                db_entry.is_deleted = False
-                db_entry.deleted_at = None
-                
+        # Daily expenses are no longer tracked in the Company Cash Book.
+        # Soft-delete any existing synced entries to prevent double-counting.
+        db.query(CashBook).filter(
+            (CashBook.reference_id == ref_id) |
+            (CashBook.reference_id == f"{ref_id}-out") |
+            (CashBook.reference_id == f"{ref_id}-in")
+        ).update({"is_deleted": True, "deleted_at": datetime.utcnow()})
         db.flush()
         return
         
@@ -4512,5 +4439,162 @@ def get_inventory_timeline(
     if transaction_type:
         query = query.filter(StockTransaction.transaction_type == transaction_type)
     return query.order_by(StockTransaction.created_at.desc()).all()
+
+
+def create_wallet_transfer(
+    db: Session,
+    source_wallet_id: Optional[str],
+    destination_wallet_id: str,
+    amount: float,
+    user_id: Optional[str],
+    remarks: Optional[str] = None,
+    txn_date: Optional[date] = None
+) -> dict:
+    target_date = txn_date or date.today()
+    
+    # 1. Fetch destination wallet
+    dest_wallet = db.query(FactoryWallet).filter(FactoryWallet.id == destination_wallet_id, FactoryWallet.is_deleted == False).first()
+    if not dest_wallet:
+        raise ValueError("Destination wallet not found or is deleted")
+        
+    # 2. Check if source is Cash Book (Company Cash)
+    if source_wallet_id is None or source_wallet_id == "cash_book":
+        # Check cash book balance
+        stats = get_cash_book_stats(db)
+        if stats["available_balance"] < amount:
+            raise ValueError(f"Insufficient Company Cash Book balance. Available: {format_inr(stats['available_balance'])}, Required: {format_inr(amount)}")
+            
+        # Create OUT entry in Cash Book
+        cb_entry_in = CashBookCreate(
+            date=target_date,
+            transaction_type="OUT",
+            category="Transfer to Wallet",
+            amount=amount,
+            payment_method="Cash",
+            remarks=remarks or f"Transfer to Factory Wallet: {dest_wallet.name}"
+        )
+        cb_entry = create_cash_book_entry(db, cb_entry_in, user_id, ref_type="wallet_transfer")
+        
+        # Log FUND_ADDED in destination wallet
+        dest_txn = log_wallet_transaction(
+            db=db,
+            wallet_id=destination_wallet_id,
+            txn_type="FUND_ADDED",
+            money_added=amount,
+            expense_deducted=0.0,
+            remarks=remarks or f"Transfer from Company Cash: {remarks or ''}",
+            ref_type="wallet_transfer",
+            ref_id=cb_entry.id,
+            user_id=user_id,
+            txn_date=target_date
+        )
+        
+        # Link Cash Book entry to destination transaction
+        cb_entry.reference_id = dest_txn.id
+        db.flush()
+        
+        return {
+            "status": "success",
+            "message": f"Successfully transferred {format_inr(amount)} from Company Cash to {dest_wallet.name}",
+            "cash_book_id": cb_entry.id,
+            "wallet_txn_id": dest_txn.id
+        }
+    else:
+        # Transfer from another wallet
+        src_wallet = db.query(FactoryWallet).filter(FactoryWallet.id == source_wallet_id, FactoryWallet.is_deleted == False).first()
+        if not src_wallet:
+            raise ValueError("Source wallet not found or is deleted")
+            
+        if src_wallet.balance < amount:
+            raise ValueError(f"Insufficient Factory Wallet Balance in '{src_wallet.name}'. Available: {format_inr(src_wallet.balance)}, Required: {format_inr(amount)}")
+            
+        # Log EXPENSE_DEDUCTED in source wallet
+        src_txn = log_wallet_transaction(
+            db=db,
+            wallet_id=source_wallet_id,
+            txn_type="EXPENSE_DEDUCTED",
+            money_added=0.0,
+            expense_deducted=amount,
+            remarks=remarks or f"Transfer to Wallet: {dest_wallet.name}",
+            ref_type="wallet_transfer",
+            user_id=user_id,
+            txn_date=target_date
+        )
+        
+        # Log FUND_ADDED in destination wallet
+        dest_txn = log_wallet_transaction(
+            db=db,
+            wallet_id=destination_wallet_id,
+            txn_type="FUND_ADDED",
+            money_added=amount,
+            expense_deducted=0.0,
+            remarks=remarks or f"Transfer from Wallet: {src_wallet.name}",
+            ref_type="wallet_transfer",
+            ref_id=src_txn.id,
+            user_id=user_id,
+            txn_date=target_date
+        )
+        
+        # Link source transaction to destination transaction
+        src_txn.reference_id = dest_txn.id
+        db.flush()
+        
+        return {
+            "status": "success",
+            "message": f"Successfully transferred {format_inr(amount)} from {src_wallet.name} to {dest_wallet.name}",
+            "source_txn_id": src_txn.id,
+            "destination_txn_id": dest_txn.id
+        }
+
+def get_supplier_timeline(db: Session, supplier_id: str) -> List[dict]:
+    pos = db.query(PurchaseOrder).options(joinedload(PurchaseOrder.inventory)).filter(
+        PurchaseOrder.supplier_id == supplier_id,
+        PurchaseOrder.is_deleted == False
+    ).all()
+    
+    txns = db.query(StockTransaction).options(
+        joinedload(StockTransaction.inventory),
+        joinedload(StockTransaction.user)
+    ).filter(
+        StockTransaction.supplier_id == supplier_id,
+        StockTransaction.transaction_type == "in"
+    ).all()
+    
+    timeline = []
+    
+    for po in pos:
+        timeline.append({
+            "id": po.id,
+            "type": "purchase_order",
+            "date": po.po_date or po.created_at.date(),
+            "material_name": po.inventory.name if po.inventory else (po.material_name or "Unknown"),
+            "sku": po.sku or (po.inventory.sku if po.inventory else ""),
+            "quantity": po.quantity,
+            "unit": po.unit or (po.inventory.unit if po.inventory else "pcs"),
+            "amount": po.total_cost,
+            "status": po.status,
+            "reference": po.po_number,
+            "created_by": "System",
+            "attachment_url": None
+        })
+        
+    for txn in txns:
+        timeline.append({
+            "id": txn.id,
+            "type": "receiving",
+            "date": txn.created_at.date(),
+            "material_name": txn.inventory.name if txn.inventory else "Unknown",
+            "sku": txn.inventory.sku if txn.inventory else "",
+            "quantity": txn.quantity,
+            "unit": txn.inventory.unit if txn.inventory else "pcs",
+            "amount": (txn.unit_cost or 0.0) * txn.quantity,
+            "status": "Received",
+            "reference": f"GRN: {txn.grn_number or 'N/A'} | Inv: {txn.invoice_number or 'N/A'}",
+            "created_by": txn.user.full_name if txn.user else "System",
+            "attachment_url": txn.attachment_url
+        })
+        
+    timeline.sort(key=lambda x: x["date"], reverse=True)
+    return timeline
 
 
