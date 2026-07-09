@@ -3329,13 +3329,17 @@ def permanently_delete_record(
         record = db.query(Project).filter(Project.id == entity_id, Project.is_deleted == True).first()
         if not record:
             raise ValueError("Project not found or is not archived.")
-        dep_count = db.query(ProjectBOM).filter(ProjectBOM.project_id == entity_id).count()
-        dep_count += db.query(StockTransaction).filter(StockTransaction.project_id == entity_id).count()
-        dep_count += db.query(MaterialRequest).filter(MaterialRequest.project_id == entity_id).count()
-        dep_count += db.query(ProjectAssignment).filter(ProjectAssignment.project_id == entity_id).count()
-        dep_count += db.query(ProjectDailyLog).filter(ProjectDailyLog.project_id == entity_id).count()
-        if dep_count > 0:
-            raise ValueError(f"Cannot permanently delete project: it has {dep_count} linked BOM items, stock logs, requests, or assignments.")
+        
+        # Clean up linked dependent associations to avoid orphans
+        db.query(ProjectBOM).filter(ProjectBOM.project_id == entity_id).delete(synchronize_session=False)
+        db.query(ProjectAssignment).filter(ProjectAssignment.project_id == entity_id).delete(synchronize_session=False)
+        db.query(ProjectDailyLog).filter(ProjectDailyLog.project_id == entity_id).delete(synchronize_session=False)
+        
+        # Nullify reference links to project in financial/inventory logs
+        db.query(StockTransaction).filter(StockTransaction.project_id == entity_id).update({"project_id": None}, synchronize_session=False)
+        db.query(MaterialRequest).filter(MaterialRequest.project_id == entity_id).update({"project_id": None}, synchronize_session=False)
+        db.query(ProjectPayment).filter(ProjectPayment.project_id == entity_id).update({"project_id": None}, synchronize_session=False)
+        db.query(DailyExpense).filter(DailyExpense.project_id == entity_id).update({"project_id": None}, synchronize_session=False)
             
     elif entity_type == "staff":
         record = db.query(Staff).filter(Staff.id == entity_id, Staff.is_deleted == True).first()
