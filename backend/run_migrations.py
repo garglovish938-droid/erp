@@ -217,6 +217,61 @@ def apply_migrations(engine):
                 col_type = "REAL" if is_sqlite else "DOUBLE PRECISION"
                 conn.execute(text(f"ALTER TABLE {st_table} ADD COLUMN remaining_quantity {col_type}"))
                 print(f"  [+] Added column '{st_table}.remaining_quantity'")
+def cleanup_duplicate_expense_10_07_2026(engine):
+    print("\n=== CLEANUP DUPLICATE EXPENSE FOR 10/07/2026 ===")
+    try:
+        with engine.begin() as conn:
+            # 1. Find the target expenses on 2026-07-10 or matching 20260710
+            res = conn.execute(text(
+                "SELECT id, expense_id, amount, wallet_id, wallet_linked, approval_status "
+                "FROM daily_expenses "
+                "WHERE expense_date = '2026-07-10' OR expense_id LIKE '%20260710%'"
+            ))
+            expenses = res.fetchall()
+            
+            if not expenses:
+                print("No expenses found for 10/07/2026 to delete.")
+                return
+                
+            for exp in expenses:
+                exp_id, expense_id_str, amount, wallet_id, wallet_linked, approval_status = exp
+                print(f"Found duplicate expense to delete: ID={expense_id_str}, Amount={amount}, Wallet={wallet_id}, Linked={wallet_linked}, Status={approval_status}")
+                
+                # 2. Revert wallet balance if it was approved and linked and amount > 0
+                if approval_status == "approved" and amount > 0 and wallet_linked and wallet_id:
+                    txn_res = conn.execute(text(
+                        "SELECT id, expense_deducted FROM factory_wallet_transactions "
+                        "WHERE reference_type = 'daily_expense' AND reference_id = :ref_id"
+                    ), {"ref_id": exp_id})
+                    txns = txn_res.fetchall()
+                    for txn in txns:
+                        txn_uuid, exp_deducted = txn
+                        print(f"  Reverting wallet transaction: {txn_uuid} (Deducted: {exp_deducted})")
+                        conn.execute(text(
+                            "UPDATE factory_wallet SET balance = balance + :amt WHERE id = :wid"
+                        ), {"amt": exp_deducted, "wid": wallet_id})
+                    
+                    # Delete wallet transactions
+                    conn.execute(text(
+                        "DELETE FROM factory_wallet_transactions "
+                        "WHERE reference_type = 'daily_expense' AND reference_id = :ref_id"
+                    ), {"ref_id": exp_id})
+                    print("  Deleted wallet transactions.")
+                    
+                # 3. Delete cash book entries
+                conn.execute(text(
+                    "DELETE FROM cash_book "
+                    "WHERE reference_type = 'daily_expense' AND reference_id = :ref_id"
+                ), {"ref_id": exp_id})
+                print("  Deleted cash book entries.")
+                
+                # 4. Delete the expense itself
+                conn.execute(text("DELETE FROM daily_expenses WHERE id = :id"), {"id": exp_id})
+                print(f"  Deleted daily_expenses record: {expense_id_str} permanently.")
+                
+            print("=== CLEANUP COMPLETE ===")
+    except Exception as e:
+        print(f"[-] Cleanup failed: {e}")
 
 def main():
     try:
@@ -232,6 +287,9 @@ def main():
         # 2. Apply migrations
         print("\nApplying additive schema updates...")
         apply_migrations(engine)
+        
+        # 3. Cleanup production duplicate record
+        cleanup_duplicate_expense_10_07_2026(engine)
         
         print("\n[+] Migration run complete!")
     except Exception as e:
