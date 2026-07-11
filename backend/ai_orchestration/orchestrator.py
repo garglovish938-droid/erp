@@ -591,7 +591,7 @@ class AIOrchestrator:
         if expenses:
             reply += "\nRecent Expenses:\n"
             for e in expenses[-3:]:
-                reply += f"- {e.date}: {e.description or 'Expense'} - INR {e.amount:,.2f} ({e.status})\n"
+                reply += f"- {e.expense_date}: {e.description or 'Expense'} - INR {e.amount:,.2f} ({e.approval_status})\n"
         return reply
 
     # FLOW 4: Factory Wallet
@@ -613,9 +613,10 @@ class AIOrchestrator:
         entries = self.db.query(models.CashBook).filter(models.CashBook.is_deleted == False).order_by(models.CashBook.date.asc(), models.CashBook.id.asc()).all()
         bal = 0.0
         for entry in entries:
-            if entry.transaction_type == "add":
+            ttype = (entry.transaction_type or "").upper()
+            if ttype in ["ADD", "IN"]:
                 bal += entry.amount
-            elif entry.transaction_type == "deduct":
+            elif ttype in ["DEDUCT", "OUT"]:
                 bal -= entry.amount
                 
         reply = f"As the Cash Book Assistant, here is the dynamic capital cash book ledger:\n"
