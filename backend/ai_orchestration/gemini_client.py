@@ -10,8 +10,8 @@ def query_gemini_with_context(prompt: str, context: str) -> str:
     if not api_key:
         return None
 
-    # Use gemini-3.5-flash by default as it is standard and fast
-    model = "gemini-3.5-flash"
+    # Use gemini-1.5-flash by default as it is standard and fast
+    model = "gemini-1.5-flash"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
     system_instruction = (

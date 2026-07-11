@@ -75,20 +75,20 @@ def get_token(email, password):
 
 def test_intent_classification():
     assert classify_intent("how much stock is left") == "flow_1_inventory"
-    assert classify_intent("project delay analysis") == "flow_2_project"
-    assert classify_intent("add a daily expense of 500") == "flow_3_expense"
-    assert classify_intent("what is my wallet burn rate") == "flow_4_wallet"
-    assert classify_intent("show capital cash book balance") == "flow_5_cashbook"
-    assert classify_intent("pending payments from clients") == "flow_6_receipt"
-    assert classify_intent("employee attendance logs") == "flow_7_employee"
-    assert classify_intent("generate monthly reports in pdf") == "flow_8_reporting"
-    assert classify_intent("send whatsapp notification alert") == "flow_9_notification"
-    assert classify_intent("ocr scan invoice copy") == "flow_10_ocr"
-    assert classify_intent("how do you work dify knowledge base") == "flow_11_chatbot"
-    assert classify_intent("github repository commits check") == "flow_12_github"
-    assert classify_intent("monitor memory and database health") == "flow_13_monitor_prod"
-    assert classify_intent("security monitor failed login attempts") == "flow_14_monitor_sec"
-    assert classify_intent("audit logs rollback advice") == "flow_15_audit"
+    assert classify_intent("project delay analysis") == "flow_8_project"
+    assert classify_intent("add a daily expense of 500") == "flow_4_expense"
+    assert classify_intent("what is my wallet burn rate") == "flow_5_wallet"
+    assert classify_intent("show capital cash book balance") == "flow_6_cashbook"
+    assert classify_intent("pending payments from clients") == "flow_7_receipt"
+    assert classify_intent("employee attendance logs") == "flow_10_attendance"
+    assert classify_intent("generate monthly reports in pdf") == "flow_11_reports"
+    assert classify_intent("send whatsapp notification alert") == "flow_13_notification"
+    assert classify_intent("ocr scan invoice copy") == "flow_12_ocr"
+    assert classify_intent("how do you work dify knowledge base") == "flow_20_assistant"
+    assert classify_intent("github repository commits check") == "flow_20_assistant"
+    assert classify_intent("monitor memory and database health") == "flow_20_assistant"
+    assert classify_intent("security monitor failed login attempts") == "flow_14_security_monitor"
+    assert classify_intent("audit logs rollback advice") == "flow_19_audit"
 
 def test_orchestrate_rbac_restrictions():
     worker_token = get_token("worker_orch@allure.com", "worker123")
@@ -114,14 +114,14 @@ def test_orchestrate_all_flows_fallback():
     # 2. Wallet Flow fallback (Admin is allowed)
     resp = client.post("/api/ai/orchestrate", json={"message": "wallet balances"}, headers=headers)
     assert resp.status_code == 200
-    assert resp.json()["flow_id"] == "flow_4_wallet"
+    assert resp.json()["flow_id"] == "flow_5_wallet"
     assert "Wallet Assistant" in resp.json()["response"]
     
-    # 3. Production Monitor fallback
-    resp = client.post("/api/ai/orchestrate", json={"message": "monitor cpu metrics"}, headers=headers)
+    # 3. Attendance Flow fallback
+    resp = client.post("/api/ai/orchestrate", json={"message": "attendance logs check"}, headers=headers)
     assert resp.status_code == 200
-    assert resp.json()["flow_id"] == "flow_13_monitor_prod"
-    assert "Production Monitor" in resp.json()["response"]
+    assert resp.json()["flow_id"] == "flow_10_attendance"
+    assert "Attendance Assistant" in resp.json()["response"]
 
 def test_ai_chat_langflow_mock(monkeypatch):
     from config import settings

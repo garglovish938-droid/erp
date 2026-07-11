@@ -7,94 +7,124 @@ def init_all_flows():
     
     flow_definitions = {
         "flow_1_inventory": {
-            "name": "Inventory Assistant Flow",
+            "name": "Inventory AI Flow",
             "version": "1.0.0",
-            "description": "Stock lookup, low stock thresholds, and reorder suggestion logs.",
-            "components": ["ChatInput", "IntentClassifier", "FastAPIVendorsAPI", "FastAPILowStockAPI", "ShortagePredictor", "ChatOutput"]
+            "description": "Inventory stock checks, safety stock evaluation, and low stock warnings.",
+            "components": ["ChatInput", "FastAPIInventoryAPI", "StockThresholdChecker", "ChatOutput"]
         },
-        "flow_2_project": {
-            "name": "Project Assistant Flow",
+        "flow_2_material_request": {
+            "name": "Material Request AI Flow",
             "version": "1.0.0",
-            "description": "Evaluates project timeline delays and schedules.",
-            "components": ["ChatInput", "FastAPIProjectsAPI", "DelayPredictor", "ChatOutput"]
+            "description": "Compiles and submits draft material requests for production pipelines.",
+            "components": ["ChatInput", "FastAPIMaterialRequestAPI", "DraftValidator", "ChatOutput"]
         },
-        "flow_3_expense": {
-            "name": "Daily Expense Assistant Flow",
+        "flow_3_purchase": {
+            "name": "Purchase AI Flow",
             "version": "1.0.0",
-            "description": "Checks and aggregates expense summaries.",
-            "components": ["ChatInput", "FastAPIExpensesAPI", "ReceiptOCRComponent", "DuplicateDetector", "ChatOutput"]
+            "description": "Compiles and registers purchase order drafts for procurement.",
+            "components": ["ChatInput", "FastAPIPurchaseOrderAPI", "DraftValidator", "ChatOutput"]
         },
-        "flow_4_wallet": {
-            "name": "Factory Wallet Assistant Flow",
+        "flow_4_expense": {
+            "name": "Daily Expense AI Flow",
             "version": "1.0.0",
-            "description": "Analyzes burn rates, balances, and funding recommendations.",
-            "components": ["ChatInput", "FastAPIWalletsAPI", "ForecastEngine", "ChatOutput"]
+            "description": "Records daily operational expenses and computes burn rates.",
+            "components": ["ChatInput", "FastAPIExpensesAPI", "DuplicateDetector", "ChatOutput"]
         },
-        "flow_5_cashbook": {
-            "name": "Cash Book Assistant Flow",
+        "flow_5_wallet": {
+            "name": "Wallet AI Flow",
             "version": "1.0.0",
-            "description": "Explains ledger transactions and anomaly checks.",
-            "components": ["ChatInput", "FastAPICashBookAPI", "AnomalyDetector", "ChatOutput"]
+            "description": "Reviews factory wallet balances and handles manager fund requests.",
+            "components": ["ChatInput", "FastAPIWalletsAPI", "BalanceValidator", "ChatOutput"]
         },
-        "flow_6_receipt": {
-            "name": "Client Receipt Assistant Flow",
+        "flow_6_cashbook": {
+            "name": "Cash Book AI Flow",
             "version": "1.0.0",
-            "description": "Lists outstanding invoices and pending payments.",
-            "components": ["ChatInput", "FastAPIReceiptsAPI", "PaymentReminderGenerator", "ChatOutput"]
+            "description": "Queries historical capital cash book balances and logs transfers.",
+            "components": ["ChatInput", "FastAPICashBookAPI", "BalanceValidator", "ChatOutput"]
         },
-        "flow_7_employee": {
-            "name": "Employee Assistant Flow",
+        "flow_7_receipt": {
+            "name": "Client Receipt AI Flow",
             "version": "1.0.0",
-            "description": "Queries attendance logs and allocations.",
-            "components": ["ChatInput", "FastAPIAttendanceAPI", "WorkloadEstimator", "ChatOutput"]
+            "description": "Monitors client invoices and logs revenue payment receipts.",
+            "components": ["ChatInput", "FastAPIReceiptsAPI", "ReceiptValidator", "ChatOutput"]
         },
-        "flow_8_reporting": {
-            "name": "Reporting Assistant Flow",
+        "flow_8_project": {
+            "name": "Project AI Flow",
             "version": "1.0.0",
-            "description": "Prepares structured CSV/PDF data exports.",
-            "components": ["ChatInput", "ReportGenerator", "FastAPIEngine", "ChatOutput"]
+            "description": "Tracks active projects, delay predictions, and BOM progress.",
+            "components": ["ChatInput", "FastAPIProjectsAPI", "ProgressEstimator", "ChatOutput"]
         },
-        "flow_9_notification": {
-            "name": "Notification Engine Flow",
+        "flow_9_employee": {
+            "name": "Employee AI Flow",
             "version": "1.0.0",
-            "description": "Formats system alerts (WhatsApp/Email templates).",
-            "components": ["EventTrigger", "TemplateFormatter", "WhatsAppAPI", "EmailAPI", "ChatOutput"]
+            "description": "Enables querying active personnel rosters and staff profile details.",
+            "components": ["ChatInput", "FastAPIEmployeeAPI", "RosterReader", "ChatOutput"]
         },
-        "flow_10_ocr": {
-            "name": "OCR Assistant Flow",
+        "flow_10_attendance": {
+            "name": "Attendance AI Flow",
             "version": "1.0.0",
-            "description": "Classifies incoming bills/invoices without auto-approving.",
-            "components": ["FileInput", "OCRParser", "ClassifyDocument", "FastAPIDraftExpense", "ChatOutput"]
+            "description": "Registers daily check-ins/check-outs and audits attendance lists.",
+            "components": ["ChatInput", "FastAPIAttendanceAPI", "CheckInValidator", "ChatOutput"]
         },
-        "flow_11_chatbot": {
-            "name": "AI Chatbot Flow",
+        "flow_11_reports": {
+            "name": "Reports AI Flow",
             "version": "1.0.0",
-            "description": "Interfaces with Dify KB and enforces role-based answers.",
+            "description": "Generates PDF, Excel, and CSV reports with custom branding.",
+            "components": ["ChatInput", "ReportCompiler", "PDFGenerator", "ChatOutput"]
+        },
+        "flow_12_ocr": {
+            "name": "OCR AI Flow",
+            "version": "1.0.0",
+            "description": "Performs OCR scans on receipt images to extract bill entities.",
+            "components": ["FileInput", "OCRParser", "ClassifyDocument", "ChatOutput"]
+        },
+        "flow_13_notification": {
+            "name": "Notification AI Flow",
+            "version": "1.0.0",
+            "description": "Dispatches system alerts and reminder messages through WhatsApp/Email.",
+            "components": ["EventTrigger", "TemplateFormatter", "NotificationQueue", "ChatOutput"]
+        },
+        "flow_14_security_monitor": {
+            "name": "Security Monitor AI Flow",
+            "version": "1.0.0",
+            "description": "Flags authentication failures and rates limit anomalies.",
+            "components": ["AuditLogReader", "SecurityRulesEngine", "ThreatNotifier", "ChatOutput"]
+        },
+        "flow_15_executive_dashboard": {
+            "name": "Executive Dashboard AI Flow",
+            "version": "1.0.0",
+            "description": "Aggregates overall factory analytics, stock warnings, and finance health.",
+            "components": ["AnalyticsEngine", "StatsAggregator", "DashboardFormatter", "ChatOutput"]
+        },
+        "flow_16_barcode": {
+            "name": "Barcode Workflow Flow",
+            "version": "1.0.0",
+            "description": "Handles barcode scans, maps material items, and tracks stock levels.",
+            "components": ["BarcodeScanner", "FastAPIInventoryLookup", "StockTransactionPoster", "ChatOutput"]
+        },
+        "flow_17_approval": {
+            "name": "Approval Workflow Flow",
+            "version": "1.0.0",
+            "description": "Executes drafts (POs/MRs) upon manager or admin confirmation.",
+            "components": ["ChatInput", "ActionEngineApprover", "Auditor", "ChatOutput"]
+        },
+        "flow_18_analytics": {
+            "name": "Analytics Workflow Flow",
+            "version": "1.0.0",
+            "description": "Predicts inventory stock-out timelines and optimizes expenses.",
+            "components": ["ForecastingModel", "GeminiContextBuilder", "RecommendationsGenerator", "ChatOutput"]
+        },
+        "flow_19_audit": {
+            "name": "Audit Workflow Flow",
+            "version": "1.0.0",
+            "description": "Retrieves logs and offers recovery rollback recommendations.",
+            "components": ["AuditLogReader", "RollbackRecommender", "ChatOutput"]
+        },
+        "flow_20_assistant": {
+            "name": "ERP Assistant Flow",
+            "version": "1.0.0",
+            "description": "General conversational ERP assistant, query routing, and fallback helper.",
             "components": ["ChatInput", "DifyKBClient", "RBACFilter", "ChatOutput"]
-        },
-        "flow_12_github": {
-            "name": "GitHub Automation Flow",
-            "version": "1.0.0",
-            "description": "Read-only repository status analysis.",
-            "components": ["ChatInput", "GitHubReadAPI", "CodeQualityAnalyzer", "ChatOutput"]
-        },
-        "flow_13_monitor_prod": {
-            "name": "Production Monitor Flow",
-            "version": "1.0.0",
-            "description": "Summarizes API, DB health, CPU, memory, and error rates.",
-            "components": ["CronTrigger", "MetricsFetcher", "FastAPIPing", "AlertGenerator", "ChatOutput"]
-        },
-        "flow_14_monitor_sec": {
-            "name": "Security Monitor Flow",
-            "version": "1.0.0",
-            "description": "Flags login anomalies and token misuse.",
-            "components": ["CronTrigger", "AuditLogReader", "SecurityRulesEngine", "AlertGenerator", "ChatOutput"]
-        },
-        "flow_15_audit": {
-            "name": "Audit Assistant Flow",
-            "version": "1.0.0",
-            "description": "Traces who modified what record and outputs rollback directions.",
-            "components": ["ChatInput", "FastAPIAuditLogs", "RollbackRecommender", "ChatOutput"]
         }
     }
     

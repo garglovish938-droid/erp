@@ -592,6 +592,10 @@ def create_inventory_item(db: Session, item: InventoryItemCreate, user_id: Optio
     check_item_stock_level(db, db_item)
     save_version_snapshot(db, "InventoryItem", db_item.id, item.model_dump(), user_id)
     log_detailed_activity(db, user_id, "Inventory", "create", db_item.id, f"Created inventory item: {db_item.name} ({db_item.sku})")
+    try:
+        trigger_event(db, "INVENTORY_ADDED", user_id, {"id": db_item.id, "sku": db_item.sku, "quantity": db_item.quantity})
+    except Exception:
+        pass
     return db_item
 
 def update_inventory_item(db: Session, item_id: str, item_in: InventoryItemUpdate, user_id: str) -> Optional[InventoryItem]:
@@ -610,6 +614,10 @@ def update_inventory_item(db: Session, item_id: str, item_in: InventoryItemUpdat
     check_item_stock_level(db, db_item)
     save_version_snapshot(db, "InventoryItem", db_item.id, item_in.model_dump(), user_id)
     log_activity(db, user_id, "update_inventory", f"Updated inventory item: {db_item.sku}")
+    try:
+        trigger_event(db, "INVENTORY_UPDATED", user_id, {"id": db_item.id, "sku": db_item.sku, "quantity": db_item.quantity})
+    except Exception:
+        pass
     return db_item
 
 def delete_inventory_item(db: Session, item_id: str, user_id: str) -> bool:
@@ -622,6 +630,10 @@ def delete_inventory_item(db: Session, item_id: str, user_id: str) -> bool:
     db.commit()
     update_inventory_reserved_and_available(db, item_id)
     log_activity(db, user_id, "delete_inventory", f"Soft deleted inventory item: ID {item_id}")
+    try:
+        trigger_event(db, "INVENTORY_DELETED", user_id, {"id": item_id})
+    except Exception:
+        pass
     return True
 
 def restore_inventory_item(db: Session, item_id: str, user_id: str) -> bool:
@@ -734,6 +746,13 @@ def adjust_stock(
     # Check if stock has fallen below minimum
     check_item_stock_level(db, db_item)
     
+    try:
+        if transaction_type in ["out", "damaged", "transfer", "issue"] or (transaction_type in ["adjustment", "manual_entry"] and quantity < 0):
+            trigger_event(db, "STOCK_ISSUED", user_id, {"id": inventory_id, "name": db_item.name, "sku": db_item.sku, "qty": abs_qty})
+        else:
+            trigger_event(db, "STOCK_RECEIVED", user_id, {"id": inventory_id, "name": db_item.name, "sku": db_item.sku, "qty": abs_qty})
+    except Exception:
+        pass
     return db_item
 
 def check_item_stock_level(db: Session, item: InventoryItem):
@@ -795,6 +814,10 @@ def update_project(db: Session, project_id: str, project_in: ProjectUpdate, user
      
     save_version_snapshot(db, "Project", db_project.id, project_in.model_dump(), user_id)
     log_detailed_activity(db, user_id, "Project", "update", db_project.id, f"Updated project: {db_project.name}", ip_address=ip_address, device=device)
+    try:
+        trigger_event(db, "PROJECT_UPDATED", user_id, {"id": project_id})
+    except Exception:
+        pass
     if db_project.status == "delayed":
         create_system_notification(
             db,
@@ -1151,6 +1174,11 @@ def update_purchase_order(
     db.commit()
     db.refresh(db_po)
     log_detailed_activity(db, user_id, "PurchaseOrder", "update", db_po.id, f"Updated PO {db_po.po_number}")
+    try:
+        if status == "approved":
+            trigger_event(db, "PURCHASE_APPROVED", user_id, {"id": db_po.id, "po_number": db_po.po_number})
+    except Exception:
+        pass
     return db_po
 
 def update_purchase_order_status(
@@ -1464,6 +1492,10 @@ def attendance_check_in(
     db.add(db_att)
     db.commit()
     db.refresh(db_att)
+    try:
+        trigger_event(db, "ATTENDANCE_MARKED", db_att.staff_id, {"staff_id": db_att.staff_id, "status": "check_in"})
+    except Exception:
+        pass
     return db_att
 
 
@@ -1595,6 +1627,10 @@ def attendance_check_out(
         
     db.commit()
     db.refresh(db_att)
+    try:
+        trigger_event(db, "ATTENDANCE_MARKED", db_att.staff_id, {"staff_id": db_att.staff_id, "status": "check_out"})
+    except Exception:
+        pass
     return db_att
 
 
@@ -2092,6 +2128,10 @@ def create_daily_expense(db: Session, exp: DailyExpenseCreate, user_id: str) -> 
             
         db.commit()
         db.refresh(db_exp)
+        try:
+            trigger_event(db, "EXPENSE_ADDED", user_id, {"id": db_exp.id, "amount": db_exp.amount, "category": db_exp.expense_category})
+        except Exception:
+            pass
         return db_exp
     except Exception as e:
         db.rollback()
@@ -2295,6 +2335,10 @@ def update_daily_expense(
             db.commit()
             db.refresh(db_exp)
             
+        try:
+            trigger_event(db, "EXPENSE_EDITED", user_id, {"id": db_exp.id, "amount": db_exp.amount, "category": db_exp.expense_category})
+        except Exception:
+            pass
         return db_exp
     except Exception as e:
         db.rollback()
@@ -2350,6 +2394,10 @@ def delete_daily_expense(db: Session, expense_id: str, user_id: str) -> Optional
         sync_cash_book_entry(db, "daily_expense", db_exp.id)
         
         db.commit()
+        try:
+            trigger_event(db, "EXPENSE_DELETED", user_id, {"id": expense_id})
+        except Exception:
+            pass
         return db_exp
     except Exception as e:
         db.rollback()
@@ -3515,6 +3563,10 @@ def add_wallet_funds(
         
         db.commit()
         db.refresh(db_txn)
+        try:
+            trigger_event(db, "WALLET_FUNDED", user_id, {"id": wallet_id, "amount": amount})
+        except Exception:
+            pass
         return db_txn
     except Exception as e:
         db.rollback()
@@ -3601,6 +3653,10 @@ def create_project_payment(db: Session, payment: ProjectPaymentCreate, user_id: 
         
         db.commit()
         db.refresh(db_pay)
+        try:
+            trigger_event(db, "RECEIPT_ADDED", user_id, {"id": db_pay.id, "amount": db_pay.received_amount})
+        except Exception:
+            pass
         return db_pay
     except Exception as e:
         db.rollback()
@@ -3910,6 +3966,10 @@ def create_factory_wallet(db: Session, wallet: FactoryWalletCreate, user_id: str
             
         db.commit()
         db.refresh(db_wallet)
+        try:
+            trigger_event(db, "WALLET_CREATED", user_id, {"id": db_wallet.id, "balance": db_wallet.balance})
+        except Exception:
+            pass
         return db_wallet
     except Exception as e:
         db.rollback()
@@ -4300,6 +4360,10 @@ def update_project_payment(
         
         db.commit()
         db.refresh(db_pay)
+        try:
+            trigger_event(db, "RECEIPT_EDITED", user_id, {"id": db_pay.id, "amount": db_pay.received_amount})
+        except Exception:
+            pass
         return db_pay
     except Exception as e:
         db.rollback()
@@ -4359,6 +4423,10 @@ def delete_project_payment(db: Session, payment_id: str, user_id: str, reason: s
         handle_project_payment_wallet_sync(db, db_pay, user_id, action="delete")
         
         db.commit()
+        try:
+            trigger_event(db, "RECEIPT_DELETED", user_id, {"id": payment_id})
+        except Exception:
+            pass
         return True
     except Exception as e:
         db.rollback()

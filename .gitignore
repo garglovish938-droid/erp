@@ -16,12 +16,18 @@ backend/.env
 *.pyo
 *.pyd
 .Python
+venv/
+venv312/
+.venv/
+scratch/
+*.bak
 
 # ===== Database files (never commit live data) =====
 backend/erp.db
 backend/test_erp.db
 *.db
 *.sqlite
+erp.db
 
 # ===== Environment / Secrets =====
 .env
@@ -32,6 +38,8 @@ backend/test_erp.db
 # ===== Uploaded / Generated files =====
 backend/uploads/
 backend/backups/
+uploads/
+backups/
 
 # ===== OS / Editor =====
 .DS_Store
@@ -44,3 +52,4 @@ Thumbs.db
 # ===== Test artifacts =====
 backend/test_api.py
 *.log
+
