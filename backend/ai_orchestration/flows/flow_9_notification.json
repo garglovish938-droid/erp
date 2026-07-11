@@ -1,0 +1,12 @@
+{
+  "name": "Notification Engine Flow",
+  "version": "1.0.0",
+  "description": "Formats system alerts (WhatsApp/Email templates).",
+  "components": [
+    "EventTrigger",
+    "TemplateFormatter",
+    "WhatsAppAPI",
+    "EmailAPI",
+    "ChatOutput"
+  ]
+}

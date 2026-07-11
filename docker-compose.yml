@@ -34,6 +34,9 @@ services:
       - DATABASE_URL=postgresql://allure_user:allure_pass@db:5432/allure_erp
       - REDIS_URL=redis://redis:6379/0
       - SECRET_KEY=allure_living_super_secret_key_123456789
+      - OLLAMA_URL=http://ollama:11434
+      - N8N_WEBHOOK_URL=http://n8n:5678/webhook/erp-webhook
+      - LANGFLOW_API_URL=http://langflow:7860/api/v1/run
     ports:
       - "8000:8000"
     volumes:
@@ -66,8 +69,56 @@ services:
       - frontend
       - backend
 
+  langflow:
+    image: langflowai/langflow:latest
+    container_name: allure_erp_langflow
+    restart: always
+    ports:
+      - "7860:7860"
+    environment:
+      - LANGFLOW_DATABASE_URL=sqlite:////app/langflow.db
+      - LANGFLOW_REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    volumes:
+      - langflow_data:/app
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: allure_erp_ollama
+    restart: always
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: allure_erp_n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=n8n
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://localhost:5678/
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=db
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=allure_erp
+      - DB_POSTGRESDB_USER=allure_user
+      - DB_POSTGRESDB_PASSWORD=allure_pass
+    depends_on:
+      - db
+    volumes:
+      - n8n_data:/home/node/.n8n
+
 volumes:
   postgres_data:
   erp_uploads:
   erp_backups:
+  langflow_data:
+  ollama_data:
+  n8n_data:
 

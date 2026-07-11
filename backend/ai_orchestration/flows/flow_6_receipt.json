@@ -1,0 +1,11 @@
+{
+  "name": "Client Receipt Assistant Flow",
+  "version": "1.0.0",
+  "description": "Lists outstanding invoices and pending payments.",
+  "components": [
+    "ChatInput",
+    "FastAPIReceiptsAPI",
+    "PaymentReminderGenerator",
+    "ChatOutput"
+  ]
+}

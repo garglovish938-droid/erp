@@ -15,7 +15,7 @@ from main import app
 import models, crud, schemas, auth
 
 # Setup fresh SQLite database file for testing
-TEST_DB_FILE = "./test_upgrade_temp.db"
+TEST_DB_FILE = "./test_work_log_temp.db"
 # We reuse or re-create it
 if os.path.exists(TEST_DB_FILE):
     try:

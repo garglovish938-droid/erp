@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, date
+from datetime import datetime, date, UTC
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from typing import List, Optional
@@ -42,7 +42,7 @@ def log_detailed_activity(db: Session, user_id: Optional[str], module: str, acti
             user_name = user.full_name or user.email
             
     details_dict = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "user": user_name,
         "role": role,
         "module": module,
@@ -296,14 +296,14 @@ def delete_user(db: Session, user_id: str, actor_id: Optional[str] = None) -> bo
     if not db_user:
         return False
     db_user.is_deleted = True
-    db_user.deleted_at = datetime.utcnow()
+    db_user.deleted_at = datetime.now(UTC)
     db_user.deleted_by = actor_id
     
     # Also soft delete linked staff member
     staff_member = db.query(Staff).filter(Staff.user_id == db_user.id).first()
     if staff_member:
         staff_member.is_deleted = True
-        staff_member.deleted_at = datetime.utcnow()
+        staff_member.deleted_at = datetime.now(UTC)
         staff_member.deleted_by = actor_id
         
     db.commit()
@@ -351,7 +351,7 @@ def delete_category(db: Session, category_id: str, actor_id: Optional[str] = Non
         
     # Soft delete the category
     db_cat.is_deleted = True
-    db_cat.deleted_at = datetime.utcnow()
+    db_cat.deleted_at = datetime.now(UTC)
     db_cat.deleted_by = actor_id
     
     db.commit()
@@ -374,7 +374,7 @@ def merge_categories(db: Session, source_id: str, target_id: str, actor_id: Opti
     
     # Soft delete source category
     source_cat.is_deleted = True
-    source_cat.deleted_at = datetime.utcnow()
+    source_cat.deleted_at = datetime.now(UTC)
     source_cat.deleted_by = actor_id
     
     db.commit()
@@ -456,7 +456,7 @@ def delete_supplier(db: Session, supplier_id: str, user_id: str) -> bool:
         )
         
     db_sup.is_deleted = True
-    db_sup.deleted_at = datetime.utcnow()
+    db_sup.deleted_at = datetime.now(UTC)
     db_sup.deleted_by = user_id
     db.commit()
     log_activity(db, user_id, "delete_supplier", f"Soft deleted supplier: ID {supplier_id}")
@@ -530,7 +530,7 @@ def delete_client(db: Session, client_id: str, user_id: str) -> bool:
         raise ValueError("Cannot delete client: active projects are associated with this client. Archive or delete those projects first.")
         
     db_client.is_deleted = True
-    db_client.deleted_at = datetime.utcnow()
+    db_client.deleted_at = datetime.now(UTC)
     db_client.deleted_by = user_id
     db.commit()
     log_activity(db, user_id, "delete_client", f"Soft deleted client: ID {client_id}")
@@ -617,7 +617,7 @@ def delete_inventory_item(db: Session, item_id: str, user_id: str) -> bool:
     if not db_item or db_item.is_deleted:
         return False
     db_item.is_deleted = True
-    db_item.deleted_at = datetime.utcnow()
+    db_item.deleted_at = datetime.now(UTC)
     db_item.deleted_by = user_id
     db.commit()
     update_inventory_reserved_and_available(db, item_id)
@@ -701,7 +701,7 @@ def adjust_stock(
         db_item.quantity += abs_qty
         actual_qty = abs_qty
         
-    db_item.updated_at = datetime.utcnow()
+    db_item.updated_at = datetime.now(UTC)
     remaining_quantity = db_item.quantity
     
     # Record transaction
@@ -836,7 +836,7 @@ def delete_project(db: Session, project_id: str, user_id: str, ip_address: Optio
         )
 
     db_project.is_deleted = True
-    db_project.deleted_at = datetime.utcnow()
+    db_project.deleted_at = datetime.now(UTC)
     db_project.deleted_by = user_id
     db.commit()
     log_activity(db, user_id, "delete_project", f"Soft deleted project: ID {project_id}", ip_address=ip_address, device=device)
@@ -930,7 +930,7 @@ def update_material_request_status(
         raise ValueError("Cannot modify a material request that has already been issued.")
         
     db_req.status = status
-    db_req.updated_at = datetime.utcnow()
+    db_req.updated_at = datetime.now(UTC)
     
     if status == "approved":
         db_req.approved_by = user_id
@@ -999,7 +999,7 @@ def get_purchase_orders(db: Session) -> List[PurchaseOrder]:
 
 def create_purchase_order(db: Session, po: PurchaseOrderCreate, user_id: str) -> PurchaseOrder:
     # Generate unique PO number (e.g. PO-YYYYMMDD-XXXX)
-    date_str = datetime.utcnow().strftime("%Y%m%d")
+    date_str = datetime.now(UTC).strftime("%Y%m%d")
     po_count = db.query(func.count(PurchaseOrder.id)).scalar()
     po_number = f"PO-{date_str}-{po_count + 1:04d}"
     
@@ -1120,11 +1120,11 @@ def update_purchase_order(
     if remarks is not None:
         db_po.remarks = remarks
         
-    db_po.updated_at = datetime.utcnow()
+    db_po.updated_at = datetime.now(UTC)
     
     if stock_adj > 0.0:
         # Generate a unique GRN number
-        grn_number = f"GRN-{db_po.po_number}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        grn_number = f"GRN-{db_po.po_number}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
         adjust_stock(
             db=db,
             inventory_id=db_po.inventory_id,
@@ -1290,7 +1290,7 @@ def delete_staff(db: Session, staff_id: str, user_id: str) -> bool:
     if not db_staff or db_staff.is_deleted:
         return False
     db_staff.is_deleted = True
-    db_staff.deleted_at = datetime.utcnow()
+    db_staff.deleted_at = datetime.now(UTC)
     db_staff.deleted_by = user_id
     db.commit()
     log_activity(db, user_id, "delete_staff", f"Soft deleted staff employee: ID {staff_id}")
@@ -1802,7 +1802,7 @@ def delete_task(db: Session, task_id: str, user_id: str) -> bool:
     if not db_task or db_task.is_deleted:
         return False
     db_task.is_deleted = True
-    db_task.deleted_at = datetime.utcnow()
+    db_task.deleted_at = datetime.now(UTC)
     db_task.deleted_by = user_id
     db.commit()
     return True
@@ -1837,7 +1837,7 @@ def delete_document(db: Session, doc_id: str, user_id: str) -> bool:
     if not doc or doc.is_deleted:
         return False
     doc.is_deleted = True
-    doc.deleted_at = datetime.utcnow()
+    doc.deleted_at = datetime.now(UTC)
     doc.deleted_by = user_id
     db.commit()
     return True
@@ -2178,7 +2178,7 @@ def update_daily_expense(
         # If approval_status changes to approved, set approved_by and approved_at
         if exp_in.approval_status == "approved" and db_exp.approval_status != "approved":
             db_exp.approved_by = user_id
-            db_exp.approved_at = datetime.utcnow()
+            db_exp.approved_at = datetime.now(UTC)
         
         for field, val in fields_to_check.items():
             if val is not None:
@@ -2310,7 +2310,7 @@ def delete_daily_expense(db: Session, expense_id: str, user_id: str) -> Optional
         if not db_exp:
             return None
         db_exp.is_deleted = True
-        db_exp.deleted_at = datetime.utcnow()
+        db_exp.deleted_at = datetime.now(UTC)
         db_exp.deleted_by = user_id
         
         # If approved and linked, revert deduction from wallet balance
@@ -2978,7 +2978,7 @@ def approve_project_material_transfer(
     # Update source history record status
     history_from.status = "approved"
     history_from.approved_by = approver_id
-    history_from.approved_at = datetime.utcnow()
+    history_from.approved_at = datetime.now(UTC)
     # clean up the to_project_id encoding from notes for display readability
     history_from.notes = f"Transferred to Project: {to_project.name}. Notes: {original_notes}"
 
@@ -2993,7 +2993,7 @@ def approve_project_material_transfer(
         notes=f"Transferred from Project: {from_project.name}. Notes: {original_notes}",
         status="approved",
         approved_by=approver_id,
-        approved_at=datetime.utcnow()
+        approved_at=datetime.now(UTC)
     )
     db.add(history_to)
 
@@ -3039,7 +3039,7 @@ def reject_project_material_transfer(
     # Update status to rejected
     history_from.status = "rejected"
     history_from.approved_by = approver_id
-    history_from.approved_at = datetime.utcnow()
+    history_from.approved_at = datetime.now(UTC)
     
     notes_str = history_from.notes or ""
     original_notes = notes_str.split(" | ", 1)[-1] if " | " in notes_str else notes_str
@@ -3424,7 +3424,7 @@ def restore_user(db: Session, user_id_to_restore: str) -> bool:
 def get_factory_wallet_balance(db: Session) -> float:
     wallet = db.query(FactoryWallet).first()
     if not wallet:
-        wallet = FactoryWallet(id="default", balance=0.0, updated_at=datetime.utcnow())
+        wallet = FactoryWallet(id="default", balance=0.0, updated_at=datetime.now(UTC))
         db.add(wallet)
         db.commit()
         db.refresh(wallet)
@@ -3457,7 +3457,7 @@ def add_wallet_funds(
             # Fallback to default or first active wallet if not found
             wallet = db.query(FactoryWallet).first()
             if not wallet:
-                wallet = FactoryWallet(id="default", balance=0.0, name="Main Factory Wallet", updated_at=datetime.utcnow())
+                wallet = FactoryWallet(id="default", balance=0.0, name="Main Factory Wallet", updated_at=datetime.now(UTC))
                 db.add(wallet)
                 db.flush()
             selected_wallet_id = wallet.id
@@ -3654,7 +3654,7 @@ def save_version(db: Session, entity_type: str, entity_id: str, data: dict, user
         version_num=max_ver + 1,
         serialized_data=serialized,
         created_by=user_id,
-        created_at=datetime.utcnow()
+        created_at=datetime.now(UTC)
     )
     db.add(db_history)
     db.commit()
@@ -3726,7 +3726,7 @@ def recalculate_wallet_running_balances(db: Session, wallet_id: str) -> float:
         t.running_balance = running
         
     wallet.balance = running
-    wallet.updated_at = datetime.utcnow()
+    wallet.updated_at = datetime.now(UTC)
     db.flush()
     return running
 
@@ -3842,7 +3842,7 @@ def log_wallet_transaction(
         reference_id=ref_id,
         user_id=user_id,
         approved_by=approved_by,
-        created_at=datetime.utcnow()
+        created_at=datetime.now(UTC)
     )
     db.add(db_txn)
     db.flush()
@@ -3864,8 +3864,8 @@ def create_factory_wallet(db: Session, wallet: FactoryWalletCreate, user_id: str
             balance=wallet.opening_balance,
             status=wallet.status or "active",
             created_by=user_id,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC)
         )
         db.add(db_wallet)
         db.flush()
@@ -3917,7 +3917,7 @@ def update_factory_wallet(db: Session, wallet_id: str, update: FactoryWalletUpda
             db_wallet.opening_balance = update.opening_balance
             db_wallet.balance = recalculate_wallet_balance(db, wallet_id)
             
-        db_wallet.updated_at = datetime.utcnow()
+        db_wallet.updated_at = datetime.now(UTC)
         db.commit()
         db.refresh(db_wallet)
         return db_wallet
@@ -3944,7 +3944,7 @@ def create_cash_book_entry(db: Session, entry: CashBookCreate, added_by: Optiona
         added_by=added_by,
         remarks=entry.remarks,
         attachment_url=entry.attachment_url,
-        created_at=datetime.utcnow()
+        created_at=datetime.now(UTC)
     )
     db.add(db_entry)
     db.commit()
@@ -4097,7 +4097,7 @@ def sync_cash_book_entry(db: Session, ref_type: str, ref_id: str, action: str = 
             ).first()
             if db_entry:
                 db_entry.is_deleted = True
-                db_entry.deleted_at = datetime.utcnow()
+                db_entry.deleted_at = datetime.now(UTC)
                 db.flush()
             return
         amount = payment.received_amount
@@ -4116,7 +4116,7 @@ def sync_cash_book_entry(db: Session, ref_type: str, ref_id: str, action: str = 
             (CashBook.reference_id == ref_id) |
             (CashBook.reference_id == f"{ref_id}-out") |
             (CashBook.reference_id == f"{ref_id}-in")
-        ).update({"is_deleted": True, "deleted_at": datetime.utcnow()})
+        ).update({"is_deleted": True, "deleted_at": datetime.now(UTC)})
         db.flush()
         return
         
@@ -4128,7 +4128,7 @@ def sync_cash_book_entry(db: Session, ref_type: str, ref_id: str, action: str = 
     if action == "delete":
         if db_entry:
             db_entry.is_deleted = True
-            db_entry.deleted_at = datetime.utcnow()
+            db_entry.deleted_at = datetime.now(UTC)
             db.flush()
         return
         
@@ -4162,7 +4162,7 @@ def sync_cash_book_entry(db: Session, ref_type: str, ref_id: str, action: str = 
             added_by=added_by,
             remarks=remarks,
             attachment_url=attachment_url,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(UTC)
         )
         db.add(db_entry)
         
@@ -4310,12 +4310,12 @@ def delete_project_payment(db: Session, payment_id: str, user_id: str, reason: s
         }
         new_vals = {
             "is_deleted": True,
-            "deleted_at": datetime.utcnow().isoformat(),
+            "deleted_at": datetime.now(UTC).isoformat(),
             "deleted_by": user_id
         }
         
         db_pay.is_deleted = True
-        db_pay.deleted_at = datetime.utcnow()
+        db_pay.deleted_at = datetime.now(UTC)
         db_pay.deleted_by = user_id
         
         version_log = ProjectPaymentVersion(

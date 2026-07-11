@@ -1,0 +1,12 @@
+{
+  "name": "Daily Expense Assistant Flow",
+  "version": "1.0.0",
+  "description": "Checks and aggregates expense summaries.",
+  "components": [
+    "ChatInput",
+    "FastAPIExpensesAPI",
+    "ReceiptOCRComponent",
+    "DuplicateDetector",
+    "ChatOutput"
+  ]
+}

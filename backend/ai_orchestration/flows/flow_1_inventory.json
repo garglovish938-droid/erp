@@ -1,0 +1,13 @@
+{
+  "name": "Inventory Assistant Flow",
+  "version": "1.0.0",
+  "description": "Stock lookup, low stock thresholds, and reorder suggestion logs.",
+  "components": [
+    "ChatInput",
+    "IntentClassifier",
+    "FastAPIVendorsAPI",
+    "FastAPILowStockAPI",
+    "ShortagePredictor",
+    "ChatOutput"
+  ]
+}

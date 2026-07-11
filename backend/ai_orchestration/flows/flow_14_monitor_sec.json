@@ -1,0 +1,12 @@
+{
+  "name": "Security Monitor Flow",
+  "version": "1.0.0",
+  "description": "Flags login anomalies and token misuse.",
+  "components": [
+    "CronTrigger",
+    "AuditLogReader",
+    "SecurityRulesEngine",
+    "AlertGenerator",
+    "ChatOutput"
+  ]
+}

@@ -397,7 +397,7 @@ export default function Home() {
                 setAiMessages((prev) => [...prev, { sender: "user", text: userMsg }]);
                 setAiLoading(true);
                 try {
-                  const data = await apiRequest("/api/ai/chat", {
+                  const data = await apiRequest("/api/ai/orchestrate", {
                     method: "POST",
                     body: JSON.stringify({ message: userMsg }),
                   });

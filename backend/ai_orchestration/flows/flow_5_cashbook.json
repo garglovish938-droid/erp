@@ -1,0 +1,11 @@
+{
+  "name": "Cash Book Assistant Flow",
+  "version": "1.0.0",
+  "description": "Explains ledger transactions and anomaly checks.",
+  "components": [
+    "ChatInput",
+    "FastAPICashBookAPI",
+    "AnomalyDetector",
+    "ChatOutput"
+  ]
+}

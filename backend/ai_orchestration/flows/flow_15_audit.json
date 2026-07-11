@@ -1,0 +1,11 @@
+{
+  "name": "Audit Assistant Flow",
+  "version": "1.0.0",
+  "description": "Traces who modified what record and outputs rollback directions.",
+  "components": [
+    "ChatInput",
+    "FastAPIAuditLogs",
+    "RollbackRecommender",
+    "ChatOutput"
+  ]
+}

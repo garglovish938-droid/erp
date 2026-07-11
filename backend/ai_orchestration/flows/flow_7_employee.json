@@ -1,0 +1,11 @@
+{
+  "name": "Employee Assistant Flow",
+  "version": "1.0.0",
+  "description": "Queries attendance logs and allocations.",
+  "components": [
+    "ChatInput",
+    "FastAPIAttendanceAPI",
+    "WorkloadEstimator",
+    "ChatOutput"
+  ]
+}

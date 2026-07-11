@@ -1,4 +1,4 @@
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, UTC, timedelta
 from sqlalchemy.orm import Session
 from database import SessionLocal, Base, engine
 from models import (
@@ -243,7 +243,7 @@ def seed_db(drop_all: bool = True):
         # Seed transactions for the past 7 days to make Recharts area chart look amazing
         transactions = []
         for i in range(7, 0, -1):
-            tx_date = datetime.utcnow() - timedelta(days=i)
+            tx_date = datetime.now(UTC) - timedelta(days=i)
             # Alternate days
             in_qty = 15.0 + (i * 2.5)
             out_qty = 8.0 + (i * 1.5)
@@ -308,8 +308,8 @@ def seed_db(drop_all: bool = True):
                 total_cost=660.0,
                 status="received",
                 requested_by=acct_user.id,
-                created_at=datetime.utcnow() - timedelta(days=2),
-                updated_at=datetime.utcnow() - timedelta(days=1)
+                created_at=datetime.now(UTC) - timedelta(days=2),
+                updated_at=datetime.now(UTC) - timedelta(days=1)
             ),
             PurchaseOrder(
                 po_number="PO-20260618-0002",
@@ -320,7 +320,7 @@ def seed_db(drop_all: bool = True):
                 total_cost=270.0,
                 status="ordered",
                 requested_by=acct_user.id,
-                created_at=datetime.utcnow() - timedelta(hours=12)
+                created_at=datetime.now(UTC) - timedelta(hours=12)
             )
         ]
         db.add_all(pos)

@@ -1,0 +1,11 @@
+{
+  "name": "Reporting Assistant Flow",
+  "version": "1.0.0",
+  "description": "Prepares structured CSV/PDF data exports.",
+  "components": [
+    "ChatInput",
+    "ReportGenerator",
+    "FastAPIEngine",
+    "ChatOutput"
+  ]
+}

@@ -5,7 +5,7 @@ import io
 import jwt
 import json
 import uuid
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, UTC, timedelta
 from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, status, Query, File, UploadFile, Form, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -123,6 +123,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Health diagnostic endpoints
+from ai_orchestration.health_diagnostics import run_diagnostics_audit
+
+@app.get("/health/live", status_code=200)
+def health_live():
+    return {"status": "alive", "message": "Service is running."}
+
+@app.get("/health/ready")
+def health_ready(db: Session = Depends(get_db)):
+    diagnostics = run_diagnostics_audit(db)
+    if diagnostics["status"] == "unhealthy":
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unhealthy", "message": "Critical dependencies are offline.", "details": diagnostics}
+        )
+    return {"status": "ready", "details": diagnostics}
+
+@app.get("/health")
+def health_full(db: Session = Depends(get_db)):
+    diagnostics = run_diagnostics_audit(db)
+    status_code = 200
+    if diagnostics["status"] == "unhealthy":
+        status_code = 503
+    return JSONResponse(status_code=status_code, content=diagnostics)
 
 
 # Global database exception handler to format constraint errors and operational errors gracefully
@@ -281,7 +307,7 @@ from models import FactoryWallet
 db = SessionLocal()
 try:
     if db.query(FactoryWallet).count() == 0:
-        wallet = FactoryWallet(id="default", balance=0.0, updated_at=datetime.utcnow())
+        wallet = FactoryWallet(id="default", balance=0.0, updated_at=datetime.now(UTC))
         db.add(wallet)
         db.commit()
         print("[Startup] Initialized Factory Wallet with 0.0 balance.")
@@ -455,7 +481,7 @@ async def log_and_broadcast_activity(
         else:
             browser = user_agent.split(" ")[0] if user_agent else "Unknown"
             
-    server_time = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    server_time = datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     
     import json as _json
     audit_record = AuditLog(
@@ -1578,7 +1604,7 @@ async def import_inventory_csv(
                         db_item.minimum_stock_level = min_stock
                     if unit_cost > 0:
                         db_item.unit_cost = unit_cost
-                    db_item.updated_at = datetime.utcnow()
+                    db_item.updated_at = datetime.now(UTC)
                     
                     if db_item.is_deleted:
                         db_item.is_deleted = False
@@ -2730,7 +2756,7 @@ def partial_approve_request(
     req.quantity = approved_qty
     req.status = "approved"
     req.approved_by = current_user.id
-    req.updated_at = datetime.utcnow()
+    req.updated_at = datetime.now(UTC)
     
     db.commit()
     db.refresh(req)
@@ -3680,7 +3706,7 @@ def get_dashboard_charts(db: Session = Depends(get_db), current_user: User = Dep
     # Weekly stock changes (last 7 days)
     weekly_movement = []
     for i in range(6, -1, -1):
-        day = datetime.utcnow().date() - timedelta(days=i)
+        day = datetime.now(UTC).date() - timedelta(days=i)
         start_datetime = datetime(day.year, day.month, day.day, 0, 0, 0)
         end_datetime = datetime(day.year, day.month, day.day, 23, 59, 59)
         
@@ -3721,7 +3747,7 @@ def get_dashboard_charts(db: Session = Depends(get_db), current_user: User = Dep
     # Monthly Purchases Cost trends
     monthly_purchase = []
     for i in range(5, -1, -1):
-        today = datetime.utcnow().date()
+        today = datetime.now(UTC).date()
         target_year = today.year
         target_month_num = today.month - i
         while target_month_num <= 0:
@@ -5057,7 +5083,7 @@ def update_attendance_rule(rule_in: schemas.AttendanceRuleUpdate, db: Session = 
 @app.get("/api/reports/purchases/analytics")
 def get_purchase_analytics(range: str = "monthly", db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
     query = db.query(PurchaseOrder).filter(PurchaseOrder.is_deleted == False)
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     if range == "daily":
         start_date = now - timedelta(days=1)
         query = query.filter(PurchaseOrder.created_at >= start_date)
@@ -5165,7 +5191,7 @@ def get_visualization_stats(db: Session = Depends(get_db), current_user: User = 
         
     # 3. Material Usage (stock out transactions in last 7 days)
     material_usage = []
-    start_date = datetime.utcnow() - timedelta(days=7)
+    start_date = datetime.now(UTC) - timedelta(days=7)
     transactions = db.query(StockTransaction).filter(
         StockTransaction.transaction_type == "out",
         StockTransaction.created_at >= start_date
@@ -6678,7 +6704,7 @@ async def approve_project_daily_log(
     log.approval_status = status_val
     log.supervisor_comment = comment
     log.approved_by = current_user.id
-    log.approved_at = datetime.datetime.utcnow()
+    log.approved_at = datetime.datetime.now(UTC)
 
     # Perform update with optimistic locking
     from sqlalchemy.orm.exc import StaleDataError
@@ -7097,6 +7123,12 @@ def get_server_time():
     from datetime import datetime, timezone
     return {"utc_time": datetime.now(timezone.utc).isoformat()}
 
+@app.post("/api/ai/orchestrate")
+def resolve_ai_orchestrated_flow(payload: AIChatPayload, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
+    from ai_orchestration.orchestrator import AIOrchestrator
+    orchestrator = AIOrchestrator(db, user_role=current_user.role, user_name=current_user.full_name)
+    return orchestrator.execute(payload.message)
+
 @app.post("/api/ai/chat")
 def resolve_ai_chat_response(payload: AIChatPayload, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
     msg = payload.message.strip().lower()
@@ -7170,14 +7202,79 @@ def resolve_ai_chat_response(payload: AIChatPayload, db: Session = Depends(get_d
                 reply += f"- **{sup.name}**: {sup.phone or 'No phone'} | GST: {sup.gst_number or 'N/A'}\n"
         return {"response": reply}
         
-    # 5. General Help & Fallback
+    # 5. Finance, Wallet, Capital, Transfers & Receipts Keywords
+    elif any(k in msg for k in ["finance", "wallet", "capital", "cash book", "ledger", "transfer", "payment", "receipt", "balance", "fund", "expense"]):
+        # A. Fetch Cash Book entries to calculate dynamic chronological balance
+        entries = db.query(CashBook).filter(CashBook.is_deleted == False).order_by(CashBook.date.asc(), CashBook.id.asc()).all()
+        capital_balance = 0.0
+        for entry in entries:
+            if entry.transaction_type == "add":
+                capital_balance += entry.amount
+            elif entry.transaction_type == "deduct":
+                capital_balance -= entry.amount
+        
+        # B. Fetch all wallets and summarize active balances
+        wallets = db.query(FactoryWallet).filter(FactoryWallet.is_deleted == False).all()
+        total_wallet_balance = sum(w.balance for w in wallets)
+        
+        # C. Fetch client receipts count and total received
+        receipts = db.query(ProjectPayment).filter(ProjectPayment.is_deleted == False).all()
+        total_received = sum(r.received_amount for r in receipts)
+        
+        # D. Fetch daily expenses
+        expenses = db.query(DailyExpense).filter(DailyExpense.is_deleted == False).all()
+        total_expenses = sum(e.amount for e in expenses)
+        
+        # E. Construct reply
+        reply = "Here is the real-time Financial Status Summary:\n"
+        reply += f"• **Company Capital Cash Book Balance:** ₹{capital_balance:,.2f}\n"
+        reply += f"• **Total Wallet Balance across {len(wallets)} wallets:** ₹{total_wallet_balance:,.2f}\n"
+        reply += f"• **Total Daily Expenses logged:** ₹{total_expenses:,.2f} ({len(expenses)} entries)\n"
+        reply += f"• **Total Client Receipts logged:** ₹{total_received:,.2f} ({len(receipts)} payments)\n\n"
+        
+        if wallets:
+            reply += "Active Wallets Breakdown:\n"
+            for w in wallets:
+                reply += f"- **{w.name}**: balance of ₹{w.balance:,.2f}\n"
+        
+        return {"response": reply}
+
+    # 6. General Help & Fallback
     else:
+        if settings.LANGFLOW_API_URL and settings.LANGFLOW_FLOW_ID:
+            import requests
+            try:
+                url = f"{settings.LANGFLOW_API_URL.rstrip('/')}/{settings.LANGFLOW_FLOW_ID}"
+                payload_data = {
+                    "input_value": payload.message,
+                    "output_type": "chat",
+                    "input_type": "chat"
+                }
+                headers = {
+                    "Content-Type": "application/json"
+                }
+                if settings.LANGFLOW_API_KEY:
+                    headers["x-api-key"] = settings.LANGFLOW_API_KEY
+                
+                response = requests.post(url, json=payload_data, headers=headers, timeout=10)
+                if response.status_code == 200:
+                    res_data = response.json()
+                    try:
+                        text_out = res_data["outputs"][0]["outputs"][0]["results"]["message"]["text"]
+                        return {"response": text_out}
+                    except (KeyError, IndexError):
+                        return {"response": str(res_data)}
+                else:
+                    print(f"Langflow API Error {response.status_code}: {response.text}")
+            except Exception as ex:
+                print(f"Exception connecting to Langflow: {str(ex)}")
+
         reply = "Hello! I am your AI ERP Assistant. How can I help you manage the factory today?\n\n"
         reply += "You can ask me questions like:\n"
         reply += "• *'Show low stock inventory items'* to review materials.\n"
         reply += "• *'What is the status of active projects?'* to see construction progress.\n"
         reply += "• *'Who checked in today?'* to fetch live attendance details.\n"
-        reply += "• *'List registered suppliers'* to check your contact directory."
+        reply += "• *'What is our current capital and wallet balance?'* to review finances."
         return {"response": reply}
 
 
@@ -7230,7 +7327,7 @@ def bulk_archive_action(
                         continue
                 else:
                     item.is_deleted = True
-                    item.deleted_at = datetime.utcnow()
+                    item.deleted_at = datetime.now(UTC)
                     item.deleted_by = current_user.id
                     db.flush()
                     if req.entity_type == "inventory":
@@ -7501,7 +7598,7 @@ def get_factory_wallet_balance_api(wallet_id: Optional[str] = None, db: Session 
     if not wallet:
         wallet = db.query(FactoryWallet).first()
     balance = wallet.balance if wallet else 0.0
-    updated_at = wallet.updated_at if wallet else datetime.utcnow()
+    updated_at = wallet.updated_at if wallet else datetime.now(UTC)
     return {"balance": balance, "updated_at": updated_at}
 
 @app.get("/api/factory-wallet/history", response_model=List[schemas.FactoryWalletTransactionResponse])
@@ -7555,13 +7652,13 @@ def delete_factory_wallet_api(
         
     # Soft delete the wallet
     wallet.is_deleted = True
-    wallet.deleted_at = datetime.utcnow()
+    wallet.deleted_at = datetime.now(UTC)
     wallet.deleted_by = current_user.id
     
     # Soft delete all linked transactions
     db.query(FactoryWalletTransaction).filter(FactoryWalletTransaction.wallet_id == wallet_id).update({
         "is_deleted": True,
-        "deleted_at": datetime.utcnow()
+        "deleted_at": datetime.now(UTC)
     })
     
     # Unlink expenses
@@ -7961,14 +8058,14 @@ def delete_cash_book_entry(txn_id: str, db: Session = Depends(get_db), current_u
         raise HTTPException(status_code=404, detail="Cash book entry not found")
     
     db_entry.is_deleted = True
-    db_entry.deleted_at = datetime.utcnow()
+    db_entry.deleted_at = datetime.now(UTC)
     db_entry.deleted_by = current_user.id
     
     if db_entry.reference_type == "factory_fund":
         fund = db.query(models.FactoryFund).filter(models.FactoryFund.id == db_entry.reference_id).first()
         if fund:
             fund.is_deleted = True
-            fund.deleted_at = datetime.utcnow()
+            fund.deleted_at = datetime.now(UTC)
             fund.deleted_by = current_user.id
             
             txn = db.query(models.FactoryWalletTransaction).filter(

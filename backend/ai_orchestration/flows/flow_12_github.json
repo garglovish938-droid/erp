@@ -1,0 +1,11 @@
+{
+  "name": "GitHub Automation Flow",
+  "version": "1.0.0",
+  "description": "Read-only repository status analysis.",
+  "components": [
+    "ChatInput",
+    "GitHubReadAPI",
+    "CodeQualityAnalyzer",
+    "ChatOutput"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "AI Chatbot Flow",
+  "version": "1.0.0",
+  "description": "Interfaces with Dify KB and enforces role-based answers.",
+  "components": [
+    "ChatInput",
+    "DifyKBClient",
+    "RBACFilter",
+    "ChatOutput"
+  ]
+}

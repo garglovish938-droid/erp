@@ -1,0 +1,11 @@
+{
+  "name": "Factory Wallet Assistant Flow",
+  "version": "1.0.0",
+  "description": "Analyzes burn rates, balances, and funding recommendations.",
+  "components": [
+    "ChatInput",
+    "FastAPIWalletsAPI",
+    "ForecastEngine",
+    "ChatOutput"
+  ]
+}

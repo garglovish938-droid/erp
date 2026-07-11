@@ -288,6 +288,59 @@ def test_security_access_control():
     resp = client.get("/api/projects/some-project-id/audit-trail", headers=worker_headers)
     assert resp.status_code == 403
 
+def test_ai_chat_finance():
+    token = get_token("admin_test@allure.com", "admin123")
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    payload = {
+        "message": "What is our wallet balance and cash book status?"
+    }
+    resp = client.post("/api/ai/chat", json=payload, headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "Financial Status Summary" in data["response"]
+    assert "Company Capital Cash Book Balance" in data["response"]
+
+def test_ai_chat_langflow_fallback(monkeypatch):
+    from config import settings
+    orig_url = settings.LANGFLOW_API_URL
+    orig_id = settings.LANGFLOW_FLOW_ID
+    
+    settings.LANGFLOW_API_URL = "http://localhost:7860/api/v1/run"
+    settings.LANGFLOW_FLOW_ID = "mock-flow-id"
+    
+    class MockResponse:
+        status_code = 200
+        def json(self):
+            return {
+                "outputs": [
+                    {
+                        "outputs": [
+                            {
+                                "results": {
+                                    "message": {
+                                        "text": "Hello from mock Langflow!"
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+            
+    monkeypatch.setattr("requests.post", lambda *args, **kwargs: MockResponse())
+    
+    token = get_token("admin_test@allure.com", "admin123")
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    payload = {"message": "hello xyz"}
+    resp = client.post("/api/ai/chat", json=payload, headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["response"] == "Hello from mock Langflow!"
+    
+    settings.LANGFLOW_API_URL = orig_url
+    settings.LANGFLOW_FLOW_ID = orig_id
+
 def teardown_module(module):
     if os.path.exists(TEST_DB_FILE):
         try:

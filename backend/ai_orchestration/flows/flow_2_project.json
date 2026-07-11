@@ -1,0 +1,11 @@
+{
+  "name": "Project Assistant Flow",
+  "version": "1.0.0",
+  "description": "Evaluates project timeline delays and schedules.",
+  "components": [
+    "ChatInput",
+    "FastAPIProjectsAPI",
+    "DelayPredictor",
+    "ChatOutput"
+  ]
+}

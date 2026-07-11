@@ -1,0 +1,12 @@
+{
+  "name": "OCR Assistant Flow",
+  "version": "1.0.0",
+  "description": "Classifies incoming bills/invoices without auto-approving.",
+  "components": [
+    "FileInput",
+    "OCRParser",
+    "ClassifyDocument",
+    "FastAPIDraftExpense",
+    "ChatOutput"
+  ]
+}

@@ -40,7 +40,7 @@ try:
     
     # 3. Material Usage
     material_usage = []
-    start_date = datetime.utcnow() - timedelta(days=7)
+    start_date = datetime.now(UTC) - timedelta(days=7)
     transactions = db.query(StockTransaction).filter(
         StockTransaction.transaction_type == "out",
         StockTransaction.created_at >= start_date
