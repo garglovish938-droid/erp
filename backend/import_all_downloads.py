@@ -2,7 +2,7 @@ import os
 import csv
 import re
 import random
-from datetime import datetime
+from datetime import datetime, UTC
 from database import SessionLocal
 from models import InventoryItem, Category
 from crud import update_inventory_reserved_and_available
@@ -236,7 +236,7 @@ def run_bulk_import():
                                     db_item.minimum_stock_level = min_stock
                                 if unit_cost > 0:
                                     db_item.unit_cost = unit_cost
-                                db_item.updated_at = datetime.utcnow()
+                                db_item.updated_at = datetime.now(UTC)
                                 
                                 if db_item.is_deleted:
                                     db_item.is_deleted = False
