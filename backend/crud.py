@@ -1976,8 +1976,21 @@ def create_daily_expense(db: Session, exp: DailyExpenseCreate, user_id: str) -> 
     try:
         target_date = exp.expense_date or date.today()
         date_str = target_date.strftime("%Y%m%d")
-        exp_count = db.query(func.count(DailyExpense.id)).filter(DailyExpense.expense_date == target_date).scalar()
-        expense_id = f"EXP-{date_str}-{exp_count + 1:04d}"
+        
+        # Avoid collisions by parsing maximum existing suffix for the target date instead of raw row count
+        existing_ids = db.query(DailyExpense.expense_id).filter(DailyExpense.expense_date == target_date).all()
+        max_suffix = 0
+        for (eid,) in existing_ids:
+            try:
+                parts = eid.split("-")
+                if len(parts) == 3:
+                    suffix = int(parts[2])
+                    if suffix > max_suffix:
+                        max_suffix = suffix
+            except (ValueError, IndexError):
+                pass
+                
+        expense_id = f"EXP-{date_str}-{max_suffix + 1:04d}"
         
         user = db.query(User).filter(User.id == user_id).first()
         role = user.role if user else "worker"

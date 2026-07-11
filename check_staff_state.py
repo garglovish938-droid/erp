@@ -52,13 +52,11 @@ if active_items and sups:
     # Create PO
     po_data = {
         "supplier_id": sup["id"],
-        "expected_delivery_date": "2026-07-01",
-        "notes": "Smoke Test PO",
-        "items": [
-            {"inventory_item_id": item["id"], "quantity": 5, "unit_price": 100.0}
-        ]
+        "inventory_id": item["id"],
+        "quantity": 5,
+        "unit_cost": 100.0
     }
-    r_create = requests.post(f"{BASE}/api/purchase-orders", headers=H, json=po_data)
+    r_create = requests.post(f"{BASE}/api/purchasing", headers=H, json=po_data)
     print(f"  Create PO: {r_create.status_code} -> {r_create.text[:150]}")
     
     if r_create.ok:
@@ -68,7 +66,7 @@ if active_items and sups:
         print(f"  PO Created: {po_num}")
         
         # Approve
-        r_approve = requests.patch(f"{BASE}/api/purchase-orders/{po_id}/status", headers=H, json={"status": "approved"})
+        r_approve = requests.put(f"{BASE}/api/purchasing/{po_id}/status?status=approved", headers=H)
         print(f"  Approve PO: {r_approve.status_code} -> {r_approve.text[:100]}")
         
         # Get stock before
@@ -77,7 +75,7 @@ if active_items and sups:
         print(f"  Stock before receive: {qty_before}")
         
         # Receive goods
-        r_receive = requests.patch(f"{BASE}/api/purchase-orders/{po_id}/status", headers=H, json={"status": "received"})
+        r_receive = requests.put(f"{BASE}/api/purchasing/{po_id}/status?status=received", headers=H)
         print(f"  Receive Goods: {r_receive.status_code} -> {r_receive.text[:150]}")
         
         # Get stock after
