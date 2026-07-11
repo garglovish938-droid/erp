@@ -1977,8 +1977,9 @@ def create_daily_expense(db: Session, exp: DailyExpenseCreate, user_id: str) -> 
         target_date = exp.expense_date or date.today()
         date_str = target_date.strftime("%Y%m%d")
         
-        # Avoid collisions by parsing maximum existing suffix for the target date instead of raw row count
-        existing_ids = db.query(DailyExpense.expense_id).filter(DailyExpense.expense_date == target_date).all()
+        # Avoid collisions by parsing maximum existing suffix using prefix string matching instead of date/timezone comparisons
+        prefix = f"EXP-{date_str}-"
+        existing_ids = db.query(DailyExpense.expense_id).filter(DailyExpense.expense_id.like(f"{prefix}%")).all()
         max_suffix = 0
         for (eid,) in existing_ids:
             try:
