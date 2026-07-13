@@ -181,11 +181,14 @@ def update_inventory_reserved_and_available(db: Session, inventory_id: str):
 
 # --- AUTH & USERS ---
 def sync_user_to_staff(db: Session, db_user: User):
-    staff_member = db.query(Staff).filter(
-        (Staff.user_id == db_user.id) | 
-        (Staff.email == db_user.email) | 
-        (Staff.phone == db_user.phone)
-    ).first()
+    from sqlalchemy import or_
+    conditions = [Staff.user_id == db_user.id]
+    if db_user.email:
+        conditions.append(func.lower(Staff.email) == func.lower(db_user.email))
+    if db_user.phone:
+        conditions.append(Staff.phone == db_user.phone)
+        
+    staff_member = db.query(Staff).filter(or_(*conditions)).first()
     
     role_str = db_user.role.replace("_", " ").title()
     
@@ -250,12 +253,15 @@ def create_user(db: Session, user_in: UserCreate, password_hash: str) -> User:
         if existing:
             raise ValueError("Employee Code already exists")
 
+    phone_clean = user_in.phone.strip() if user_in.phone else None
+    phone_clean = phone_clean if phone_clean else None
+
     db_user = User(
         email=user_in.email,
         password_hash=password_hash,
         role=user_in.role,
         full_name=user_in.full_name,
-        phone=user_in.phone,
+        phone=phone_clean,
         employee_code=user_in.employee_code,
         department=user_in.department,
         status=user_in.status or "active",
@@ -269,7 +275,7 @@ def create_user(db: Session, user_in: UserCreate, password_hash: str) -> User:
     
     log_activity(db, db_user.id, "register", f"User registered: {db_user.email}")
     return db_user
-
+ 
 def update_user(db: Session, user_id: str, user_in: UserUpdate, password_hash: Optional[str] = None) -> Optional[User]:
     db_user = db.query(User).filter(User.id == user_id, User.is_deleted == False).first()
     if not db_user:
@@ -281,6 +287,9 @@ def update_user(db: Session, user_id: str, user_in: UserUpdate, password_hash: O
         
     for field, value in update_data.items():
         if field != "password" and field != "employee_code":  # employee_code is non-editable / immutable
+            if field == "phone" and value is not None:
+                value = value.strip()
+                value = value if value else None
             setattr(db_user, field, value)
             
     db.commit()
@@ -1270,10 +1279,13 @@ def get_staff_member(db: Session, staff_id: str) -> Optional[Staff]:
     return db.query(Staff).filter(Staff.id == staff_id, Staff.is_deleted == False).first()
 
 def create_staff(db: Session, staff: StaffCreate, user_id: Optional[str] = None) -> Staff:
+    phone_clean = staff.phone.strip() if staff.phone else None
+    phone_clean = phone_clean if phone_clean else None
+
     db_staff = Staff(
         name=staff.name,
         role=staff.role,
-        phone=staff.phone,
+        phone=phone_clean,
         email=staff.email,
         salary=staff.salary,
         status=staff.status,
@@ -1298,6 +1310,9 @@ def update_staff(db: Session, staff_id: str, staff_in: StaffUpdate, user_id: str
         return None
     update_data = staff_in.model_dump(exclude_unset=True)
     for field, value in update_data.items():
+        if field == "phone" and value is not None:
+            value = value.strip()
+            value = value if value else None
         setattr(db_staff, field, value)
         
     if "email" in update_data:
