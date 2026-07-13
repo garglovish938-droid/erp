@@ -60,7 +60,7 @@ def check_ollama_health() -> dict:
     try:
         # Get base Ollama url
         base_url = settings.OLLAMA_URL.split("/api")[0]
-        response = requests.get(base_url, headers={"Bypass-Tunnel-Reminder": "true"}, timeout=3)
+        response = requests.get(base_url, headers={"Bypass-Tunnel-Reminder": "true"}, timeout=10)
         if response.status_code == 200 or "Ollama is running" in response.text:
             return {"status": "healthy", "details": "Ollama local reasoning server active."}
         return {"status": "degraded", "details": f"Ollama base URL returned status code {response.status_code}."}
