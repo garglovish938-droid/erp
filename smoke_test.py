@@ -56,7 +56,7 @@ results["1_staff_registry"] = PASS if len(active_staff) > 0 else FAIL
 sep("2. INVENTORY CSV IMPORT")
 csv_data = "name,category,unit,quantity,min_quantity,unit_price\nTest Steel Pipe,Raw Materials,pcs,50,5,25.00\nTest Copper Wire,Electrical,m,200,20,8.50"
 files = {"file": ("test_inventory.csv", csv_data.encode(), "text/csv")}
-r = requests.post(f"{BASE}/api/inventory/import-csv", headers=H, files=files)
+r = requests.post(f"{BASE}/api/inventory/import", headers=H, files=files)
 print(f"  HTTP   : {r.status_code}")
 resp = r.json() if r.ok else r.text
 print(f"  Response: {resp}")
@@ -64,9 +64,9 @@ results["2_inventory_import"] = PASS if r.status_code in (200, 201) else FAIL
 
 # ── 3. PROJECT CSV IMPORT ──────────────────────────────────────
 sep("3. PROJECT CSV IMPORT")
-proj_csv = "name,client_name,status,start_date,end_date,budget\nSmoke Test Project,Test Client,planning,2026-01-01,2026-12-31,100000"
+proj_csv = "Project ID,Project Name,Client Name,Start Date,Expected End Date,Status,Remarks\nPROJ-SMOKE,Smoke Test Project,Test Client,2026-01-01,2026-12-31,planning,Smoke test description"
 files = {"file": ("test_projects.csv", proj_csv.encode(), "text/csv")}
-r = requests.post(f"{BASE}/api/projects/import-csv", headers=H, files=files)
+r = requests.post(f"{BASE}/api/projects/import", headers=H, files=files)
 print(f"  HTTP   : {r.status_code}")
 resp = r.json() if r.ok else r.text
 print(f"  Response: {resp}")
@@ -94,7 +94,7 @@ if r.ok:
     print(f"  Archive Response: {r2.json()}")
     
     # Verify it's archived
-    r3 = requests.get(f"{BASE}/api/clients", headers=H)
+    r3 = requests.get(f"{BASE}/api/clients?include_deleted=true", headers=H)
     all_clients = r3.json() if r3.ok else []
     archived = [c for c in all_clients if c.get("is_deleted") and c.get("id") == cid]
     print(f"  Archived flag confirmed: {len(archived) > 0}")
@@ -172,7 +172,7 @@ else:
 # ── 7. PURCHASE ORDER RECEIVE ──────────────────────────────────
 sep("7. PURCHASE ORDER RECEIVE (Stock Update)")
 # Get existing POs
-r = requests.get(f"{BASE}/api/purchase-orders", headers=H)
+r = requests.get(f"{BASE}/api/purchasing", headers=H)
 pos = r.json() if r.ok else []
 print(f"  Total POs: {len(pos)}")
 
@@ -194,8 +194,8 @@ elif pending_pos:
     # Try to receive one
     po = pending_pos[0]
     print(f"  Testing receive on PO: {po.get('po_number')}")
-    r2 = requests.patch(f"{BASE}/api/purchase-orders/{po['id']}/status",
-                        headers=H, json={"status": "received", "received_date": "2026-06-19"})
+    r2 = requests.put(f"{BASE}/api/purchasing/{po['id']}/status?status=received",
+                      headers=H)
     print(f"  Receive HTTP: {r2.status_code}")
     print(f"  Receive Response: {r2.json()}")
     results["7_po_receive"] = PASS if r2.ok else FAIL
@@ -226,7 +226,7 @@ results["9_excel_export"] = PASS if (r.ok and is_xlsx) else FAIL
 
 # ── 10. ACTIVITY LOGS ──────────────────────────────────────────
 sep("10. ACTIVITY LOGS")
-r = requests.get(f"{BASE}/api/activity-logs", headers=H)
+r = requests.get(f"{BASE}/api/logs", headers=H)
 logs = r.json() if r.ok else []
 print(f"  HTTP       : {r.status_code}")
 print(f"  Total logs : {len(logs)}")
@@ -256,8 +256,8 @@ failed = sum(1 for v in results.values() if v == FAIL)
 total = len(results)
 
 for k, v in results.items():
-    icon = "✓" if v == PASS else ("~" if v == PARTIAL else "✗")
-    print(f"  {icon} {k.replace('_',' ').title():<35} : {v}")
+    icon = "[PASS]" if v == PASS else ("[PART]" if v == PARTIAL else "[FAIL]")
+    print(f"  {icon:<8} {k.replace('_',' ').title():<35} : {v}")
 
 print(f"\n  PASSED   : {passed}/{total}")
 print(f"  PARTIAL  : {partial}/{total}")

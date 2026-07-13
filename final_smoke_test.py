@@ -89,8 +89,7 @@ def main():
 
     # Step 7: Try login as Prince (should FAIL)
     print_separator("STEP 7: Try Login as Prince (should fail - account archived)")
-    # We need to try Prince's password - let's try a few common ones
-    prince_passwords = ["admin123", "password", "password123", "prince123", "12345678"]
+    prince_passwords = ["Prince@1234"]
     prince_login_before_restore = None
     for pwd in prince_passwords:
         prince_login_resp = requests.post(f"{BASE_URL}/api/auth/login", json={
@@ -134,12 +133,12 @@ def main():
     print_separator("STEP 11: Reset Prince's password and try login")
     reset_resp = requests.post(f"{BASE_URL}/api/users/{TARGET_USER_ID}/reset-password", 
                                 headers=headers, 
-                                json={"password": "prince123"})
+                                json={"password": "Prince@1234"})
     print(f"Reset Password Status: {reset_resp.status_code}")
     print(f"Reset Response: {reset_resp.text}")
 
     # Try login after reset
-    for pwd in ["prince123", "admin123", "password123"]:
+    for pwd in ["Prince@1234"]:
         prince_login_after = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": TARGET_EMAIL,
             "password": pwd
@@ -160,9 +159,9 @@ def main():
     print(f"User is_deleted after restore: {user_is_deleted_after_restore}")
 
     if delete_resp.status_code == 200 and user_is_deleted and not prince_still_in_list and restore_resp.status_code == 200 and prince_back_in_list:
-        print("\nOVERALL RESULT: SUCCESS ✓")
+        print("\nOVERALL RESULT: SUCCESS [PASS]")
     else:
-        print("\nOVERALL RESULT: FAILURE ✗")
+        print("\nOVERALL RESULT: FAILURE [FAIL]")
         if delete_resp.status_code != 200:
             print(f"  Root Cause: Archive DELETE failed with status {delete_resp.status_code}")
         if not user_is_deleted:

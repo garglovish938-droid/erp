@@ -10,9 +10,20 @@ def query_gemini_with_context(prompt: str, context: str) -> str:
     if not api_key:
         return None
 
-    # Use gemini-1.5-flash by default as it is standard and fast
-    model = "gemini-1.5-flash"
-    url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={api_key}"
+    # Use gemini-2.0-flash by default as it is standard and fast
+    model = "gemini-2.0-flash"
+    
+    # Check if the key is a standard Developer API Key (starting with AIzaSy)
+    # or an OAuth / Vertex access token (starting with AQ. or similar)
+    if api_key.startswith("AIzaSy"):
+        url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={api_key}"
+        headers = {"Content-Type": "application/json"}
+    else:
+        url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
 
     system_instruction = (
         "You are Nexora AI, the autonomous ERP Operations Manager for Allure Living Furniture Manufacturing. "
@@ -41,8 +52,6 @@ def query_gemini_with_context(prompt: str, context: str) -> str:
             }
         ]
     }
-
-    headers = {"Content-Type": "application/json"}
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=30)
