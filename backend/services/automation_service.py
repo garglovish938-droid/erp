@@ -73,6 +73,20 @@ class AutomationService:
             db.add(audit_log)
             db.commit()
             
+            # 6. Trigger n8n Automation Webhook
+            from ai_orchestration.automation_coordinator import trigger_database_event_webhook
+            trigger_database_event_webhook(
+                event_type=event.event_type,
+                details={
+                    "event_id": event.event_id,
+                    "correlation_id": event.correlation_id,
+                    "user": event.user,
+                    "module": event.module,
+                    "payload": event.payload,
+                    "timestamp": event.timestamp
+                }
+            )
+            
         except Exception as e:
             logger.error(f"[Automation Coordinator] Event processing failure: {e}", exc_info=True)
         finally:

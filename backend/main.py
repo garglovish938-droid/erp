@@ -1181,6 +1181,13 @@ def export_receiving_history(
     current_user: User = Depends(auth.require_any_authenticated)
 ):
     """Export receiving history as Excel, CSV, or PDF."""
+    from services.event_service import EventService
+    EventService.publish(
+        "REPORT_GENERATED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "reports",
+        {"type": "Receiving History", "format": format, "item_id": item_id}
+    )
     import io
     txns = crud.get_inventory_receiving_history(
         db=db,
@@ -1287,6 +1294,13 @@ def export_stock_timeline(
     current_user: User = Depends(auth.require_any_authenticated)
 ):
     """Export stock timeline as Excel, CSV, or PDF."""
+    from services.event_service import EventService
+    EventService.publish(
+        "REPORT_GENERATED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "reports",
+        {"type": "Stock Timeline", "format": format, "item_id": item_id}
+    )
     import io
     txns = crud.get_inventory_timeline(db=db, inventory_id=item_id, transaction_type=transaction_type)
     
@@ -2373,6 +2387,13 @@ def create_project(project_in: schemas.ProjectCreate, db: Session = Depends(get_
         crud.auto_assign_project_resources(db, project)
     except Exception as e:
         print(f"Failed to auto-assign project resources: {e}")
+    from services.event_service import EventService
+    EventService.publish(
+        "PROJECT_CREATED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "projects",
+        {"id": project.id, "name": project.name, "status": project.status}
+    )
     broadcast_sync({"event": "project_change"})
     return project
 
@@ -2513,6 +2534,13 @@ def update_project(project_id: str, project_in: schemas.ProjectUpdate, request: 
     db_project = crud.update_project(db=db, project_id=project_id, project_in=project_in, user_id=current_user.id, ip_address=ip_addr, device=user_agent)
     if not db_project:
         raise HTTPException(status_code=404, detail="Project not found")
+    from services.event_service import EventService
+    EventService.publish(
+        "PROJECT_UPDATED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "projects",
+        {"id": db_project.id, "name": db_project.name, "status": db_project.status}
+    )
     broadcast_sync({"event": "project_change"})
     return db_project
 
@@ -2529,6 +2557,13 @@ def delete_project(project_id: str, request: Request, db: Session = Depends(get_
         success = crud.delete_project(db=db, project_id=project_id, user_id=current_user.id, ip_address=ip_addr, device=user_agent)
         if not success:
             raise HTTPException(status_code=404, detail="Project not found")
+        from services.event_service import EventService
+        EventService.publish(
+            "PROJECT_DELETED",
+            {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+            "projects",
+            {"id": project_id}
+        )
         broadcast_sync({"event": "project_change"})
         return {"status": "success", "message": "Project archived"}
     except ValueError as e:
@@ -3038,6 +3073,13 @@ def create_staff_member(staff_in: schemas.StaffCreate, db: Session = Depends(get
             raise HTTPException(status_code=403, detail=f"Managers can only create staff in their own department: {current_user.department}")
             
     created = crud.create_staff(db=db, staff=staff_in, user_id=current_user.id)
+    from services.event_service import EventService
+    EventService.publish(
+        "EMPLOYEE_ADDED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "staff",
+        {"id": created.id, "name": created.name, "role": created.role}
+    )
     broadcast_sync({"event": "staff_change"})
     return created
 
@@ -3058,6 +3100,13 @@ def update_staff(staff_id: str, staff_in: schemas.StaffUpdate, db: Session = Dep
             raise HTTPException(status_code=403, detail=f"Managers cannot change staff department to a different department")
             
     updated = crud.update_staff(db=db, staff_id=staff_id, staff_in=staff_in, user_id=current_user.id)
+    from services.event_service import EventService
+    EventService.publish(
+        "EMPLOYEE_UPDATED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "staff",
+        {"id": updated.id, "name": updated.name, "role": updated.role}
+    )
     broadcast_sync({"event": "staff_change"})
     return updated
 
@@ -3076,6 +3125,13 @@ def delete_staff(staff_id: str, db: Session = Depends(get_db), current_user: Use
             raise HTTPException(status_code=403, detail="Managers can only delete staff in their own department")
             
     success = crud.delete_staff(db=db, staff_id=staff_id, user_id=current_user.id)
+    from services.event_service import EventService
+    EventService.publish(
+        "EMPLOYEE_DELETED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "staff",
+        {"id": staff_id}
+    )
     broadcast_sync({"event": "staff_change"})
     return {"status": "success", "message": "Staff archived"}
 
@@ -5866,6 +5922,13 @@ def export_attendance(
     current_user: User = Depends(auth.require_any_authenticated)
 ):
     """Export monthly attendance report as Excel or CSV."""
+    from services.event_service import EventService
+    EventService.publish(
+        "REPORT_GENERATED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "reports",
+        {"type": "Monthly Attendance Report", "format": format, "year": year, "month": month}
+    )
     from calendar import monthrange
     import io
 
@@ -6202,6 +6265,13 @@ def export_purchases(
     current_user: User = Depends(auth.require_any_authenticated)
 ):
     """Export purchase orders as Excel, CSV, or PDF."""
+    from services.event_service import EventService
+    EventService.publish(
+        "REPORT_GENERATED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "reports",
+        {"type": "Purchase Orders Report", "format": format}
+    )
     import io
     q = db.query(PurchaseOrder).filter(PurchaseOrder.is_deleted == False)
 
@@ -6656,6 +6726,13 @@ def export_expenses(
     current_user: User = Depends(auth.require_any_authenticated)
 ):
     """Export daily expenses as Excel, CSV, or PDF."""
+    from services.event_service import EventService
+    EventService.publish(
+        "REPORT_GENERATED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "reports",
+        {"type": "Expenses Report", "format": format}
+    )
     import io
     q = db.query(DailyExpense).filter(DailyExpense.is_deleted == False)
     if start_date:
@@ -8375,6 +8452,13 @@ async def add_cash_book_entry(
             CashBook.reference_type == "factory_fund",
             CashBook.reference_id == wallet_txn.reference_id
         ).first()
+        from services.event_service import EventService
+        EventService.publish(
+            "WALLET_FUNDED",
+            {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+            "wallet",
+            {"amount": amount, "wallet_id": wallet_id}
+        )
         broadcast_sync({"event": "financial_change"})
         return db_entry
 
@@ -8389,6 +8473,13 @@ async def add_cash_book_entry(
         attachment_url=attachment_url
     )
     db_entry = crud.create_cash_book_entry(db, entry_in, current_user.id, ref_type="direct_txn")
+    from services.event_service import EventService
+    EventService.publish(
+        "CASH_BOOK_UPDATED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "cash_book",
+        {"id": db_entry.id, "amount": db_entry.amount, "type": db_entry.transaction_type}
+    )
     broadcast_sync({"event": "financial_change"})
     return db_entry
 
@@ -8441,6 +8532,13 @@ async def update_cash_book_entry(
         
     db.commit()
     db.refresh(db_entry)
+    from services.event_service import EventService
+    EventService.publish(
+        "CASH_BOOK_UPDATED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "cash_book",
+        {"id": db_entry.id, "amount": db_entry.amount, "type": db_entry.transaction_type}
+    )
     broadcast_sync({"event": "financial_change"})
     return db_entry
 
@@ -8472,6 +8570,13 @@ def delete_cash_book_entry(txn_id: str, db: Session = Depends(get_db), current_u
                 crud.recalculate_wallet_balance(db, txn.wallet_id)
                 
     db.commit()
+    from services.event_service import EventService
+    EventService.publish(
+        "CASH_BOOK_UPDATED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "cash_book",
+        {"id": txn_id, "action": "deleted"}
+    )
     broadcast_sync({"event": "financial_change"})
     broadcast_sync({"event": "wallet_change"})
     return {"status": "success", "message": "Transaction deleted successfully"}
@@ -8488,6 +8593,13 @@ def export_cash_book(
     current_user: User = Depends(auth.require_manager_or_higher)
 ):
     """Export Cash Book ledger to CSV, Excel, or PDF."""
+    from services.event_service import EventService
+    EventService.publish(
+        "REPORT_GENERATED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "reports",
+        {"type": "Cash Book Ledger", "format": format}
+    )
     txns = crud.get_cash_book_entries(db, start_date, end_date, category, payment_method, transaction_type)
     stats = crud.get_cash_book_stats(db, start_date, end_date)
     running = stats["opening_balance"]
@@ -8601,6 +8713,16 @@ def approve_expense(
         updated = crud.update_daily_expense(db, expense_id, exp_in, current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+        
+    if status == "approved":
+        from services.event_service import EventService
+        EventService.publish(
+            "PURCHASE_APPROVED",
+            {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+            "expense",
+            {"id": updated.id, "amount": updated.amount, "category": updated.expense_category}
+        )
+        
     broadcast_sync({"event": "expense_change"})
     broadcast_sync({"event": "financial_change"})
     return updated
@@ -8818,6 +8940,54 @@ def trigger_daily_report_api(
         {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
         "reports",
         {"type": "Daily KPI Executive Summary", "status": result.get("status")}
+    )
+    
+    return result
+
+@app.post("/api/ai/reports/trigger-weekly")
+def trigger_weekly_report_api(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    """
+    Triggers the compile execution of the weekly Operations summary report.
+    Generates ReportLab PDFs, dispatches emails to the owner account,
+    and publishes the REPORT_GENERATED event.
+    """
+    from ai_orchestration.daily_report_scheduler import generate_weekly_report
+    from services.event_service import EventService
+    
+    result = generate_weekly_report(db)
+    
+    EventService.publish(
+        "REPORT_GENERATED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "reports",
+        {"type": "Weekly KPI Executive Summary", "status": result.get("status")}
+    )
+    
+    return result
+
+@app.post("/api/ai/reports/trigger-monthly")
+def trigger_monthly_report_api(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_manager_or_higher)
+):
+    """
+    Triggers the compile execution of the monthly Operations summary report.
+    Generates ReportLab PDFs, dispatches emails to the owner account,
+    and publishes the REPORT_GENERATED event.
+    """
+    from ai_orchestration.daily_report_scheduler import generate_monthly_report
+    from services.event_service import EventService
+    
+    result = generate_monthly_report(db)
+    
+    EventService.publish(
+        "REPORT_GENERATED",
+        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+        "reports",
+        {"type": "Monthly KPI Executive Summary", "status": result.get("status")}
     )
     
     return result

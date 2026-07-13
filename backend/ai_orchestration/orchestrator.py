@@ -96,11 +96,11 @@ def classify_intent(message: str) -> str:
         return "flow_5_wallet"
 
     # 04 Daily Expense AI
-    if any(k in msg for k in ["expense", "daily expense", "cost", "burn rate", "add a daily expense"]):
+    if any(k in msg for k in ["expense", "daily expense", "cost", "burn rate", "add a daily expense", "spent", "kharcha", "kharch"]):
         return "flow_4_expense"
 
     # 01 Inventory AI
-    if any(k in msg for k in ["inventory", "stock", "material", "reorder", "shortage", "consumption", "how much stock"]):
+    if any(k in msg for k in ["inventory", "stock", "material", "reorder", "shortage", "consumption", "how much stock", "hdhmr", "ply", "plywood", "board", "bacha", "left", "available"]):
         return "flow_1_inventory"
 
     # 20 ERP Assistant (Default fallback)
