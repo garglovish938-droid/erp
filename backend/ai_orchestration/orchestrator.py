@@ -76,11 +76,11 @@ def classify_intent(message: str) -> str:
         return "flow_10_attendance"
 
     # 09 Employee AI
-    if any(k in msg for k in ["employee", "staff", "headcount", "personnel", "carpenter"]):
+    if any(k in msg for k in ["employee", "employe", "staff", "headcount", "personnel", "carpenter", "worker", "karigar"]):
         return "flow_9_employee"
 
     # 08 Project AI
-    if any(k in msg for k in ["project", "task", "progress", "delay", "bom", "project delay"]):
+    if any(k in msg for k in ["project", "projct", "task", "progress", "delay", "bom", "project delay"]):
         return "flow_8_project"
 
     # 07 Client Receipt AI
