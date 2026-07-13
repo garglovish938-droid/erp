@@ -229,13 +229,21 @@ export default function Home() {
   };
 
   const formatClockTime = (date: Date) => {
-    return date.toLocaleTimeString("en-IN", {
-      timeZone: "Asia/Kolkata",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: true
-    });
+    try {
+      return date.toLocaleTimeString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: true
+      });
+    } catch (e) {
+      try {
+        return date.toLocaleTimeString();
+      } catch (err) {
+        return date.toTimeString().split(" ")[0];
+      }
+    }
   };
 
   if (!user) {

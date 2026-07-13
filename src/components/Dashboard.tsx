@@ -206,6 +206,24 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
     }
   };
 
+  const formatDashboardDate = () => {
+    try {
+      return new Date().toLocaleDateString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+    } catch (e) {
+      try {
+        return new Date().toLocaleDateString();
+      } catch (err) {
+        return new Date().toDateString();
+      }
+    }
+  };
+
   const isWorker = ["worker", "operator", "carpenter"].includes(role);
 
   const fetchData = async () => {
@@ -556,7 +574,7 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
           </div>
           <div className="flex items-center gap-2 text-slate-500 text-sm font-semibold">
             <Calendar className="w-4 h-4" />
-            {new Date().toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            {formatDashboardDate()}
           </div>
         </header>
 
