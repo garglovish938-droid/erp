@@ -67,7 +67,7 @@ class Settings:
         self.GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
         self.N8N_WEBHOOK_URL: str = os.getenv("N8N_WEBHOOK_URL", "")
         self.REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        self.OLLAMA_URL: str = os.getenv("OLLAMA_URL", "https://allure-factory-erp-reasoning.loca.lt/api/generate")
+        self.OLLAMA_URL: str = os.getenv("OLLAMA_URL", "https://allure-furniture-erp.loca.lt/api/generate")
         self.OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen2.5")
 
 settings = Settings()
