@@ -149,33 +149,7 @@ from ai_orchestration.health_diagnostics import run_diagnostics_audit
 def health_live():
     return {"status": "alive", "message": "Service is running."}
 
-@app.get("/api/debug/settings")
-def get_debug_settings(db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
-    from config import settings
-    import requests
-    
-    gemini_status = "not tested"
-    gemini_details = ""
-    if settings.GEMINI_API_KEY:
-        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
-        payload = {"contents": [{"parts": [{"text": "Hello, are you active?"}]}]}
-        try:
-            r = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
-            gemini_status = f"HTTP {r.status_code}"
-            gemini_details = r.text if r.status_code != 200 else "SUCCESS"
-        except Exception as e:
-            gemini_status = "error"
-            gemini_details = str(e)
-            
-    return {
-        "LANGFLOW_API_URL": settings.LANGFLOW_API_URL,
-        "LANGFLOW_FLOW_ID": settings.LANGFLOW_FLOW_ID,
-        "LANGFLOW_MODE": settings.LANGFLOW_MODE,
-        "GEMINI_API_KEY_configured": bool(settings.GEMINI_API_KEY),
-        "GEMINI_test_status": gemini_status,
-        "GEMINI_test_details": gemini_details,
-        "N8N_WEBHOOK_URL": settings.N8N_WEBHOOK_URL,
-    }
+
 
 @app.get("/health/ready")
 def health_ready(db: Session = Depends(get_db)):
