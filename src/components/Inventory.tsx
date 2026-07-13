@@ -386,7 +386,7 @@ export default function Inventory({ token, role }: { token: string; role: string
     try {
       const res = await apiRequest("/api/inventory/movement", {
         method: "POST",
-        body: {
+        body: JSON.stringify({
           barcode: scanBarcode,
           transaction_type: movementType,
           quantity: movementQty,
@@ -395,7 +395,7 @@ export default function Inventory({ token, role }: { token: string; role: string
           warehouse: movementType === "transfer" ? movementWarehouse : undefined,
           notes: movementNotes || undefined,
           unit_cost: (movementType === "receive" && movementCost > 0) ? movementCost : undefined,
-        }
+        })
       });
       showToast(res.message || "Stock movement processed", "success");
       setMovementQty(0);
