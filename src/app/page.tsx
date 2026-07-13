@@ -116,6 +116,21 @@ export default function Home() {
     return () => clearInterval(timer);
   }, [serverOffset]);
 
+  // Handle Next.js ChunkLoadError automatically by forcing a hard reload
+  useEffect(() => {
+    const handleChunkError = (e: ErrorEvent) => {
+      const errorMsg = e.message || "";
+      if (errorMsg.includes("ChunkLoadError") || errorMsg.includes("Loading chunk")) {
+        console.warn("Chunk load error caught: forcing browser cache bypass and hard reload...");
+        window.location.reload();
+      }
+    };
+    window.addEventListener("error", handleChunkError);
+    return () => {
+      window.removeEventListener("error", handleChunkError);
+    };
+  }, []);
+
   useEffect(() => {
     if (!user) return;
 
