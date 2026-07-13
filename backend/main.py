@@ -149,6 +149,17 @@ from ai_orchestration.health_diagnostics import run_diagnostics_audit
 def health_live():
     return {"status": "alive", "message": "Service is running."}
 
+@app.get("/api/debug/settings")
+def get_debug_settings(db: Session = Depends(get_db), current_user: User = Depends(auth.require_admin)):
+    from config import settings
+    return {
+        "LANGFLOW_API_URL": settings.LANGFLOW_API_URL,
+        "LANGFLOW_FLOW_ID": settings.LANGFLOW_FLOW_ID,
+        "LANGFLOW_MODE": settings.LANGFLOW_MODE,
+        "GEMINI_API_KEY_configured": bool(settings.GEMINI_API_KEY),
+        "N8N_WEBHOOK_URL": settings.N8N_WEBHOOK_URL,
+    }
+
 @app.get("/health/ready")
 def health_ready(db: Session = Depends(get_db)):
     diagnostics = run_diagnostics_audit(db)
