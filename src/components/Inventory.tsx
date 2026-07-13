@@ -90,6 +90,16 @@ export default function Inventory({ token, role }: { token: string; role: string
   const [scanBarcode, setScanBarcode] = useState("");
   const [submitError, setSubmitError] = useState("");
 
+  // Barcode Stock movement states
+  const [movementType, setMovementType] = useState<string>("issue");
+  const [movementQty, setMovementQty] = useState<number>(0);
+  const [movementProjectId, setMovementProjectId] = useState<string>("");
+  const [movementSupplierId, setMovementSupplierId] = useState<string>("");
+  const [movementWarehouse, setMovementWarehouse] = useState<string>("");
+  const [movementNotes, setMovementNotes] = useState<string>("");
+  const [movementCost, setMovementCost] = useState<number>(0);
+  const [movementSubmitting, setMovementSubmitting] = useState<boolean>(false);
+
   // Confirmation Modals
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [confirmAction, setConfirmAction] = useState<() => void>(() => {});
@@ -360,9 +370,46 @@ export default function Inventory({ token, role }: { token: string; role: string
       const res = await apiRequest(`/api/inventory/lookup/${scanBarcode}`);
       setScanResult(res);
       showToast("Barcode resolved successfully", "success");
+      
+      // Auto-set default IDs if available
+      if (res.item?.supplier_id) setMovementSupplierId(res.item.supplier_id);
     } catch (err: any) {
       setSubmitError(err.message || "Barcode not found");
       setScanResult(null);
+    }
+  };
+
+  const handleStockMovementSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitError("");
+    setMovementSubmitting(true);
+    try {
+      const res = await apiRequest("/api/inventory/movement", {
+        method: "POST",
+        body: {
+          barcode: scanBarcode,
+          transaction_type: movementType,
+          quantity: movementQty,
+          project_id: movementType === "issue" ? movementProjectId : undefined,
+          supplier_id: movementType === "receive" ? movementSupplierId : undefined,
+          warehouse: movementType === "transfer" ? movementWarehouse : undefined,
+          notes: movementNotes || undefined,
+          unit_cost: (movementType === "receive" && movementCost > 0) ? movementCost : undefined,
+        }
+      });
+      showToast(res.message || "Stock movement processed", "success");
+      setMovementQty(0);
+      setMovementNotes("");
+      setMovementCost(0);
+      fetchData();
+      
+      // Refresh current lookup values
+      const updatedRes = await apiRequest(`/api/inventory/lookup/${scanBarcode}`);
+      setScanResult(updatedRes);
+    } catch (err: any) {
+      setSubmitError(err.message || "Stock movement failed");
+    } finally {
+      setMovementSubmitting(false);
     }
   };
 
@@ -1134,34 +1181,233 @@ export default function Inventory({ token, role }: { token: string; role: string
 
       {/* SCAN BARCODE LOOKUP MODAL */}
       {showScanModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in zoom-in-95 duration-200">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto animate-in zoom-in-95 duration-200">
+          <div className={`bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full ${scanResult ? 'max-w-3xl' : 'max-w-sm'} p-6 shadow-2xl transition-all duration-300 my-8`}>
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
-              <h3 className="text-base font-bold">Barcode Scanner Emulator</h3>
-              <button title="Close" onClick={() => setShowScanModal(false)} className="text-slate-400 hover:bg-slate-100 p-1.5 rounded"><X className="w-5 h-5" /></button>
+              <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Barcode className="w-5 h-5 text-indigo-500" />
+                Barcode Scanner & Material Hub
+              </h3>
+              <button title="Close" onClick={() => { setShowScanModal(false); setScanResult(null); }} className="text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded-xl"><X className="w-5 h-5" /></button>
             </div>
 
-            {submitError && <div className="bg-rose-500/10 text-rose-500 p-2.5 border rounded-lg text-xs mb-3">{submitError}</div>}
+            {submitError && <div className="bg-rose-500/10 text-rose-500 p-3 border border-rose-200/20 rounded-xl text-xs mb-4">{submitError}</div>}
 
             <form onSubmit={handleBarcodeLookup} className="space-y-4">
-              <div>
-                <label className="text-xs font-semibold text-slate-400 block mb-1">Simulate Scan / Input Value*</label>
-                <input type="text" required value={scanBarcode} onChange={e=>setScanBarcode(e.target.value)} placeholder="Type barcode e.g. 789012" className="w-full p-2.5 text-sm bg-slate-50 border rounded-xl" />
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <label className="text-xs font-bold text-slate-400 dark:text-slate-500 block mb-1">Simulate Scan / Input Value</label>
+                  <input type="text" required value={scanBarcode} onChange={e=>setScanBarcode(e.target.value)} placeholder="Type barcode, SKU or scan..." className="w-full p-3 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl focus:ring-2 focus:ring-indigo-500/20" />
+                </div>
+                <button type="submit" className="self-end px-5 py-3 bg-slate-900 hover:bg-slate-800 text-white dark:bg-white dark:text-slate-900 dark:hover:bg-slate-100 rounded-xl text-xs font-bold transition-all shadow-md">Lookup</button>
               </div>
-              <button type="submit" className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold">Query Database</button>
             </form>
 
             {scanResult && (
-              <div className="mt-4 p-4 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/30 rounded-2xl animate-in fade-in duration-200 text-xs">
-                <h5 className="font-bold text-emerald-800 dark:text-emerald-350">{scanResult.name}</h5>
-                <p className="text-slate-500 mt-1">SKU: {scanResult.sku} • Current Stock: {scanResult.quantity} {scanResult.unit}</p>
-                <div className="mt-3 flex gap-2 justify-end">
-                  <button
-                    onClick={() => { setShowScanModal(false); handleOpenEdit(scanResult); }}
-                    className="px-3 py-1 bg-white border text-slate-700 font-bold rounded-lg text-[10px]"
-                  >
-                    Edit
-                  </button>
+              <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in duration-300">
+                {/* LEFT COLUMN: Deep Context Info Panels */}
+                <div className="space-y-4 max-h-[450px] overflow-y-auto pr-2">
+                  {/* Material Info Card */}
+                  <div className="p-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl">
+                    <h5 className="font-bold text-slate-900 dark:text-white text-sm">{scanResult.item.name}</h5>
+                    <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">SKU: <span className="font-mono">{scanResult.item.sku}</span> • Barcode: <span className="font-mono">{scanResult.item.barcode}</span></p>
+                    
+                    <div className="grid grid-cols-2 gap-3 mt-4 pt-3 border-t border-slate-200/50 dark:border-slate-800/50 text-xs">
+                      <div>
+                        <span className="text-slate-400 text-[10px] block uppercase font-bold">Physical Rack</span>
+                        <span className="font-semibold text-slate-700 dark:text-slate-300">{scanResult.item.rack || "Not Assigned"}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 text-[10px] block uppercase font-bold">Available Stock</span>
+                        <span className="font-bold text-slate-950 dark:text-white">{scanResult.item.available_quantity} {scanResult.item.unit} <span className="text-[10px] font-normal text-slate-400">(Total: {scanResult.item.quantity})</span></span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Supplier Card */}
+                  <div className="p-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl text-xs">
+                    <h6 className="font-bold uppercase tracking-wider text-[10px] text-slate-400 block mb-2">Supplier Context</h6>
+                    {scanResult.supplier ? (
+                      <div>
+                        <p className="font-bold text-slate-800 dark:text-slate-200">{scanResult.supplier.name}</p>
+                        <p className="text-slate-500 mt-0.5">Contact: {scanResult.supplier.contact_person || "N/A"} • Phone: {scanResult.supplier.phone || "N/A"}</p>
+                      </div>
+                    ) : (
+                      <p className="text-slate-400 italic">No supplier linked to this inventory item.</p>
+                    )}
+                  </div>
+
+                  {/* Last Purchase Card */}
+                  <div className="p-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl text-xs">
+                    <h6 className="font-bold uppercase tracking-wider text-[10px] text-slate-400 block mb-2">Last Procurement Inward Log</h6>
+                    {scanResult.last_purchase ? (
+                      <div className="grid grid-cols-2 gap-2 text-[11px]">
+                        <div>
+                          <span className="text-slate-400 block">Unit Cost:</span>
+                          <span className="font-bold text-slate-800 dark:text-slate-200">{formatCurrency(scanResult.last_purchase.unit_cost)}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">Date:</span>
+                          <span className="font-semibold text-slate-700 dark:text-slate-300">{scanResult.last_purchase.date || "N/A"}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">Quantity Inward:</span>
+                          <span className="font-semibold text-slate-700 dark:text-slate-300">{scanResult.last_purchase.quantity}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">PO Number:</span>
+                          <span className="font-mono text-indigo-500 font-bold">{scanResult.last_purchase.po_number || "Direct Inward"}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-slate-400 italic">No previous purchase records found for this material.</p>
+                    )}
+                  </div>
+
+                  {/* Project Usage Card */}
+                  <div className="p-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl text-xs">
+                    <h6 className="font-bold uppercase tracking-wider text-[10px] text-slate-400 block mb-2">Active Project Allocations</h6>
+                    {scanResult.project_usage && scanResult.project_usage.length > 0 ? (
+                      <div className="space-y-2 divide-y divide-slate-100 dark:divide-slate-800">
+                        {scanResult.project_usage.map((proj: any, idx: number) => (
+                          <div key={idx} className="pt-2 first:pt-0 flex justify-between items-center text-[11px]">
+                            <span className="font-bold text-slate-700 dark:text-slate-300">{proj.project_name}</span>
+                            <span className="text-slate-500">Used: <strong className="text-slate-900 dark:text-white font-mono">{proj.total_used}</strong> • Consumed: <strong className="text-slate-950 dark:text-white font-mono">{proj.total_consumed}</strong></span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-slate-400 italic">This material has not been used in any active projects.</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* RIGHT COLUMN: Realtime Action Movements Form */}
+                <div className="p-5 bg-indigo-50/20 dark:bg-indigo-950/10 border border-indigo-100 dark:border-indigo-900/30 rounded-2xl flex flex-col justify-between">
+                  <form onSubmit={handleStockMovementSubmit} className="space-y-4">
+                    <div>
+                      <span className="text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 block mb-2">Execute Stock Transaction</span>
+                      <div className="grid grid-cols-4 gap-1 p-1 bg-slate-100 dark:bg-slate-950 border dark:border-slate-800 rounded-xl text-center text-xs font-semibold">
+                        {["issue", "receive", "transfer", "adjust"].map((t) => (
+                          <button
+                            key={t}
+                            type="button"
+                            onClick={() => { setMovementType(t); setSubmitError(""); }}
+                            className={`py-1.5 rounded-lg capitalize transition-all ${
+                              movementType === t
+                                ? "bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm border border-indigo-100 dark:border-slate-700"
+                                : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-300"
+                            }`}
+                          >
+                            {t}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Dynamic Form Inputs based on selected Movement Type */}
+                    <div className="space-y-3 text-xs">
+                      <div>
+                        <label className="font-bold text-slate-500 block mb-1">
+                          {movementType === "issue" ? "Quantity to Issue*" :
+                           movementType === "receive" ? "Quantity to Receive*" :
+                           movementType === "transfer" ? "Quantity to Transfer*" :
+                           "Adjusted Quantity Value*"}
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          required
+                          value={movementQty || ""}
+                          onChange={(e) => setMovementQty(parseFloat(e.target.value))}
+                          placeholder="e.g. 15.5"
+                          className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl focus:ring-2 focus:ring-indigo-500/20 text-sm"
+                        />
+                      </div>
+
+                      {movementType === "issue" && (
+                        <div>
+                          <label className="font-bold text-slate-500 block mb-1">Destination Project*</label>
+                          <select
+                            required
+                            value={movementProjectId}
+                            onChange={(e) => setMovementProjectId(e.target.value)}
+                            className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                          >
+                            <option value="">-- Choose Project --</option>
+                            {projects.map((p: any) => (
+                              <option key={p.id} value={p.id}>{p.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      {movementType === "receive" && (
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="font-bold text-slate-500 block mb-1">Unit Cost (INR)</label>
+                            <input
+                              type="number"
+                              step="any"
+                              value={movementCost || ""}
+                              onChange={(e) => setMovementCost(parseFloat(e.target.value))}
+                              placeholder="e.g. 350"
+                              className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="font-bold text-slate-500 block mb-1">Supplier</label>
+                            <select
+                              value={movementSupplierId}
+                              onChange={(e) => setMovementSupplierId(e.target.value)}
+                              className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                            >
+                              <option value="">-- Direct Inward --</option>
+                              {suppliers.map((s: any) => (
+                                <option key={s.id} value={s.id}>{s.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      )}
+
+                      {movementType === "transfer" && (
+                        <div>
+                          <label className="font-bold text-slate-500 block mb-1">Destination Rack/Location Name*</label>
+                          <input
+                            type="text"
+                            required
+                            value={movementWarehouse}
+                            onChange={(e) => setMovementWarehouse(e.target.value)}
+                            placeholder="e.g. Rack C-4"
+                            className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                          />
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="font-bold text-slate-500 block mb-1">Remarks / Audit Note</label>
+                        <input
+                          type="text"
+                          value={movementNotes}
+                          onChange={(e) => setMovementNotes(e.target.value)}
+                          placeholder="Audit description details..."
+                          className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="pt-4 border-t border-slate-200/50 dark:border-slate-800/50 flex gap-2 justify-end">
+                      <button
+                        type="submit"
+                        disabled={movementSubmitting || movementQty <= 0}
+                        className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md transition-all flex items-center justify-center gap-1.5"
+                      >
+                        {movementSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                        Apply Movement
+                      </button>
+                    </div>
+                  </form>
                 </div>
               </div>
             )}

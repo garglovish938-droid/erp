@@ -164,10 +164,10 @@ export default function AttendanceDashboard({ token, role }: AttendanceDashboard
           </h1>
           <p className="text-sm text-slate-500 mt-1">Live factory attendance tracking & analytics</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 overflow-x-auto pb-1 max-w-full no-scrollbar whitespace-nowrap">
           {(["today", "history", "monthly", "trends"] as const).map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)}
-              className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${activeTab === tab
+              className={`px-4 py-2 rounded-xl text-sm font-medium transition-all inline-block ${activeTab === tab
                 ? "bg-indigo-600 text-white shadow-md"
                 : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-indigo-50"}`}>
               {tab.charAt(0).toUpperCase() + tab.slice(1).replace("-", " ")}
@@ -215,7 +215,7 @@ export default function AttendanceDashboard({ token, role }: AttendanceDashboard
                     <h3 className="font-semibold text-slate-800 dark:text-slate-100">Today's Records</h3>
                   </div>
                   <div className="overflow-x-auto max-h-[60vh] overflow-y-auto scrollbar-thin">
-                    <table className="w-full text-sm">
+                    <table className="min-w-[650px] w-full text-sm">
                       <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800">
                         <tr>
                           {["Employee", "Status", "Check In", "Check Out", "Hours", "Late", "Overtime"].map(h => (
@@ -315,7 +315,7 @@ export default function AttendanceDashboard({ token, role }: AttendanceDashboard
                 </div>
               </div>
               <div className="overflow-x-auto max-h-[60vh] overflow-y-auto scrollbar-thin">
-                <table className="w-full text-sm">
+                <table className="min-w-[750px] w-full text-sm">
                   <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800">
                     <tr>
                       {["Date", "Employee", "Status", "Check In", "Check Out", "Hours", "Late", "OT Hours", "Selfie"].map(h => (
@@ -412,7 +412,7 @@ export default function AttendanceDashboard({ token, role }: AttendanceDashboard
               {/* Monthly Table */}
               <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700 overflow-hidden">
                 <div className="overflow-x-auto max-h-[60vh] overflow-y-auto scrollbar-thin">
-                  <table className="w-full text-sm">
+                  <table className="min-w-[800px] w-full text-sm">
                     <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800">
                       <tr>
                         {["Employee", "Dept", "Present", "Half", "Leave", "Absent", "Late", "Working Hrs", "OT Hrs", "Att %"].map(h => (

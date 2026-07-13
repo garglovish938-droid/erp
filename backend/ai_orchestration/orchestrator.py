@@ -343,7 +343,13 @@ class AIOrchestrator:
                 history = session_history.get_history(self.session_id)
                 entities = session_entities.get_entities(self.session_id)
                 
-                url = f"{settings.LANGFLOW_API_URL.rstrip('/')}/{settings.LANGFLOW_FLOW_ID}"
+                base_url = settings.LANGFLOW_API_URL.rstrip("/")
+                if "/api/v1/run" in base_url:
+                    url = f"{base_url}/{settings.LANGFLOW_FLOW_ID}"
+                elif "/api/v1" in base_url:
+                    url = f"{base_url}/run/{settings.LANGFLOW_FLOW_ID}"
+                else:
+                    url = f"{base_url}/api/v1/run/{settings.LANGFLOW_FLOW_ID}"
                 payload = {
                     "input_value": enriched_message,
                     "output_type": "chat",

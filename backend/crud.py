@@ -582,7 +582,8 @@ def create_inventory_item(db: Session, item: InventoryItemCreate, user_id: Optio
         unit=item.unit,
         minimum_stock_level=item.minimum_stock_level,
         unit_cost=item.unit_cost,
-        supplier_id=item.supplier_id
+        supplier_id=item.supplier_id,
+        rack=item.rack
     )
     db.add(db_item)
     db.commit()

@@ -12,7 +12,7 @@ def query_gemini_with_context(prompt: str, context: str) -> str:
 
     # Use gemini-1.5-flash by default as it is standard and fast
     model = "gemini-1.5-flash"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={api_key}"
 
     system_instruction = (
         "You are Nexora AI, the autonomous ERP Operations Manager for Allure Living Furniture Manufacturing. "

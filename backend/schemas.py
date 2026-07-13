@@ -200,6 +200,7 @@ class InventoryItemCreate(BaseModel):
     minimum_stock_level: float = 5.0
     unit_cost: float = 0.0
     supplier_id: Optional[str] = None
+    rack: Optional[str] = None
 
     @field_validator('category_id', 'supplier_id', mode='before')
     @classmethod
@@ -227,6 +228,7 @@ class InventoryItemUpdate(BaseModel):
     minimum_stock_level: Optional[float] = None
     unit_cost: Optional[float] = None
     supplier_id: Optional[str] = None
+    rack: Optional[str] = None
 
     @field_validator('category_id', 'supplier_id', mode='before')
     @classmethod
@@ -257,6 +259,7 @@ class InventoryItemResponse(BaseSchema):
     minimum_stock_level: float
     unit_cost: float
     supplier_id: Optional[str]
+    rack: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -1348,6 +1351,42 @@ class CashBookResponse(BaseSchema):
     is_deleted: bool
     running_balance: Optional[float] = None
     user: Optional[UserResponse] = None
+
+
+class BarcodeSupplierDetails(BaseModel):
+    name: str
+    contact_person: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+
+class BarcodeLastPurchaseDetails(BaseModel):
+    unit_cost: float
+    date: Optional[str] = None
+    quantity: float
+    po_number: Optional[str] = None
+
+class BarcodeProjectUsage(BaseModel):
+    project_id: str
+    project_name: str
+    total_used: float
+    total_consumed: float
+
+class BarcodeLookupResponse(BaseModel):
+    item: InventoryItemResponse
+    supplier: Optional[BarcodeSupplierDetails] = None
+    last_purchase: Optional[BarcodeLastPurchaseDetails] = None
+    project_usage: List[BarcodeProjectUsage] = []
+
+class StockMovementRequest(BaseModel):
+    barcode: str
+    transaction_type: str  # issue, receive, transfer, adjust
+    quantity: float
+    project_id: Optional[str] = None
+    supplier_id: Optional[str] = None
+    warehouse: Optional[str] = None
+    notes: Optional[str] = None
+    unit_cost: Optional[float] = None
+
 
 
 

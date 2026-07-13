@@ -18,7 +18,16 @@ class LangflowService:
         }
         
         langflow_url = getattr(settings, "LANGFLOW_API_URL", "http://127.0.0.1:7860")
-        api_endpoint = f"{langflow_url}/api/v1/run/{flow_id}"
+        if not langflow_url:
+            langflow_url = "http://127.0.0.1:7860"
+        
+        base_url = langflow_url.rstrip("/")
+        if "/api/v1/run" in base_url:
+            api_endpoint = f"{base_url}/{flow_id}"
+        elif "/api/v1" in base_url:
+            api_endpoint = f"{base_url}/run/{flow_id}"
+        else:
+            api_endpoint = f"{base_url}/api/v1/run/{flow_id}"
         
         try:
             logger.info(f"Posting request to Langflow API endpoint: {api_endpoint}")

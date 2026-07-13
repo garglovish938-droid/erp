@@ -1402,12 +1402,174 @@ def adjust_inventory_stock(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/api/inventory/lookup/{barcode}", response_model=schemas.InventoryItemResponse)
+@app.get("/api/inventory/lookup/{barcode}", response_model=schemas.BarcodeLookupResponse)
 def lookup_barcode(barcode: str, db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
-    db_item = crud.get_inventory_item_by_barcode(db, barcode)
+    db_item = db.query(models.InventoryItem).filter(
+        models.InventoryItem.barcode == barcode,
+        models.InventoryItem.is_deleted == False
+    ).first()
     if not db_item:
         raise HTTPException(status_code=404, detail="Item not found for this barcode")
-    return db_item
+        
+    supplier_details = None
+    if db_item.supplier and not db_item.supplier.is_deleted:
+        supplier_details = schemas.BarcodeSupplierDetails(
+            name=db_item.supplier.name,
+            contact_person=db_item.supplier.contact_person,
+            phone=db_item.supplier.phone,
+            email=db_item.supplier.email
+        )
+        
+    last_purchase = None
+    last_trans = db.query(models.StockTransaction).filter(
+        models.StockTransaction.inventory_id == db_item.id,
+        models.StockTransaction.transaction_type == "in"
+    ).order_by(models.StockTransaction.created_at.desc()).first()
+    if last_trans:
+        po_num = last_trans.purchase_order.po_number if last_trans.purchase_order else None
+        last_purchase = schemas.BarcodeLastPurchaseDetails(
+            unit_cost=last_trans.unit_cost or 0.0,
+            date=last_trans.created_at.strftime("%Y-%m-%d") if last_trans.created_at else None,
+            quantity=last_trans.quantity,
+            po_number=po_num
+        )
+        
+    project_usage = []
+    bom_items = db.query(models.ProjectBOM).filter(
+        models.ProjectBOM.inventory_id == db_item.id
+    ).all()
+    for bom in bom_items:
+        if bom.project and not bom.project.is_deleted:
+            project_usage.append(schemas.BarcodeProjectUsage(
+                project_id=bom.project.id,
+                project_name=bom.project.name,
+                total_used=bom.used_quantity,
+                total_consumed=bom.consumed_quantity
+            ))
+            
+    return schemas.BarcodeLookupResponse(
+        item=db_item,
+        supplier=supplier_details,
+        last_purchase=last_purchase,
+        project_usage=project_usage
+    )
+
+@app.post("/api/inventory/movement")
+def process_stock_movement(
+    payload: schemas.StockMovementRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_any_authenticated)
+):
+    db_item = db.query(models.InventoryItem).filter(
+        models.InventoryItem.barcode == payload.barcode,
+        models.InventoryItem.is_deleted == False
+    ).with_for_update().first()
+    
+    if not db_item:
+        raise HTTPException(status_code=404, detail="Material not found for this barcode")
+        
+    qty = payload.quantity
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be greater than 0")
+        
+    trans_type = payload.transaction_type.lower()
+    
+    if trans_type == "issue":
+        if not payload.project_id:
+            raise HTTPException(status_code=400, detail="Project ID is required to issue stock")
+        if db_item.available_quantity < qty:
+            raise HTTPException(status_code=400, detail=f"Insufficient stock available. Available: {db_item.available_quantity} {db_item.unit}")
+            
+        db_item.quantity -= qty
+        db_item.available_quantity -= qty
+        
+        trans = models.StockTransaction(
+            inventory_id=db_item.id,
+            transaction_type="out",
+            quantity=qty,
+            project_id=payload.project_id,
+            user_id=current_user.id,
+            notes=payload.notes or f"Issued to project via barcode scan",
+            warehouse=db_item.rack
+        )
+        db.add(trans)
+        
+        bom = db.query(models.ProjectBOM).filter(
+            models.ProjectBOM.project_id == payload.project_id,
+            models.ProjectBOM.inventory_id == db_item.id
+        ).first()
+        if bom:
+            bom.consumed_quantity += qty
+            bom.used_quantity += qty
+            if bom.consumed_quantity >= bom.required_quantity:
+                bom.status = "fulfilled"
+            else:
+                bom.status = "partial"
+                
+    elif trans_type == "receive":
+        db_item.quantity += qty
+        db_item.available_quantity += qty
+        
+        unit_cost = payload.unit_cost or db_item.unit_cost or 0.0
+        if payload.unit_cost:
+            db_item.unit_cost = payload.unit_cost
+            
+        trans = models.StockTransaction(
+            inventory_id=db_item.id,
+            transaction_type="in",
+            quantity=qty,
+            user_id=current_user.id,
+            supplier_id=payload.supplier_id or db_item.supplier_id,
+            unit_cost=unit_cost,
+            notes=payload.notes or f"Received stock via barcode scan",
+            warehouse=db_item.rack
+        )
+        db.add(trans)
+        
+    elif trans_type == "transfer":
+        if not payload.warehouse:
+            raise HTTPException(status_code=400, detail="Destination rack/location is required for transfers")
+            
+        old_rack = db_item.rack or "unspecified rack"
+        db_item.rack = payload.warehouse
+        
+        trans = models.StockTransaction(
+            inventory_id=db_item.id,
+            transaction_type="transfer",
+            quantity=qty,
+            user_id=current_user.id,
+            notes=payload.notes or f"Transferred from {old_rack} to {payload.warehouse}",
+            warehouse=payload.warehouse
+        )
+        db.add(trans)
+        
+    elif trans_type == "adjust":
+        diff = qty - db_item.quantity
+        db_item.quantity = qty
+        db_item.available_quantity = max(0.0, db_item.quantity - db_item.reserved_quantity)
+        
+        trans = models.StockTransaction(
+            inventory_id=db_item.id,
+            transaction_type="adjustment",
+            quantity=abs(diff),
+            user_id=current_user.id,
+            notes=payload.notes or f"Manual adjustment via barcode scan",
+            warehouse=db_item.rack
+        )
+        db.add(trans)
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported transaction type. Supported: issue, receive, transfer, adjust")
+        
+    db.commit()
+    db.refresh(db_item)
+    
+    try:
+        broadcast_sync({"event": "inventory_change"})
+        broadcast_sync({"event": "dashboard_change"})
+    except Exception:
+         pass
+         
+    return {"status": "success", "message": f"Stock {trans_type} transaction processed successfully", "new_quantity": db_item.quantity}
 
 @app.post("/api/inventory/import")
 async def import_inventory_csv(
@@ -3947,7 +4109,7 @@ def download_inventory_report_excel(db: Session = Depends(get_db), current_user:
         ws.append([
             item.sku, item.name, cat_name, item.brand or "-",
             item.unit, item.quantity, item.minimum_stock_level,
-            item.unit_cost, item.quantity * item.unit_cost,
+            item.unit_cost, f"=F{row_num}*H{row_num}",
             item.updated_at.strftime("%Y-%m-%d %H:%M")
         ])
         for col in range(1, 11):
@@ -3959,6 +4121,13 @@ def download_inventory_report_excel(db: Session = Depends(get_db), current_user:
             elif col in [1, 3, 5, 10]:
                 cell.alignment = Alignment(horizontal="center")
         row_num += 1
+        
+    # Append total summary row with sum formula
+    ws.cell(row=row_num, column=5, value="Total Valuation:").font = Font(name="Segoe UI", size=10, bold=True)
+    total_val_cell = ws.cell(row=row_num, column=9, value=f"=SUM(I2:I{row_num-1})")
+    total_val_cell.font = Font(name="Segoe UI", size=10, bold=True)
+    total_val_cell.number_format = '#,##0.00'
+    row_num += 1
         
     for col in ws.columns:
         max_len = max(len(str(cell.value or '')) for cell in col)
@@ -3974,50 +4143,151 @@ def download_inventory_report_excel(db: Session = Depends(get_db), current_user:
         headers={"Content-Disposition": "attachment; filename=allure_inventory_report.xlsx"}
     )
 
+from reportlab.pdfgen import canvas
+
+class NumberedCanvas(canvas.Canvas):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._saved_page_states = []
+
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        num_pages = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self.draw_page_decorations(num_pages)
+            super().showPage()
+        super().save()
+
+    def draw_page_decorations(self, page_count):
+        self.saveState()
+        self.setFont("Helvetica", 8)
+        self.setFillColor(colors.HexColor("#475569"))
+        
+        # Header (on all pages except page 1)
+        if self._pageNumber > 1:
+            self.drawString(36, 755, "ALLURE LIVING ERP - INVENTORY & VALUATION REPORT")
+            self.setStrokeColor(colors.HexColor("#e2e8f0"))
+            self.setLineWidth(0.5)
+            self.line(36, 745, 576, 745)
+            
+        # Footer (on all pages)
+        self.setStrokeColor(colors.HexColor("#e2e8f0"))
+        self.setLineWidth(0.5)
+        self.line(36, 45, 576, 45)
+        
+        # Generated info
+        gen_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.drawString(36, 30, f"Generated: {gen_time} | Secured by Nexora AI Operations")
+        
+        # Page numbering
+        page_text = f"Page {self._pageNumber} of {page_count}"
+        self.drawRightString(576, 30, page_text)
+        self.restoreState()
+
 @app.get("/api/reports/inventory/pdf")
 def download_inventory_report_pdf(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
     items = db.query(InventoryItem).filter(InventoryItem.is_deleted == False).all()
+    total_val = sum(item.quantity * item.unit_cost for item in items)
+    low_stock = sum(1 for item in items if item.quantity <= item.minimum_stock_level)
+    
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=54, bottomMargin=54)
     story = []
     
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
-        'DocTitle', parent=styles['Heading1'], fontSize=18, leading=22, alignment=1, textColor=colors.HexColor('#4f46e5')
+        'DocTitle', parent=styles['Heading1'], fontSize=18, leading=22, alignment=0, textColor=colors.HexColor('#1e1b4b'), fontName="Helvetica-Bold"
     )
-    story.append(Paragraph("Allure Living ERP - Inventory & Valuation Report", title_style))
+    subtitle_style = ParagraphStyle(
+        'DocSub', parent=styles['Normal'], fontSize=9, leading=12, alignment=0, textColor=colors.HexColor('#475569')
+    )
+    body_style = ParagraphStyle(
+        'DocBody', parent=styles['Normal'], fontSize=8, leading=10, textColor=colors.HexColor('#1e293b')
+    )
+    bold_style = ParagraphStyle(
+        'DocBold', parent=styles['Normal'], fontSize=8, leading=10, fontName="Helvetica-Bold", textColor=colors.HexColor('#1e293b')
+    )
+    
+    # 1. Company Logo Banner
+    logo_data = [
+        [Paragraph("ALLURE LIVING", ParagraphStyle('L1', fontSize=14, leading=16, fontName="Helvetica-Bold", textColor=colors.HexColor('#4f46e5'))),
+         Paragraph("FACTORY MANAGEMENT ERP SYSTEM", ParagraphStyle('L2', fontSize=8, leading=10, fontName="Helvetica-Bold", alignment=2, textColor=colors.HexColor('#94a3b8')))]
+    ]
+    logo_table = Table(logo_data, colWidths=[270, 270])
+    logo_table.setStyle(TableStyle([
+        ('LINEBELOW', (0,0), (-1,-1), 1, colors.HexColor('#e2e8f0')),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+    ]))
+    story.append(logo_table)
     story.append(Spacer(1, 15))
     
-    data = [["SKU", "Material Name", "Category", "Qty", "Unit", "Unit Cost", "Total Value"]]
+    # 2. Title & Date
+    story.append(Paragraph("Inventory Valuation & Safety Stock Audit Report", title_style))
+    story.append(Paragraph(f"Active stock items and cost estimations. Authorized Auditor: {current_user.full_name or current_user.email}", subtitle_style))
+    story.append(Spacer(1, 15))
+    
+    # 3. Executive KPI Dashboard Block
+    kpi_data = [
+        [
+            Paragraph("<b>Total Valuation:</b>", bold_style), 
+            Paragraph(format_inr(total_val).replace("₹", "Rs. "), bold_style),
+            Paragraph("<b>Total SKUs:</b>", bold_style),
+            Paragraph(str(len(items)), bold_style),
+            Paragraph("<b>Low Stock Warnings:</b>", bold_style),
+            Paragraph(str(low_stock), ParagraphStyle('RedText', parent=styles['Normal'], fontSize=8, fontName="Helvetica-Bold", textColor=colors.HexColor('#e11d48')))
+        ]
+    ]
+    kpi_table = Table(kpi_data, colWidths=[90, 90, 80, 80, 110, 90])
+    kpi_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f1f5f9')),
+        ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
+        ('PADDING', (0,0), (-1,-1), 8),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+    ]))
+    story.append(kpi_table)
+    story.append(Spacer(1, 20))
+    
+    # 4. Detailed Data Table
+    data = [[
+        Paragraph("<b>SKU</b>", bold_style), 
+        Paragraph("<b>Material Description</b>", bold_style), 
+        Paragraph("<b>Category</b>", bold_style), 
+        Paragraph("<b>Qty</b>", bold_style), 
+        Paragraph("<b>Unit</b>", bold_style), 
+        Paragraph("<b>Unit Cost</b>", bold_style), 
+        Paragraph("<b>Total Valuation</b>", bold_style)
+    ]]
+    
     for item in items:
         cat_name = item.category.name if item.category else "N/A"
         data.append([
-            item.sku, 
-            item.name[:25], 
-            cat_name, 
-            str(item.quantity), 
-            item.unit, 
-            format_inr(item.unit_cost).replace("₹", "Rs. "), 
-            format_inr(item.quantity * item.unit_cost).replace("₹", "Rs. ")
+            Paragraph(item.sku, body_style), 
+            Paragraph(item.name[:35], body_style), 
+            Paragraph(cat_name, body_style), 
+            Paragraph(f"{item.quantity:.2f}", body_style), 
+            Paragraph(item.unit, body_style), 
+            Paragraph(format_inr(item.unit_cost).replace("₹", "Rs. "), body_style), 
+            Paragraph(format_inr(item.quantity * item.unit_cost).replace("₹", "Rs. "), body_style)
         ])
         
-    table = Table(data, colWidths=[70, 150, 80, 50, 40, 60, 70])
+    table = Table(data, colWidths=[70, 150, 80, 50, 45, 70, 75])
     table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#4f46e5')),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0,0), (-1,0), 10),
-        ('BOTTOMPADDING', (0,0), (-1,0), 8),
-        ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#f8fafc')),
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f8fafc')),
+        ('LINEBELOW', (0,0), (-1,0), 1, colors.HexColor('#cbd5e1')),
+        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
         ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
-        ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
-        ('FONTSIZE', (0,1), (-1,-1), 8),
-        ('ALIGN', (1,1), (1,-1), 'LEFT'),
+        ('TOPPADDING', (0,0), (-1,-1), 6),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
     ]))
     
     story.append(table)
-    doc.build(story)
+    doc.build(story, canvasmaker=NumberedCanvas)
     buffer.seek(0)
     return StreamingResponse(
         buffer,
@@ -4438,6 +4708,13 @@ def download_projects_report_excel(db: Session = Depends(get_db), current_user: 
                 cell.number_format = '#,##0.00'
                 cell.alignment = Alignment(horizontal="right")
         row_num += 1
+
+    # Append summary row with sum formula for project budgets
+    ws.cell(row=row_num, column=6, value="Total Budget:").font = Font(name="Segoe UI", size=10, bold=True)
+    total_val_cell = ws.cell(row=row_num, column=7, value=f"=SUM(G2:G{row_num-1})")
+    total_val_cell.font = Font(name="Segoe UI", size=10, bold=True)
+    total_val_cell.number_format = '#,##0.00'
+    row_num += 1
 
     for col in ws.columns:
         max_len = max(len(str(cell.value or '')) for cell in col)
@@ -7322,7 +7599,13 @@ def resolve_ai_chat_response(payload: AIChatPayload, db: Session = Depends(get_d
         if settings.LANGFLOW_API_URL and settings.LANGFLOW_FLOW_ID:
             import requests
             try:
-                url = f"{settings.LANGFLOW_API_URL.rstrip('/')}/{settings.LANGFLOW_FLOW_ID}"
+                base_url = settings.LANGFLOW_API_URL.rstrip("/")
+                if "/api/v1/run" in base_url:
+                    url = f"{base_url}/{settings.LANGFLOW_FLOW_ID}"
+                elif "/api/v1" in base_url:
+                    url = f"{base_url}/run/{settings.LANGFLOW_FLOW_ID}"
+                else:
+                    url = f"{base_url}/api/v1/run/{settings.LANGFLOW_FLOW_ID}"
                 payload_data = {
                     "input_value": payload.message,
                     "output_type": "chat",

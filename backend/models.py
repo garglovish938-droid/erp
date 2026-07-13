@@ -25,6 +25,8 @@ class User(Base):
     otp_code = Column(String(10), nullable=True)
     otp_expires_at = Column(DateTime, nullable=True)
     refresh_token = Column(String(255), nullable=True)
+    google_id = Column(String(100), unique=True, nullable=True)
+    two_factor_secret = Column(String(100), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     # Soft delete
@@ -70,6 +72,7 @@ class InventoryItem(Base):
     minimum_stock_level = Column(Float, default=5.0, nullable=False)
     unit_cost = Column(Float, default=0.0, nullable=False)
     supplier_id = Column(String(36), ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True)
+    rack = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
