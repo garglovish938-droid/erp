@@ -372,16 +372,16 @@ class AIOrchestrator:
                 response = None
                 last_err = None
                 import time
-                for attempt in range(3):
+                for attempt in range(1):
                     try:
-                        response = requests.post(url, json=payload, headers=headers, timeout=10)
+                        response = requests.post(url, json=payload, headers=headers, timeout=2)
                         if response.status_code == 200:
                             break
                         else:
                             last_err = f"HTTP {response.status_code}"
                     except Exception as e:
                         last_err = str(e)
-                    time.sleep(0.2 * (2 ** attempt))
+                    # No sleep needed for single attempt
                 
                 if response and response.status_code == 200:
                     res_data = response.json()
