@@ -37,7 +37,10 @@ def query_local_reasoning(prompt: str, context: str) -> str:
         "stream": False
     }
 
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "Bypass-Tunnel-Reminder": "true"
+    }
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=15)
