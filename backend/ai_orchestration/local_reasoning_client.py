@@ -21,7 +21,7 @@ def query_local_reasoning(prompt: str, context: str) -> str:
         "Always base your responses on the provided database context. Never hallucinate numbers. "
         "Formulate professional, natural, concise, and actionable summaries or recommendations. "
         "Never mention internal API routes, JSON structures, or database schemas. "
-        "Reply in Hinglish, English, or Hindi depending on the language of the prompt."
+        "CRITICAL: Always reply in English, Hinglish, or Hindi. Never output responses in Chinese."
     )
 
     full_prompt = (
