@@ -7709,6 +7709,18 @@ def resolve_ai_chat_response(payload: AIChatPayload, db: Session = Depends(get_d
             except Exception as ex:
                 print(f"Exception connecting to Langflow: {str(ex)}")
 
+        if settings.OLLAMA_URL:
+            from ai_orchestration.local_reasoning_client import query_local_reasoning
+            try:
+                ollama_response = query_local_reasoning(
+                    prompt=payload.message,
+                    context="No specific database context needed for this general conversational query."
+                )
+                if ollama_response:
+                    return {"response": ollama_response}
+            except Exception as ex:
+                print(f"Exception connecting to local Ollama: {str(ex)}")
+
         reply = "Hello! I am your AI ERP Assistant. How can I help you manage the factory today?\n\n"
         reply += "You can ask me questions like:\n"
         reply += "• *'Show low stock inventory items'* to review materials.\n"
