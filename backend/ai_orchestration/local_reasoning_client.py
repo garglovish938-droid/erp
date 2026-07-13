@@ -6,10 +6,15 @@ logger = logging.getLogger("nexora_local_reasoning")
 
 def query_local_reasoning(prompt: str, context: str) -> str:
     """
-    Sends a query to the local offline intelligence service (Ollama generate API)
+    Sends a query to the local offline intelligence service (Ollama chat API)
     with database context for offline fallback reasoning.
     """
     url = settings.OLLAMA_URL
+    if url and url.endswith("/api/generate"):
+        url = url.replace("/api/generate", "/api/chat")
+    elif url and not url.endswith("/api/chat"):
+        url = f"{url.rstrip('/')}/api/chat"
+        
     model = settings.OLLAMA_MODEL
     
     if not url:
@@ -25,16 +30,14 @@ def query_local_reasoning(prompt: str, context: str) -> str:
         "CRITICAL: Always reply in English, Hinglish, or Hindi. Never output responses in Chinese."
     )
 
-    full_prompt = (
-        f"System Instruction: {system_instruction}\n\n"
-        f"Database Context:\n{context}\n\n"
-        f"User Prompt: {prompt}\n\n"
-        f"Response:"
-    )
+    messages = [
+        {"role": "system", "content": system_instruction},
+        {"role": "user", "content": f"Database Context:\n{context}\n\nUser Query: {prompt}"}
+    ]
 
     payload = {
         "model": model,
-        "prompt": full_prompt,
+        "messages": messages,
         "stream": False
     }
 
@@ -47,7 +50,7 @@ def query_local_reasoning(prompt: str, context: str) -> str:
         response = requests.post(url, json=payload, headers=headers, timeout=45)
         if response.status_code == 200:
             data = response.json()
-            return data.get("response", "").strip()
+            return data.get("message", {}).get("content", "").strip()
         else:
             logger.warning(f"Local reasoning server returned status code {response.status_code}")
             return None
