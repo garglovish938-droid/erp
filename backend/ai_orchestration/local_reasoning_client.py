@@ -1,4 +1,5 @@
 import requests
+import json
 import logging
 from config import settings
 
@@ -33,7 +34,7 @@ def query_local_reasoning(prompt: str, context: str) -> str:
     payload = {
         "model": model,
         "messages": messages,
-        "stream": False
+        "stream": True
     }
 
     headers = {
@@ -42,10 +43,15 @@ def query_local_reasoning(prompt: str, context: str) -> str:
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=45)
+        response = requests.post(url, json=payload, headers=headers, timeout=45, stream=True)
         if response.status_code == 200:
-            data = response.json()
-            return data.get("message", {}).get("content", "").strip()
+            full_response = ""
+            for line in response.iter_lines():
+                if line:
+                    chunk = json.loads(line.decode('utf-8'))
+                    content = chunk.get("message", {}).get("content", "")
+                    full_response += content
+            return full_response.strip()
         else:
             logger.warning(f"Local reasoning server returned status code {response.status_code}")
             return None
