@@ -67,7 +67,7 @@ class Settings:
         self.GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
         self.N8N_WEBHOOK_URL: str = os.getenv("N8N_WEBHOOK_URL", "")
         self.REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        self.OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
-        self.OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+        self.OLLAMA_URL: str = os.getenv("OLLAMA_URL", "https://712a881f73c6edcd-223-185-59-189.serveousercontent.com/api/generate")
+        self.OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen2.5")
 
 settings = Settings()
