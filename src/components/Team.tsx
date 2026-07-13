@@ -164,6 +164,18 @@ export default function Team({ token, role }: { token: string; role: string }) {
 
   useEffect(() => {
     fetchData();
+
+    const handleWebsocketEvent = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      if (customEvent.detail?.event && ["attendance_change", "staff_change", "shift_change"].includes(customEvent.detail.event)) {
+        fetchData();
+      }
+    };
+
+    window.addEventListener("erp_websocket_event", handleWebsocketEvent);
+    return () => {
+      window.removeEventListener("erp_websocket_event", handleWebsocketEvent);
+    };
   }, [token, selectedDate, statusFilter]);
 
   const handleOpenAddShift = () => {
