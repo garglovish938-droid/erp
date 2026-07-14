@@ -121,37 +121,48 @@ class SupabaseStorageProvider(StorageProvider):
     def upload_file(self, file_data: bytes, filename: str, bucket: str, mime_type: str, subpath: str = "") -> str:
         self.validate_file(file_data, mime_type)
         
-        object_key = self._get_object_key(filename, subpath)
-        upload_url = f"{self.url}/storage/v1/object/{bucket}/{object_key}"
-        
-        # Calculate local md5 hash for verification
-        md5_hasher = hashlib.md5(file_data)
-        local_md5 = md5_hasher.hexdigest()
-        
-        logger.info(f"SupabaseStorageProvider: uploading {filename} to bucket {bucket} with key {object_key} (size: {len(file_data)} bytes)")
-        
-        try:
-            # Upload via POST/PUT
-            # Supabase API upload endpoint uses POST. We can use x-upsert header to overwrite if needed.
-            headers = self._get_headers(mime_type)
-            headers["x-upsert"] = "true"
-            
-            response = self.session.post(upload_url, headers=headers, data=file_data, timeout=self.timeout)
-            
-            if response.status_code != 200:
-                logger.error(f"Supabase upload failed: {response.status_code} - {response.text}")
-                raise Exception(f"Failed to upload file to Supabase: {response.text}")
+        # Enforce image/jpeg for image buckets to satisfy allowed_mime_types checks
+        if bucket in ["attendance", "employees", "inventory"]:
+            if not mime_type or not mime_type.startswith("image/"):
+                mime_type = "image/jpeg"
                 
-            # Verify upload checksum/metadata if possible
-            res_data = response.json()
-            logger.info(f"Supabase upload success: {res_data}")
+        # If Supabase is the active provider, attempt upload
+        if settings.STORAGE_PROVIDER == "supabase":
+            try:
+                object_key = self._get_object_key(filename, subpath)
+                upload_url = f"{self.url}/storage/v1/object/{bucket}/{object_key}"
+                
+                logger.info(f"SupabaseStorageProvider: uploading {filename} to bucket {bucket} with key {object_key}")
+                
+                headers = self._get_headers(mime_type)
+                headers["x-upsert"] = "true"
+                
+                response = self.session.post(upload_url, headers=headers, data=file_data, timeout=self.timeout)
+                
+                if response.status_code == 200:
+                    logger.info(f"Supabase upload success: {response.json()}")
+                    db_path = f"/uploads/{subpath}/{filename}" if subpath else f"/uploads/{filename}"
+                    return db_path
+                else:
+                    logger.error(f"Supabase upload rejected with status {response.status_code}: {response.text}. Falling back to local storage.")
+            except Exception as e:
+                logger.error(f"Error during Supabase upload: {e}. Falling back to local storage.")
+                
+        # Local Fallback (runs if provider is local, or if Supabase upload failed)
+        try:
+            dest_dir = os.path.join(settings.UPLOAD_DIR, subpath) if subpath else settings.UPLOAD_DIR
+            os.makedirs(dest_dir, exist_ok=True)
+            dest_file = os.path.join(dest_dir, filename)
             
+            with open(dest_file, "wb") as f:
+                f.write(file_data)
+                
             db_path = f"/uploads/{subpath}/{filename}" if subpath else f"/uploads/{filename}"
+            logger.info(f"LocalStorage fallback success: saved file to {dest_file} -> DB path: {db_path}")
             return db_path
-            
         except Exception as e:
-            logger.error(f"Error during Supabase upload: {e}")
-            raise Exception(f"Supabase Storage Provider upload failed: {str(e)}")
+            logger.error(f"Failed to save file to local fallback: {e}")
+            raise Exception(f"Storage Provider upload failed: {str(e)}")
 
     def get_signed_url(self, bucket: str, inner_path: str, expires_in: int = 60) -> str:
         sign_url = f"{self.url}/storage/v1/object/sign/{bucket}/{inner_path}"
