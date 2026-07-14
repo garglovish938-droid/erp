@@ -18,6 +18,7 @@ import { useToast } from "./Toast";
 import { formatCurrency } from "@/lib/currency";
 import { inventoryService } from "@/services/inventoryService";
 import { API_BASE_URL } from "@/lib/api";
+import { apiRequest } from "@/services/apiClient";
 import CameraModal from "./CameraModal";
 
 const COLORS = ["#4f46e5", "#ec4899", "#10b981", "#f59e0b", "#8b5cf6"];
@@ -184,20 +185,18 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
         }
       }
 
-      const headers = { Authorization: `Bearer ${token}` };
-      const url = `${API_BASE_URL}/api/attendance/selfie-check-${cameraMode}`;
-      const res = await fetch(url, { method: "POST", headers, body: formData });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || `Failed to check ${cameraMode}`);
+      const data = await apiRequest(`/api/attendance/selfie-check-${cameraMode}`, {
+        method: "POST",
+        body: formData
+      });
 
       showToast(`Successfully checked ${cameraMode === "in" ? "in" : "out"} with selfie!`, "success");
 
       resetCheckoutState();
       setShowCameraModal(false);
 
-      // Refresh attendance status
-      const statusHeaders = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-      const attRes = await fetch(`${API_BASE_URL}/api/attendance/status`, { headers: statusHeaders }).then(r => r.json());
+      // Refresh attendance status using apiRequest
+      const attRes = await apiRequest("/api/attendance/status");
       setAttendanceStatus(attRes);
     } catch (e: any) {
       showToast(e.message || `Failed to check ${cameraMode}`, "error");
@@ -260,14 +259,13 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
 
   const fetchWorkerData = async () => {
     try {
-      const headers = { Authorization: `Bearer ${token}` };
       const [attRes, projectsRes, logsRes, expensesRes, requestsRes, tasksRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/attendance/status`, { headers }).then(r => r.json()),
-        fetch(`${API_BASE_URL}/api/projects`, { headers }).then(r => r.json()),
-        fetch(`${API_BASE_URL}/api/work-logs`, { headers }).then(r => r.json()),
-        fetch(`${API_BASE_URL}/api/expenses`, { headers }).then(r => r.json()).catch(() => []),
-        fetch(`${API_BASE_URL}/api/requests`, { headers }).then(r => r.json()).catch(() => []),
-        fetch(`${API_BASE_URL}/api/tasks`, { headers }).then(r => r.json()).catch(() => [])
+        apiRequest("/api/attendance/status"),
+        apiRequest("/api/projects"),
+        apiRequest("/api/work-logs"),
+        apiRequest("/api/expenses").catch(() => []),
+        apiRequest("/api/requests").catch(() => []),
+        apiRequest("/api/tasks").catch(() => [])
       ]);
       setAttendanceStatus(attRes);
       setAssignedProjects(Array.isArray(projectsRes) ? projectsRes : []);
@@ -284,10 +282,7 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
   };
 
   const fetchDataFromAPI = async (path: string) => {
-    const headers = { Authorization: `Bearer ${token}` };
-    const response = await fetch(`${API_BASE_URL}${path}`, { headers });
-    if (!response.ok) throw new Error("API request failed");
-    return response.json();
+    return apiRequest(path);
   };
 
   useEffect(() => {
@@ -428,16 +423,11 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
   const handleCheckIn = async () => {
     setAttActionLoading(true);
     try {
-      const headers = { 
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      };
       const fingerprint = getDeviceFingerprint();
       const browser = typeof window !== "undefined" ? window.navigator.userAgent : "unknown";
       const device = typeof window !== "undefined" ? window.navigator.userAgent.substring(0, 100) : "Web Browser";
-      const res = await fetch(`${API_BASE_URL}/api/attendance/check-in`, {
+      await apiRequest("/api/attendance/check-in", {
         method: "POST",
-        headers,
         body: JSON.stringify({ 
           device, 
           ip_address: "127.0.0.1",
@@ -445,11 +435,9 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
           browser_details: browser
         })
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Failed to check in");
       showToast("Successfully checked in!", "success");
       
-      const attRes = await fetch(`${API_BASE_URL}/api/attendance/status`, { headers }).then(r => r.json());
+      const attRes = await apiRequest("/api/attendance/status");
       setAttendanceStatus(attRes);
     } catch (e: any) {
       showToast(e.message || "Failed to check in", "error");
@@ -461,16 +449,11 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
   const handleCheckOut = async () => {
     setAttActionLoading(true);
     try {
-      const headers = { 
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      };
       const fingerprint = getDeviceFingerprint();
       const browser = typeof window !== "undefined" ? window.navigator.userAgent : "unknown";
       const device = typeof window !== "undefined" ? window.navigator.userAgent.substring(0, 100) : "Web Browser";
-      const res = await fetch(`${API_BASE_URL}/api/attendance/check-out`, {
+      await apiRequest("/api/attendance/check-out", {
         method: "POST",
-        headers,
         body: JSON.stringify({
           device,
           ip_address: "127.0.0.1",
@@ -478,11 +461,9 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
           browser_details: browser
         })
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Failed to check out");
       showToast("Successfully checked out!", "success");
       
-      const attRes = await fetch(`${API_BASE_URL}/api/attendance/status`, { headers }).then(r => r.json());
+      const attRes = await apiRequest("/api/attendance/status");
       setAttendanceStatus(attRes);
     } catch (e: any) {
       showToast(e.message || "Failed to check out", "error");
@@ -515,16 +496,10 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
         formData.append("work_photo", workLogPhoto);
       }
 
-      const headers = { 
-        Authorization: `Bearer ${token}`,
-      };
-      const res = await fetch(`${API_BASE_URL}/api/work-logs/form`, {
+      await apiRequest("/api/work-logs/form", {
         method: "POST",
-        headers,
         body: formData
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Failed to submit daily work log");
       showToast("Work log submitted successfully!", "success");
       setLogForm({
         project_id: "",
@@ -538,8 +513,7 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
       const fileInput = document.getElementById("work-log-photo-input") as HTMLInputElement;
       if (fileInput) fileInput.value = "";
 
-      const getLogsHeaders = { Authorization: `Bearer ${token}` };
-      const logsRes = await fetch(`${API_BASE_URL}/api/work-logs`, { headers: getLogsHeaders }).then(r => r.json());
+      const logsRes = await apiRequest("/api/work-logs");
       setWorkLogs(logsRes);
     } catch (e: any) {
       showToast(e.message || "Failed to submit work log", "error");
