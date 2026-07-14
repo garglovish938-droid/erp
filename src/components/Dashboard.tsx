@@ -243,12 +243,12 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
 
       setStats(statsData);
       setCharts(chartsData);
-      setNotifications(notifData.slice(0, 5));
-      setWidgets(widgetsData);
+      setNotifications(Array.isArray(notifData) ? notifData.slice(0, 5) : []);
+      setWidgets(Array.isArray(widgetsData) ? widgetsData : []);
       setTodayAttendance(Array.isArray(attendanceData) ? attendanceData : []);
-      setRecentPurchases(purchasesData.slice(0, 5));
-      setRecentExpenses(expensesData.slice(0, 5));
-      setRecentRequests(requestsData.slice(0, 5));
+      setRecentPurchases(Array.isArray(purchasesData) ? purchasesData.slice(0, 5) : []);
+      setRecentExpenses(Array.isArray(expensesData) ? expensesData.slice(0, 5) : []);
+      setRecentRequests(Array.isArray(requestsData) ? requestsData.slice(0, 5) : []);
       setFinancialStats(financialData);
       setError("");
     } catch (err: any) {
@@ -270,11 +270,11 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
         fetch(`${API_BASE_URL}/api/tasks`, { headers }).then(r => r.json()).catch(() => [])
       ]);
       setAttendanceStatus(attRes);
-      setAssignedProjects(projectsRes || []);
-      setWorkLogs(logsRes || []);
-      setRecentExpenses(expensesRes || []);
-      setRecentRequests(requestsRes || []);
-      setAssignedTasks(tasksRes || []);
+      setAssignedProjects(Array.isArray(projectsRes) ? projectsRes : []);
+      setWorkLogs(Array.isArray(logsRes) ? logsRes : []);
+      setRecentExpenses(Array.isArray(expensesRes) ? expensesRes : []);
+      setRecentRequests(Array.isArray(requestsRes) ? requestsRes : []);
+      setAssignedTasks(Array.isArray(tasksRes) ? tasksRes : []);
       setError("");
     } catch (err: any) {
       setError("Failed to sync worker data from backend.");

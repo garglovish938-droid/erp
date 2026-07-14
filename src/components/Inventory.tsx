@@ -141,10 +141,10 @@ export default function Inventory({ token, role }: { token: string; role: string
         inventoryService.getCustomFields("InventoryItem").catch(() => [])
       ]);
 
-      setItems(itemsData || []);
-      setCategories(catData || []);
-      setSuppliers(supData || []);
-      setProjects(projData || []);
+      setItems(Array.isArray(itemsData) ? itemsData : []);
+      setCategories(Array.isArray(catData) ? catData : []);
+      setSuppliers(Array.isArray(supData) ? supData : []);
+      setProjects(Array.isArray(projData) ? projData : []);
       setCustomFields(Array.isArray(fieldsData) ? fieldsData : []);
     } catch (e: any) {
       console.error(e);
