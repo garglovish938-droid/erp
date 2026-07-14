@@ -1231,6 +1231,41 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
         </div>
       )}
 
+      {/* Today's Active Check-In Selfies */}
+      {!isWorker && todayAttendance.filter((a: any) => a.check_in_selfie).length > 0 && (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-3xl shadow-sm space-y-4">
+          <div className="flex items-center gap-2">
+            <Camera className="w-5 h-5 text-indigo-500" />
+            <h3 className="font-bold text-slate-800 dark:text-slate-100">Today's Attendance Selfies</h3>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4">
+            {todayAttendance.filter((a: any) => a.check_in_selfie).map((a: any) => (
+              <div key={a.id} className="relative group overflow-hidden rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-2 text-center shadow-xs hover:shadow-md transition-all duration-300">
+                <div className="relative aspect-square w-full rounded-xl overflow-hidden bg-slate-200 dark:bg-slate-800 mb-2">
+                  <img 
+                    src={`${API_BASE_URL}${a.check_in_selfie}`} 
+                    alt={a.staff_name} 
+                    className="object-cover w-full h-full group-hover:scale-105 transition-transform duration-300"
+                    onError={(e: any) => { e.target.src = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&h=150&q=80"; }}
+                  />
+                  <div className="absolute top-1 right-1">
+                    <span className={cn(
+                      "px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase",
+                      a.late_arrival ? "bg-orange-100 text-orange-800 dark:bg-orange-950/40" : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40"
+                    )}>
+                      {a.late_arrival ? "Late" : "On Time"}
+                    </span>
+                  </div>
+                </div>
+                <h4 className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">{a.staff_name}</h4>
+                <p className="text-[10px] text-slate-500 mt-0.5 font-medium">In: {a.check_in || "—"}</p>
+                {a.check_out && <p className="text-[10px] text-indigo-500 font-semibold mt-0.5">Out: {a.check_out}</p>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Customize Panel Drawer */}
       {customizeMode && (
         <div className="p-5 bg-indigo-50/40 dark:bg-slate-900/60 border border-indigo-150/40 dark:border-slate-800 rounded-3xl animate-in slide-in-from-top-4 duration-300">
