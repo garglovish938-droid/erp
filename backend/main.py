@@ -375,11 +375,12 @@ async def serve_uploaded_file(path: str, db: Session = Depends(get_db)):
         "Pragma": "no-cache",
         "Expires": "0"
     }
-    if settings.STORAGE_PROVIDER != "supabase":
-        local_path = os.path.join(UPLOAD_DIR, path)
-        if not os.path.exists(local_path):
-            raise HTTPException(status_code=404, detail="File not found")
+    local_path = os.path.join(UPLOAD_DIR, path)
+    if os.path.exists(local_path):
         return FileResponse(local_path, headers=headers)
+        
+    if settings.STORAGE_PROVIDER != "supabase":
+        raise HTTPException(status_code=404, detail="File not found")
     
     subpath = path.replace("\\", "/")
     if subpath.startswith("selfies/"):
