@@ -1240,35 +1240,38 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
             <h3 className="font-bold text-slate-800 dark:text-slate-100">Today's Attendance Selfies</h3>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4">
-            {todayAttendance.filter((a: any) => a.check_in_selfie).map((a: any) => (
-              <div key={a.id} className="relative group overflow-hidden rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-2 text-center shadow-xs hover:shadow-md transition-all duration-300">
-                <div className="relative aspect-square w-full rounded-xl overflow-hidden bg-slate-200 dark:bg-slate-800 mb-2">
-                  {imageErrors[a.id] ? (
-                    <div className="w-full h-full flex items-center justify-center bg-indigo-50 dark:bg-slate-800 text-indigo-650 dark:text-indigo-400 font-bold text-lg select-none">
-                      {a.staff_name ? a.staff_name.split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase() : '??'}
+            {todayAttendance.filter((a: any) => a.check_in_selfie).map((a: any) => {
+              const staffName = a.staff_name || a.staff_member?.name || "Unknown Staff";
+              return (
+                <div key={a.id} className="relative group overflow-hidden rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-2 text-center shadow-xs hover:shadow-md transition-all duration-300">
+                  <div className="relative aspect-square w-full rounded-xl overflow-hidden bg-slate-200 dark:bg-slate-800 mb-2">
+                    {imageErrors[a.id] ? (
+                      <div className="w-full h-full flex items-center justify-center bg-indigo-50 dark:bg-slate-800 text-indigo-650 dark:text-indigo-400 font-bold text-lg select-none">
+                        {staffName.split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase()}
+                      </div>
+                    ) : (
+                      <img 
+                        src={`${API_BASE_URL}${a.check_in_selfie}`} 
+                        alt={staffName} 
+                        className="object-cover w-full h-full group-hover:scale-105 transition-transform duration-300"
+                        onError={() => { setImageErrors(prev => ({ ...prev, [a.id]: true })); }}
+                      />
+                    )}
+                    <div className="absolute top-1 right-1">
+                      <span className={cn(
+                        "px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase",
+                        a.late_arrival ? "bg-orange-100 text-orange-800 dark:bg-orange-950/40" : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40"
+                      )}>
+                        {a.late_arrival ? "Late" : "On Time"}
+                      </span>
                     </div>
-                  ) : (
-                    <img 
-                      src={`${API_BASE_URL}${a.check_in_selfie}`} 
-                      alt={a.staff_name} 
-                      className="object-cover w-full h-full group-hover:scale-105 transition-transform duration-300"
-                      onError={() => { setImageErrors(prev => ({ ...prev, [a.id]: true })); }}
-                    />
-                  )}
-                  <div className="absolute top-1 right-1">
-                    <span className={cn(
-                      "px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase",
-                      a.late_arrival ? "bg-orange-100 text-orange-800 dark:bg-orange-950/40" : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40"
-                    )}>
-                      {a.late_arrival ? "Late" : "On Time"}
-                    </span>
                   </div>
+                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">{staffName}</h4>
+                  <p className="text-[10px] text-slate-500 mt-0.5 font-medium">In: {a.check_in || "—"}</p>
+                  {a.check_out && <p className="text-[10px] text-indigo-500 font-semibold mt-0.5">Out: {a.check_out}</p>}
                 </div>
-                <h4 className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">{a.staff_name}</h4>
-                <p className="text-[10px] text-slate-500 mt-0.5 font-medium">In: {a.check_in || "—"}</p>
-                {a.check_out && <p className="text-[10px] text-indigo-500 font-semibold mt-0.5">Out: {a.check_out}</p>}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
