@@ -87,11 +87,11 @@ export default function Sidebar({
           "flex items-center mb-10 px-6",
           collapsed ? "lg:justify-center lg:px-0" : "justify-start"
         )}>
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-xl shadow-lg flex-shrink-0">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-xl shadow-lg flex-shrink-0 shadow-indigo-500/20">
             A
           </div>
           <h1 className={cn(
-            "ml-3 font-bold text-xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-600 transition-opacity duration-200",
+            "ml-3 font-bold text-xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-600 dark:from-indigo-400 dark:to-purple-400 transition-opacity duration-200",
             collapsed ? "lg:hidden" : "block"
           )}>
             Allure Living
@@ -100,7 +100,7 @@ export default function Sidebar({
         
         <div className={cn("px-6 mb-4", collapsed ? "lg:hidden" : "block")}>
           <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
-            Logged as: <span className="text-indigo-600 dark:text-indigo-400">{userRole}</span>
+            Logged as: <span className="text-indigo-600 dark:text-indigo-400 font-bold">{userRole}</span>
           </div>
         </div>
 
@@ -116,12 +116,12 @@ export default function Sidebar({
                   "flex items-center py-2.5 rounded-2xl transition-all duration-200 group relative w-full",
                   collapsed ? "lg:justify-center lg:px-0" : "justify-start px-3",
                   isActive
-                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-200 dark:shadow-indigo-900/20"
-                    : "text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800/50 dark:text-slate-400"
+                    ? "bg-indigo-600 dark:bg-indigo-500 text-white shadow-lg shadow-indigo-600/10 dark:shadow-indigo-500/5"
+                    : "text-slate-500 hover:bg-slate-150/40 dark:hover:bg-slate-800/40 dark:text-slate-400"
                 )}
               >
-                <Icon className={cn("w-5 h-5 flex-shrink-0", isActive ? "text-white" : "group-hover:text-indigo-600")} />
-                <span className={cn("ml-3 font-medium text-[14px] transition-opacity duration-200", collapsed ? "lg:hidden" : "block")}>{item.label}</span>
+                <Icon className={cn("w-5 h-5 flex-shrink-0", isActive ? "text-white" : "group-hover:text-indigo-600 dark:group-hover:text-indigo-400")} />
+                <span className={cn("ml-3 font-semibold text-[13px] transition-opacity duration-200", collapsed ? "lg:hidden" : "block")}>{item.label}</span>
               </button>
             );
           })}

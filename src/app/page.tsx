@@ -36,6 +36,9 @@ export default function Home() {
   const [serverOffset, setServerOffset] = useState<number>(0);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
 
+  // AI Configuration Toggle
+  const ENABLE_AI = false;
+
   // AI Assistant Drawer states
   const [aiOpen, setAiOpen] = useState(false);
   const [aiMessages, setAiMessages] = useState<Array<{ sender: "user" | "ai"; text: string }>>([
@@ -349,19 +352,21 @@ export default function Home() {
       </div>
 
       {/* Floating AI Assistant Trigger */}
-      <button
-        onClick={() => setAiOpen(true)}
-        className="fixed bottom-20 lg:bottom-6 right-4 lg:right-6 z-40 bg-gradient-to-br from-indigo-500 to-purple-600 hover:from-indigo-650 hover:to-purple-750 text-white p-4 rounded-full shadow-2xl hover:shadow-indigo-500/20 transition-all flex items-center justify-center cursor-pointer hover:scale-105 active:scale-95 group border border-indigo-400/20"
-      >
-        <Sparkles className="w-6 h-6 animate-pulse" />
-        <span className="max-w-0 overflow-hidden group-hover:max-w-xs transition-all duration-300 ease-in-out font-bold text-sm whitespace-nowrap ml-0 group-hover:ml-2">
-          AI Assistant
-        </span>
-      </button>
+      {ENABLE_AI && (
+        <button
+          onClick={() => setAiOpen(true)}
+          className="fixed bottom-20 lg:bottom-6 right-4 lg:right-6 z-40 bg-gradient-to-br from-indigo-500 to-purple-600 hover:from-indigo-650 hover:to-purple-750 text-white p-4 rounded-full shadow-2xl hover:shadow-indigo-500/20 transition-all flex items-center justify-center cursor-pointer hover:scale-105 active:scale-95 group border border-indigo-400/20"
+        >
+          <Sparkles className="w-6 h-6 animate-pulse" />
+          <span className="max-w-0 overflow-hidden group-hover:max-w-xs transition-all duration-300 ease-in-out font-bold text-sm whitespace-nowrap ml-0 group-hover:ml-2">
+            AI Assistant
+          </span>
+        </button>
+      )}
 
 
       {/* AI Assistant Chat Drawer */}
-      {aiOpen && (
+      {ENABLE_AI && aiOpen && (
         <>
           <div
             className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-45 transition-opacity"

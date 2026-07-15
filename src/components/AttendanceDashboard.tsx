@@ -218,7 +218,7 @@ export default function AttendanceDashboard({ token, role }: AttendanceDashboard
                     <table className="min-w-[650px] w-full text-sm">
                       <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800">
                         <tr>
-                          {["Employee", "Status", "Check In", "Check Out", "Hours", "Late", "Overtime"].map(h => (
+                          {["Employee", "Status", "Check In", "Check Out", "Hours", "Late", "Overtime", "Verification"].map(h => (
                             <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-slate-500 dark:text-slate-450 uppercase tracking-wider sticky top-0 bg-slate-55 dark:bg-slate-800 z-10">{h}</th>
                           ))}
                         </tr>
@@ -235,6 +235,17 @@ export default function AttendanceDashboard({ token, role }: AttendanceDashboard
                               {rec.late_arrival ? <span className="text-orange-600 font-medium">{rec.late_minutes}m late</span> : <span className="text-emerald-600">On time</span>}
                             </td>
                             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{rec.overtime_hours?.toFixed(1)}h</td>
+                            <td className="px-4 py-3">
+                              {rec.is_suspicious ? (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-600 dark:bg-rose-950/30 dark:text-rose-400 border border-rose-100 dark:border-rose-900/30 flex items-center gap-1 w-fit animate-pulse" title={rec.suspicious_reason || "Flagged proxy log attempt"}>
+                                  <AlertTriangle className="w-3.5 h-3.5" /> Suspicious
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/30 flex items-center gap-1 w-fit" title={`Device: ${rec.device || 'Verified browser'} | IP: ${rec.ip_address || 'Verified location'}`}>
+                                  Verified
+                                </span>
+                              )}
+                            </td>
                           </tr>
                         ))}
                       </tbody>

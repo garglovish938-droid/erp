@@ -11,6 +11,18 @@ const config: Config = {
       colors: {
         background: "var(--background)",
         foreground: "var(--foreground)",
+        indigo: {
+          500: "#6366f1",
+          600: "#4f46e5",
+          650: "#4338ca",
+          700: "#3730a3",
+          750: "#312e81",
+        },
+        slate: {
+          55: "#f8fafc",
+          805: "#1e293b",
+          955: "#0b1329",
+        }
       },
     },
   },

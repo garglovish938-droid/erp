@@ -65,6 +65,7 @@ class Settings:
         self.SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
         self.SMTP_FROM: str = os.getenv("SMTP_FROM", "nexora_ai@allure.com")
         self.GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+        self.OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
         self.N8N_WEBHOOK_URL: str = os.getenv("N8N_WEBHOOK_URL", "")
         self.REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         self.OLLAMA_URL: str = os.getenv("OLLAMA_URL", "https://allure-factory-erp-reasoning.loca.lt/api/chat")

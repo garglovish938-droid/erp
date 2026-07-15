@@ -36,14 +36,14 @@ def test_local_reasoning_fallback(monkeypatch):
 
         # Mock API calls
         requests_called = {}
-        def mock_post(url, json=None, headers=None, timeout=None):
+        def mock_post(url, json=None, headers=None, timeout=None, stream=False):
             requests_called[url] = json
             class MockResponse:
                 status_code = 200
                 text = "Success"
+                def iter_lines(self):
+                    yield b'{"message": {"content": "Local Mock Response: Operations look normal!"}}'
                 def json(self):
-                    if "generate" in url:
-                        return {"response": "Local Mock Response: Operations look normal!"}
                     return {"status": "success"}
             return MockResponse()
 
@@ -59,10 +59,10 @@ def test_local_reasoning_fallback(monkeypatch):
         assert "Local Mock Response" in result["response"]
         
         # Verify requests were made
-        assert "http://mock-ollama/api/generate" in requests_called
-        payload = requests_called["http://mock-ollama/api/generate"]
+        assert "http://mock-ollama/api/chat" in requests_called
+        payload = requests_called["http://mock-ollama/api/chat"]
         assert payload["model"] == "mock-model"
-        assert "Check inventory list" in payload["prompt"]
+        assert "Check inventory list" in payload["messages"][1]["content"]
         
     finally:
         db.close()

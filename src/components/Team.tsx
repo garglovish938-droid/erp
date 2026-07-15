@@ -68,9 +68,11 @@ export default function Team({ token, role }: { token: string; role: string }) {
   const [confirmMessage, setConfirmMessage] = useState("");
   const [selfieModalData, setSelfieModalData] = useState<{ employeeName: string; type: string; time: string; imagePath: string; device?: string; ipAddress?: string; isSuspicious?: boolean; suspiciousReason?: string } | null>(null);
   const [zoom, setZoom] = useState(1);
+  const [modalImageError, setModalImageError] = useState(false);
 
   useEffect(() => {
     setZoom(1);
+    setModalImageError(false);
   }, [selfieModalData]);
 
   // Attendance Correction Modal States
@@ -1154,12 +1156,20 @@ export default function Team({ token, role }: { token: string; role: string }) {
             </div>
 
             <div className="relative aspect-video rounded-2xl overflow-hidden bg-slate-950 border border-slate-250/20 shadow-inner flex items-center justify-center group/viewer">
-              <img 
-                src={`${API_BASE_URL}${selfieModalData.imagePath.startsWith('/') ? '' : '/'}${selfieModalData.imagePath}`} 
-                alt={`${selfieModalData.employeeName} ${selfieModalData.type}`} 
-                style={{ transform: `scale(${zoom}) scaleX(-1)` }}
-                className="w-full h-full object-contain transition-transform duration-200"
-              />
+              {modalImageError ? (
+                <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 text-slate-400 font-medium text-xs select-none">
+                  <span className="text-2xl mb-1">📷</span>
+                  No Selfie Image Captured
+                </div>
+              ) : (
+                <img 
+                  src={`${API_BASE_URL}${selfieModalData.imagePath.startsWith('/') ? '' : '/'}${selfieModalData.imagePath}`} 
+                  alt={`${selfieModalData.employeeName} ${selfieModalData.type}`} 
+                  style={{ transform: `scale(${zoom}) scaleX(-1)` }}
+                  className="w-full h-full object-contain transition-transform duration-200"
+                  onError={() => setModalImageError(true)}
+                />
+              )}
               
               {/* Zoom & Download Actions Panel */}
               <div className="absolute bottom-4 right-4 bg-black/70 backdrop-blur-xs px-3 py-1.5 rounded-xl flex items-center gap-3 border border-white/10 opacity-0 group-hover/viewer:opacity-100 transition-opacity duration-300 z-20">

@@ -9,6 +9,7 @@ from sqlalchemy import func
 from config import settings
 import models
 from ai_orchestration.gemini_client import query_gemini_with_context
+from ai_orchestration.openai_client import query_openai_with_context
 from ai_orchestration.local_reasoning_client import query_local_reasoning
 from ai_orchestration.automation_coordinator import trigger_automation_webhook
 from ai_orchestration.session_memory import session_history, session_entities
@@ -424,6 +425,42 @@ class AIOrchestrator:
             message=message,
             context=context_data
         )
+
+        # If OpenAI API Key is configured, run real-time cloud GPT reasoning
+        if settings.OPENAI_API_KEY:
+            openai_prompt = f"User query: '{message}'. Process flow: {flow_id}."
+            openai_response = query_openai_with_context(openai_prompt, context_data)
+            if openai_response:
+                original_header = context_data.split("\n")[0] if "\n" in context_data else "Assistant"
+                if original_header.startswith("[") and "]" in original_header:
+                    original_header = original_header.split("]")[0].split(":")[-1].strip()
+                formatted_response = f"{original_header}\n\n{openai_response}"
+                
+                return {
+                    "flow_id": flow_id,
+                    "status": "success",
+                    "response": formatted_response,
+                    "engine": "OpenAI Cloud Engine",
+                    "n8n_automation": n8n_status
+                }
+
+        # If OpenAI API Key is configured, run real-time cloud GPT reasoning
+        if settings.OPENAI_API_KEY:
+            openai_prompt = f"User query: '{message}'. Process flow: {flow_id}."
+            openai_response = query_openai_with_context(openai_prompt, context_data)
+            if openai_response:
+                original_header = context_data.split("\n")[0] if "\n" in context_data else "Assistant"
+                if original_header.startswith("[") and "]" in original_header:
+                    original_header = original_header.split("]")[0].split(":")[-1].strip()
+                formatted_response = f"{original_header}\n\n{openai_response}"
+                
+                return {
+                    "flow_id": flow_id,
+                    "status": "success",
+                    "response": formatted_response,
+                    "engine": "OpenAI Cloud Engine",
+                    "n8n_automation": n8n_status
+                }
 
         # If Gemini API Key is configured, run real-time advanced reasoning
         if settings.GEMINI_API_KEY:

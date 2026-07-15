@@ -43,7 +43,7 @@ def query_local_reasoning(prompt: str, context: str) -> str:
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=45, stream=True)
+        response = requests.post(url, json=payload, headers=headers, timeout=3, stream=True)
         if response.status_code == 200:
             full_response = ""
             for line in response.iter_lines():

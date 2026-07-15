@@ -85,6 +85,7 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
   const [workLogPhoto, setWorkLogPhoto] = useState<File | null>(null);
   const [todayAttendance, setTodayAttendance] = useState<any[]>([]);
   const [assignedTasks, setAssignedTasks] = useState<any[]>([]);
+  const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
 
   // Attendance camera state
   const [showCameraModal, setShowCameraModal] = useState(false);
@@ -1242,12 +1243,18 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
             {todayAttendance.filter((a: any) => a.check_in_selfie).map((a: any) => (
               <div key={a.id} className="relative group overflow-hidden rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-2 text-center shadow-xs hover:shadow-md transition-all duration-300">
                 <div className="relative aspect-square w-full rounded-xl overflow-hidden bg-slate-200 dark:bg-slate-800 mb-2">
-                  <img 
-                    src={`${API_BASE_URL}${a.check_in_selfie}`} 
-                    alt={a.staff_name} 
-                    className="object-cover w-full h-full group-hover:scale-105 transition-transform duration-300"
-                    onError={(e: any) => { e.target.src = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&h=150&q=80"; }}
-                  />
+                  {imageErrors[a.id] ? (
+                    <div className="w-full h-full flex items-center justify-center bg-indigo-50 dark:bg-slate-800 text-indigo-650 dark:text-indigo-400 font-bold text-lg select-none">
+                      {a.staff_name ? a.staff_name.split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase() : '??'}
+                    </div>
+                  ) : (
+                    <img 
+                      src={`${API_BASE_URL}${a.check_in_selfie}`} 
+                      alt={a.staff_name} 
+                      className="object-cover w-full h-full group-hover:scale-105 transition-transform duration-300"
+                      onError={() => { setImageErrors(prev => ({ ...prev, [a.id]: true })); }}
+                    />
+                  )}
                   <div className="absolute top-1 right-1">
                     <span className={cn(
                       "px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase",

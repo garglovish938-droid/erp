@@ -1,17 +1,31 @@
 import os
-import re
 import sys
 
-sys.stdout.reconfigure(encoding='utf-8')
+def search_in_file(filepath, query):
+    if not os.path.exists(filepath):
+        print(f"File not found: {filepath}")
+        return
+    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+        lines = f.readlines()
+    matches = []
+    for idx, line in enumerate(lines):
+        if query.lower() in line.lower():
+            matches.append((idx + 1, line.strip()))
+    return matches
 
-filepath = r"d:\Factory erp\erp_demo\src\components\Inventory.tsx"
-results = []
+def main():
+    if len(sys.argv) < 3:
+        print("Usage: python search_code.py <filepath> <query>")
+        return
+    filepath = sys.argv[1]
+    query = sys.argv[2]
+    print(f"Searching for '{query}' in {filepath}:")
+    matches = search_in_file(filepath, query)
+    if matches:
+        for num, content in matches[:40]:
+            print(f"  Line {num}: {content}")
+    else:
+        print("  No matches found.")
 
-with open(filepath, "r", encoding="utf-8") as f:
-    for i, line in enumerate(f, 1):
-        if "cost" in line.lower() or "price" in line.lower() or "toLocaleString" in line or "$" in line or "USD" in line:
-            results.append((i, line.strip()))
-
-print(f"Found {len(results)} matches in Inventory.tsx:")
-for line_num, content in results[:100]:
-    print(f"{line_num} -> {content}")
+if __name__ == "__main__":
+    main()

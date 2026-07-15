@@ -1027,10 +1027,10 @@ export default function Projects({ token, role }: { token: string; role: string 
                     </div>
                     <div className="w-[120px]">
                       <span className="text-[10px] text-slate-400 uppercase block font-bold mb-1">BOM Fulfilled</span>
-                      <div className="w-full bg-slate-200 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
-                        <div className="bg-indigo-600 h-full rounded-full transition-all duration-500" style={{ width: `${bomProgress}%` }}></div>
+                      <div className="w-full bg-slate-250 dark:bg-slate-850 h-2 rounded-full overflow-hidden shadow-inner">
+                        <div className="bg-gradient-to-r from-indigo-500 to-purple-600 dark:from-indigo-400 dark:to-purple-500 h-full rounded-full transition-all duration-500 shadow-[0_0_8px_rgba(99,102,241,0.4)]" style={{ width: `${bomProgress}%` }}></div>
                       </div>
-                      <span className="text-[9px] text-slate-400 mt-0.5 block">{completedBOMCount} of {totalBOMCount} items</span>
+                      <span className="text-[9px] text-slate-400 mt-0.5 block font-medium">{completedBOMCount} of {totalBOMCount} items</span>
                     </div>
                   </div>
 

@@ -370,11 +370,16 @@ os.makedirs(os.path.join(UPLOAD_DIR, "selfies"), exist_ok=True)
 # Serve uploaded documents dynamically or redirect to Supabase
 @app.get("/uploads/{path:path}")
 async def serve_uploaded_file(path: str, db: Session = Depends(get_db)):
+    headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0"
+    }
     if settings.STORAGE_PROVIDER != "supabase":
         local_path = os.path.join(UPLOAD_DIR, path)
         if not os.path.exists(local_path):
             raise HTTPException(status_code=404, detail="File not found")
-        return FileResponse(local_path)
+        return FileResponse(local_path, headers=headers)
     
     subpath = path.replace("\\", "/")
     if subpath.startswith("selfies/"):
@@ -410,7 +415,7 @@ async def serve_uploaded_file(path: str, db: Session = Depends(get_db)):
         url = storage_provider.get_signed_url(bucket, inner_path, expires_in=60)
         
     from fastapi.responses import RedirectResponse
-    return RedirectResponse(url=url, status_code=307)
+    return RedirectResponse(url=url, status_code=307, headers=headers)
 
 
 
@@ -5298,7 +5303,11 @@ def download_progress_report_pdf(db: Session = Depends(get_db), current_user: Us
 
 @app.get("/api/reports/material-requests/csv")
 def download_material_requests_report_csv(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
-    requests = db.query(MaterialRequest).filter(MaterialRequest.is_deleted == False).order_by(MaterialRequest.created_at.desc()).all()
+    requests = db.query(MaterialRequest).options(
+        joinedload(MaterialRequest.project),
+        joinedload(MaterialRequest.inventory),
+        joinedload(MaterialRequest.requester)
+    ).filter(MaterialRequest.is_deleted == False).order_by(MaterialRequest.created_at.desc()).all()
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["Date", "Project", "Material Name", "SKU", "Requested By", "Quantity", "Status", "Notes"])
@@ -5327,7 +5336,11 @@ def download_material_requests_report_csv(db: Session = Depends(get_db), current
 
 @app.get("/api/reports/material-requests/excel")
 def download_material_requests_report_excel(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
-    requests = db.query(MaterialRequest).filter(MaterialRequest.is_deleted == False).order_by(MaterialRequest.created_at.desc()).all()
+    requests = db.query(MaterialRequest).options(
+        joinedload(MaterialRequest.project),
+        joinedload(MaterialRequest.inventory),
+        joinedload(MaterialRequest.requester)
+    ).filter(MaterialRequest.is_deleted == False).order_by(MaterialRequest.created_at.desc()).all()
     wb = Workbook()
     ws = wb.active
     ws.title = "Material Requests"
@@ -5385,7 +5398,11 @@ def download_material_requests_report_excel(db: Session = Depends(get_db), curre
 
 @app.get("/api/reports/material-requests/pdf")
 def download_material_requests_report_pdf(db: Session = Depends(get_db), current_user: User = Depends(auth.require_report_access)):
-    requests = db.query(MaterialRequest).filter(MaterialRequest.is_deleted == False).order_by(MaterialRequest.created_at.desc()).all()
+    requests = db.query(MaterialRequest).options(
+        joinedload(MaterialRequest.project),
+        joinedload(MaterialRequest.inventory),
+        joinedload(MaterialRequest.requester)
+    ).filter(MaterialRequest.is_deleted == False).order_by(MaterialRequest.created_at.desc()).all()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
     story = []
@@ -5743,6 +5760,10 @@ def get_attendance_dashboard(target_date: Optional[date] = Query(None), db: Sess
             "late_minutes": r.late_minutes if hasattr(r, 'late_minutes') else 0,
             "total_hours": r.total_hours,
             "overtime_hours": r.overtime_hours,
+            "is_suspicious": getattr(r, 'is_suspicious', False),
+            "suspicious_reason": getattr(r, 'suspicious_reason', ""),
+            "device": getattr(r, 'device', ""),
+            "ip_address": getattr(r, 'ip_address', ""),
         })
 
     return {
@@ -5812,6 +5833,10 @@ def get_attendance_history(
             "early_departure": att.early_departure,
             "check_in_selfie": att.check_in_selfie,
             "check_out_selfie": att.check_out_selfie,
+            "is_suspicious": getattr(att, 'is_suspicious', False),
+            "suspicious_reason": getattr(att, 'suspicious_reason', ""),
+            "device": getattr(att, 'device', ""),
+            "ip_address": getattr(att, 'ip_address', ""),
         })
 
     return {"total": total, "page": page, "per_page": per_page, "records": records}
@@ -8771,6 +8796,24 @@ def transfer_wallet_funds(
         return res
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/factory-wallet/{wallet_id}/recalculate")
+def recalculate_wallet_balance_api(
+    wallet_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_admin)
+):
+    wallet = db.query(FactoryWallet).filter(FactoryWallet.id == wallet_id).first()
+    if not wallet:
+        raise HTTPException(status_code=404, detail="Wallet not found")
+        
+    crud.recalculate_wallet_running_balances(db, wallet_id)
+    db.commit()
+    
+    broadcast_sync({"event": "financial_change"})
+    broadcast_sync({"event": "wallet_change"})
+    return {"status": "success", "message": "Wallet balances reconciled and recalculated successfully"}
 
 
 @app.post("/api/factory-wallet/{wallet_id}/restore")

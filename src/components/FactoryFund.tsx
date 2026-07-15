@@ -370,6 +370,34 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
     }
   };
 
+  const handleRecalculateWallet = async () => {
+    if (selectedWalletId === "all" || selectedWalletId === "default") return;
+    setLoading(true);
+    try {
+      const savedUser = localStorage.getItem("allure_erp_user");
+      const userToken = savedUser ? JSON.parse(savedUser).token : token;
+      
+      const res = await fetch(`${API_BASE_URL}/api/factory-wallet/${selectedWalletId}/recalculate`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${userToken}`
+        }
+      });
+      
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Recalculation failed");
+      }
+      
+      showToast("Wallet running balances reconciled and recalculated successfully!", "success");
+      loadData();
+    } catch (e: any) {
+      showToast(e.message || "Failed to recalculate wallet balances", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const fetchArchivedData = async () => {
     setArchivedLoading(true);
     try {
@@ -646,13 +674,22 @@ export default function FactoryFund({ token, role }: FactoryFundProps) {
               ))}
             </select>
             {["admin", "super_admin"].includes(role) && selectedWalletId !== "all" && selectedWalletId !== "default" && (
-              <button
-                type="button"
-                onClick={() => setShowDeleteWalletModal(true)}
-                className="bg-rose-600 hover:bg-rose-700 text-white px-3.5 py-2 rounded-lg text-sm font-semibold transition-all duration-200 flex items-center gap-1.5 ml-2"
-              >
-                <Trash2 className="h-4 w-4" /> Delete Wallet
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={handleRecalculateWallet}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-2 rounded-lg text-sm font-semibold transition-all duration-200 flex items-center gap-1.5 ml-2 shadow-sm"
+                >
+                  <RefreshCw className="h-4 w-4 animate-spin-hover" /> Recalculate Balance
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteWalletModal(true)}
+                  className="bg-rose-600 hover:bg-rose-700 text-white px-3.5 py-2 rounded-lg text-sm font-semibold transition-all duration-200 flex items-center gap-1.5 ml-2"
+                >
+                  <Trash2 className="h-4 w-4" /> Delete Wallet
+                </button>
+              </>
             )}
           </div>
           {["admin", "super_admin"].includes(role) && (

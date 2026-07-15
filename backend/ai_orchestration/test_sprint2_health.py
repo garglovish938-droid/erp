@@ -66,13 +66,13 @@ def test_orchestrator_retries_on_connection_failure(monkeypatch):
 
         orchestrator = AIOrchestrator(db, user_role="admin", user_name="Retry Operator")
         
-        # Execute query. The orchestrator will try calling Langflow 3 times, fail,
+        # Execute query. The orchestrator will try calling Langflow, fail,
         # and then fallback to local resolver.
         res = orchestrator.execute("Check stock levels")
         
         # Check that it falls back successfully to local inventory resolution
         assert res["status"] == "success"
-        assert post_call_count == 3  # Confirm 3 retry attempts occurred
+        assert post_call_count == 1  # Confirm 1 attempt occurred (latency optimized)
 
     finally:
         db.close()

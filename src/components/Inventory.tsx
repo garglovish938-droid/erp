@@ -24,6 +24,15 @@ export default function Inventory({ token, role }: { token: string; role: string
   const [customFields, setCustomFields] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setSearch(searchInput);
+    }, 200);
+    return () => clearTimeout(handler);
+  }, [searchInput]);
+
   const [selectedCat, setSelectedCat] = useState("All");
   const [statusFilter, setStatusFilter] = useState("active");
 
@@ -730,8 +739,8 @@ export default function Inventory({ token, role }: { token: string; role: string
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
           <input
             type="text"
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setCurrentPage(1); }}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
             className="pl-9 pr-3 py-2 w-full text-sm border dark:border-slate-800 rounded-xl focus:outline-none dark:bg-slate-900"
             placeholder="Search material description name, brand spec or SKU barcode..."
           />
@@ -763,12 +772,32 @@ export default function Inventory({ token, role }: { token: string; role: string
             </thead>
             <tbody>
               {loading ? (
-                <tr>
-                  <td colSpan={7} className="p-12 text-center text-slate-400">
-                    <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2 text-indigo-500" />
-                    Loading master stock items database...
-                  </td>
-                </tr>
+                Array.from({ length: 5 }).map((_, idx) => (
+                  <tr key={idx} className="border-b dark:border-slate-800 skeleton-pulse">
+                    <td className="p-5 text-center">
+                      <div className="w-4 h-4 bg-slate-200 dark:bg-slate-800 rounded mx-auto" />
+                    </td>
+                    <td className="p-5">
+                      <div className="w-48 h-4 bg-slate-200 dark:bg-slate-800 rounded mb-2" />
+                      <div className="w-28 h-3 bg-slate-100/60 dark:bg-slate-800/40 rounded" />
+                    </td>
+                    <td className="p-5">
+                      <div className="w-24 h-4 bg-slate-200 dark:bg-slate-800 rounded" />
+                    </td>
+                    <td className="p-5">
+                      <div className="w-16 h-3.5 bg-slate-150/40 dark:bg-slate-800/40 rounded" />
+                    </td>
+                    <td className="p-5">
+                      <div className="w-14 h-4 bg-slate-200 dark:bg-slate-800 rounded" />
+                    </td>
+                    <td className="p-5">
+                      <div className="w-16 h-4 bg-slate-200 dark:bg-slate-800 rounded" />
+                    </td>
+                    <td className="p-5 text-right">
+                      <div className="w-24 h-6 bg-slate-200 dark:bg-slate-800 rounded ml-auto" />
+                    </td>
+                  </tr>
+                ))
               ) : paginatedItems.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="p-12 text-center text-slate-400">
