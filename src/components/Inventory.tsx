@@ -476,6 +476,36 @@ export default function Inventory({ token, role }: { token: string; role: string
     }
   };
 
+  const handleSelectReceiveBarcode = async (barcode: string) => {
+    setSelectedReceiveBarcode(barcode);
+    if (!barcode) return;
+    try {
+      const res = await apiRequest(`/api/inventory/lookup/${barcode}`);
+      if (res && res.item) {
+        setMovementCost(res.item.unit_cost || 0);
+        setMovementWarehouse(res.item.rack || "");
+        if (res.item.supplier_id) setMovementSupplierId(res.item.supplier_id);
+        setMovementPrice(res.item.price || 0);
+        setMovementMRP(res.item.mrp || 0);
+        setMovementSellingCost(res.item.selling_cost || 0);
+        setMovementBatchNumber(res.item.batch || "");
+        if (res.item.expiry) setMovementExpiry(res.item.expiry);
+      }
+    } catch (e) {
+      const matched = items.find(it => it.barcode === barcode);
+      if (matched) {
+        setMovementCost(matched.unit_cost || 0);
+        setMovementWarehouse(matched.rack || "");
+        if (matched.supplier_id) setMovementSupplierId(matched.supplier_id);
+        setMovementPrice(matched.price || 0);
+        setMovementMRP(matched.mrp || 0);
+        setMovementSellingCost(matched.selling_cost || 0);
+        setMovementBatchNumber(matched.batch || "");
+        if (matched.expiry) setMovementExpiry(matched.expiry);
+      }
+    }
+  };
+
   const handleManualReceiveSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitError("");
@@ -1475,7 +1505,16 @@ export default function Inventory({ token, role }: { token: string; role: string
                             setScanResult(res);
                             setShowNewReceiveForm(false);
                             showToast("Material context loaded", "success");
-                            if (res.item?.supplier_id) setMovementSupplierId(res.item.supplier_id);
+                            if (res.item) {
+                              setMovementCost(res.item.unit_cost || 0);
+                              setMovementWarehouse(res.item.rack || "");
+                              if (res.item.supplier_id) setMovementSupplierId(res.item.supplier_id);
+                              setMovementPrice(res.item.price || 0);
+                              setMovementMRP(res.item.mrp || 0);
+                              setMovementSellingCost(res.item.selling_cost || 0);
+                              setMovementBatchNumber(res.item.batch || "");
+                              if (res.item.expiry) setMovementExpiry(res.item.expiry);
+                            }
                           } catch (err: any) {
                             setSubmitError(err.message || "Failed to load material context");
                           }
@@ -2019,7 +2058,7 @@ export default function Inventory({ token, role }: { token: string; role: string
                     <select
                       required
                       value={selectedReceiveBarcode}
-                      onChange={(e) => setSelectedReceiveBarcode(e.target.value)}
+                      onChange={(e) => handleSelectReceiveBarcode(e.target.value)}
                       className="w-full p-3 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl"
                     >
                       <option value="">-- Choose Material --</option>
