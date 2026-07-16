@@ -1550,6 +1550,10 @@ def receive_inventory_item(
         batch_number=payload.batch_number,
         barcode=payload.barcode,
         receiving_date=payload.receiving_date or date.today(),
+        expiry=payload.expiry,
+        mrp=payload.mrp or 0.0,
+        price=payload.price or 0.0,
+        selling_cost=payload.selling_cost or 0.0,
         created_at=datetime.utcnow()
     )
     db.add(trans)

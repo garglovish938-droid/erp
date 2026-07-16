@@ -212,6 +212,10 @@ class StockTransaction(Base):
     batch_number = Column(String(50), nullable=True)
     barcode = Column(String(50), nullable=True)
     receiving_date = Column(Date, nullable=True)
+    expiry = Column(Date, nullable=True)
+    mrp = Column(Float, nullable=True)
+    price = Column(Float, nullable=True)
+    selling_cost = Column(Float, nullable=True)
 
     # Relationships
     inventory = relationship("InventoryItem", back_populates="stock_transactions")

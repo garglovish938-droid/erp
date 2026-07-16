@@ -76,9 +76,7 @@ export default function Inventory({ token, role }: { token: string; role: string
   const [formData, setFormData] = useState<any>({
     name: "", sku: "", barcode: "", category_id: "", supplier_id: "", 
     brand: "", size_variant: "", quantity: 0, unit: "Sheets", 
-    minimum_stock_level: 5, unit_cost: 0,
-    price: 0, batch: "", location: "", warehouse: "", expiry: "",
-    mrp: 0, purchase_cost: 0, selling_cost: 0
+    minimum_stock_level: 5, unit_cost: 0, rack: ""
   });
   const [formCustomValues, setFormCustomValues] = useState<Record<string, string>>({});
   
@@ -116,6 +114,18 @@ export default function Inventory({ token, role }: { token: string; role: string
   const [movementBatchNumber, setMovementBatchNumber] = useState<string>("");
   const [movementReceivingDate, setMovementReceivingDate] = useState<string>(new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }));
   const [movementSubmitting, setMovementSubmitting] = useState<boolean>(false);
+
+  const [showNewReceiveForm, setShowNewReceiveForm] = useState<boolean>(false);
+  const [newMaterialName, setNewMaterialName] = useState<string>("");
+  const [newMaterialSku, setNewMaterialSku] = useState<string>("");
+  const [newMaterialCategoryId, setNewMaterialCategoryId] = useState<string>("");
+  const [newMaterialBrand, setNewMaterialBrand] = useState<string>("");
+  const [newMaterialSize, setNewMaterialSize] = useState<string>("");
+  const [newMaterialUnit, setNewMaterialUnit] = useState<string>("Sheets");
+  const [movementMRP, setMovementMRP] = useState<number>(0);
+  const [movementPrice, setMovementPrice] = useState<number>(0);
+  const [movementSellingCost, setMovementSellingCost] = useState<number>(0);
+  const [movementExpiry, setMovementExpiry] = useState<string>("");
 
   // Confirmation Modals
   const [showConfirmModal, setShowConfirmModal] = useState(false);
@@ -388,13 +398,78 @@ export default function Inventory({ token, role }: { token: string; role: string
     try {
       const res = await apiRequest(`/api/inventory/lookup/${scanBarcode}`);
       setScanResult(res);
+      setShowNewReceiveForm(false);
       showToast("Barcode resolved successfully", "success");
       
       // Auto-set default IDs if available
       if (res.item?.supplier_id) setMovementSupplierId(res.item.supplier_id);
     } catch (err: any) {
-      setSubmitError(err.message || "Barcode not found");
+      setSubmitError("Barcode not found in catalog. You can register and receive it as a new material below.");
       setScanResult(null);
+      setShowNewReceiveForm(true);
+    }
+  };
+
+  const handleRegisterAndReceiveSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitError("");
+    setMovementSubmitting(true);
+    try {
+      const res = await apiRequest("/api/inventory/receive-log", {
+        method: "POST",
+        body: JSON.stringify({
+          barcode: scanBarcode,
+          name: newMaterialName || undefined,
+          sku: newMaterialSku || undefined,
+          category_id: newMaterialCategoryId || undefined,
+          brand: newMaterialBrand || undefined,
+          size_variant: newMaterialSize || undefined,
+          unit: newMaterialUnit || "Sheets",
+          received_quantity: movementQty,
+          supplier_id: movementSupplierId || undefined,
+          purchase_order_id: movementPOId || undefined,
+          invoice_number: movementInvoiceNumber || undefined,
+          vehicle_number: movementVehicleNumber || undefined,
+          batch_number: movementBatchNumber || undefined,
+          receiving_date: movementReceivingDate || undefined,
+          warehouse: movementWarehouse || undefined,
+          remarks: movementNotes || undefined,
+          unit_cost: movementCost > 0 ? movementCost : undefined,
+          mrp: movementMRP > 0 ? movementMRP : undefined,
+          price: movementPrice > 0 ? movementPrice : undefined,
+          selling_cost: movementSellingCost > 0 ? movementSellingCost : undefined,
+          expiry: movementExpiry || undefined
+        })
+      });
+      showToast(res.message || "New material registered and stock received successfully", "success");
+      setShowScanModal(false);
+      setScanResult(null);
+      setShowNewReceiveForm(false);
+      
+      setNewMaterialName("");
+      setNewMaterialSku("");
+      setNewMaterialCategoryId("");
+      setNewMaterialBrand("");
+      setNewMaterialSize("");
+      setNewMaterialUnit("Sheets");
+      
+      setMovementQty(0);
+      setMovementNotes("");
+      setMovementCost(0);
+      setMovementInvoiceNumber("");
+      setMovementPOId("");
+      setMovementVehicleNumber("");
+      setMovementBatchNumber("");
+      setMovementMRP(0);
+      setMovementPrice(0);
+      setMovementSellingCost(0);
+      setMovementExpiry("");
+      
+      fetchData();
+    } catch (err: any) {
+      setSubmitError(err.message || "Failed to register and receive material");
+    } finally {
+      setMovementSubmitting(false);
     }
   };
 
@@ -419,6 +494,10 @@ export default function Inventory({ token, role }: { token: string; role: string
             warehouse: movementWarehouse || undefined,
             remarks: movementNotes || undefined,
             unit_cost: movementCost > 0 ? movementCost : undefined,
+            mrp: movementMRP > 0 ? movementMRP : undefined,
+            price: movementPrice > 0 ? movementPrice : undefined,
+            selling_cost: movementSellingCost > 0 ? movementSellingCost : undefined,
+            expiry: movementExpiry || undefined,
           })
         });
       } else {
@@ -444,6 +523,10 @@ export default function Inventory({ token, role }: { token: string; role: string
       setMovementPOId("");
       setMovementVehicleNumber("");
       setMovementBatchNumber("");
+      setMovementMRP(0);
+      setMovementPrice(0);
+      setMovementSellingCost(0);
+      setMovementExpiry("");
       fetchData();
       
       // Refresh current lookup values
@@ -462,9 +545,7 @@ export default function Inventory({ token, role }: { token: string; role: string
     setFormData({
       name: "", sku: "", barcode: "", category_id: "", supplier_id: "", 
       brand: "", size_variant: "", quantity: 0, unit: "Sheets", 
-      minimum_stock_level: 5, unit_cost: 0,
-      price: 0, batch: "", location: "", warehouse: "", expiry: "",
-      mrp: 0, purchase_cost: 0, selling_cost: 0
+      minimum_stock_level: 5, unit_cost: 0, rack: ""
     });
     setFormCustomValues({});
     setSubmitError("");
@@ -486,14 +567,7 @@ export default function Inventory({ token, role }: { token: string; role: string
       unit: item.unit,
       minimum_stock_level: item.minimum_stock_level,
       unit_cost: item.unit_cost,
-      price: item.price || 0,
-      batch: item.batch || "",
-      location: item.location || "",
-      warehouse: item.warehouse || "",
-      expiry: item.expiry || "",
-      mrp: item.mrp || 0,
-      purchase_cost: item.purchase_cost || 0,
-      selling_cost: item.selling_cost || 0
+      rack: item.rack || ""
     });
 
     const valMap: Record<string, string> = {};
@@ -515,12 +589,7 @@ export default function Inventory({ token, role }: { token: string; role: string
         ...formData,
         quantity: parseFloat(formData.quantity) || 0,
         unit_cost: parseFloat(formData.unit_cost) || 0,
-        minimum_stock_level: parseFloat(formData.minimum_stock_level) || 0,
-        price: parseFloat(formData.price) || 0,
-        mrp: parseFloat(formData.mrp) || 0,
-        purchase_cost: parseFloat(formData.purchase_cost) || 0,
-        selling_cost: parseFloat(formData.selling_cost) || 0,
-        expiry: formData.expiry || null
+        minimum_stock_level: parseFloat(formData.minimum_stock_level) || 0
       };
 
       let savedItem: any;
@@ -692,7 +761,12 @@ export default function Inventory({ token, role }: { token: string; role: string
             </button>
           )}
           <button
-            onClick={() => setShowScanModal(true)}
+            onClick={() => {
+              setShowScanModal(true);
+              setScanResult(null);
+              setShowNewReceiveForm(false);
+              setScanBarcode("");
+            }}
             className="border dark:border-slate-800 p-2.5 rounded-xl text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
             title="Scan code resolver"
           >
@@ -1120,41 +1194,14 @@ export default function Inventory({ token, role }: { token: string; role: string
                 </div>
               </div>
 
-              <div className="grid grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Purchase Cost (INR)*</label>
-                  <input type="number" step="0.01" required value={formData.purchase_cost || formData.unit_cost} onChange={e=>setFormData({...formData, purchase_cost: parseFloat(e.target.value) || 0, unit_cost: parseFloat(e.target.value) || 0})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Selling Cost (INR)</label>
-                  <input type="number" step="0.01" value={formData.selling_cost} onChange={e=>setFormData({...formData, selling_cost: parseFloat(e.target.value) || 0})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">MRP (INR)</label>
-                  <input type="number" step="0.01" value={formData.mrp} onChange={e=>setFormData({...formData, mrp: parseFloat(e.target.value) || 0})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Price (INR)</label>
-                  <input type="number" step="0.01" value={formData.price} onChange={e=>setFormData({...formData, price: parseFloat(e.target.value) || 0})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-4 gap-2">
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Batch Number</label>
-                  <input type="text" value={formData.batch} onChange={e=>setFormData({...formData, batch: e.target.value})} placeholder="e.g. B-01" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Standard Purchase Unit Cost (INR)*</label>
+                  <input type="number" step="0.01" required value={formData.unit_cost} onChange={e=>setFormData({...formData, unit_cost: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
                 </div>
                 <div>
                   <label className="text-xs font-semibold text-slate-400 block mb-1">Location / Rack</label>
-                  <input type="text" value={formData.location || formData.rack} onChange={e=>setFormData({...formData, location: e.target.value, rack: e.target.value})} placeholder="e.g. Rack A" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Warehouse</label>
-                  <input type="text" value={formData.warehouse} onChange={e=>setFormData({...formData, warehouse: e.target.value})} placeholder="e.g. Main WH" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
-                </div>
-                <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Expiry Date</label>
-                  <input type="date" value={formData.expiry} onChange={e=>setFormData({...formData, expiry: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                  <input type="text" value={formData.rack} onChange={e=>setFormData({...formData, rack: e.target.value})} placeholder="e.g. Rack A-1" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
                 </div>
               </div>
 
@@ -1313,6 +1360,65 @@ export default function Inventory({ token, role }: { token: string; role: string
                 <button type="submit" className="self-end px-5 py-3 bg-slate-900 hover:bg-slate-800 text-white dark:bg-white dark:text-slate-900 dark:hover:bg-slate-100 rounded-xl text-xs font-bold transition-all shadow-md">Lookup</button>
               </div>
             </form>
+
+            {!scanResult && !showNewReceiveForm && (
+              <div className="animate-in fade-in duration-300">
+                <div className="relative my-6">
+                  <div className="absolute inset-0 flex items-center" aria-hidden="true">
+                    <div className="w-full border-t border-slate-200 dark:border-slate-800"></div>
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-white dark:bg-slate-900 px-3 text-slate-400 font-bold">Or Select Manually</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-bold text-slate-400 dark:text-slate-500 block mb-1">Choose Existing Material</label>
+                    <select
+                      value=""
+                      onChange={async (e) => {
+                        const val = e.target.value;
+                        if (val) {
+                          setScanBarcode(val);
+                          setSubmitError("");
+                          try {
+                            const res = await apiRequest(`/api/inventory/lookup/${val}`);
+                            setScanResult(res);
+                            setShowNewReceiveForm(false);
+                            showToast("Material context loaded", "success");
+                            if (res.item?.supplier_id) setMovementSupplierId(res.item.supplier_id);
+                          } catch (err: any) {
+                            setSubmitError(err.message || "Failed to load material context");
+                          }
+                        }
+                      }}
+                      className="w-full p-3 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl focus:ring-2 focus:ring-indigo-500/20"
+                    >
+                      <option value="">-- Select Material specs --</option>
+                      {items.map((it: any) => (
+                        <option key={it.id} value={it.barcode}>{it.name} ({it.sku})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setScanResult(null);
+                        setScanBarcode(`BAR-${Math.floor(100000 + Math.random() * 900000)}`);
+                        setShowNewReceiveForm(true);
+                        setSubmitError("");
+                      }}
+                      className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center gap-1.5"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Register & Receive New Material
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {scanResult && (
               <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in duration-300">
@@ -1531,7 +1637,43 @@ export default function Inventory({ token, role }: { token: string; role: string
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-2">
+                          <div className="grid grid-cols-3 gap-2">
+                            <div>
+                              <label className="font-bold text-slate-500 block mb-1">MRP (INR)</label>
+                              <input
+                                type="number"
+                                step="any"
+                                value={movementMRP || ""}
+                                onChange={(e) => setMovementMRP(parseFloat(e.target.value) || 0)}
+                                placeholder="e.g. 500"
+                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="font-bold text-slate-500 block mb-1">Price (INR)</label>
+                              <input
+                                type="number"
+                                step="any"
+                                value={movementPrice || ""}
+                                onChange={(e) => setMovementPrice(parseFloat(e.target.value) || 0)}
+                                placeholder="e.g. 450"
+                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="font-bold text-slate-500 block mb-1">Selling Cost (INR)</label>
+                              <input
+                                type="number"
+                                step="any"
+                                value={movementSellingCost || ""}
+                                onChange={(e) => setMovementSellingCost(parseFloat(e.target.value) || 0)}
+                                placeholder="e.g. 420"
+                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-2">
                             <div>
                               <label className="font-bold text-slate-500 block mb-1">Receiving Date</label>
                               <input
@@ -1542,7 +1684,16 @@ export default function Inventory({ token, role }: { token: string; role: string
                               />
                             </div>
                             <div>
-                              <label className="font-bold text-slate-500 block mb-1">Warehouse Location (Rack)</label>
+                              <label className="font-bold text-slate-500 block mb-1">Expiry Date</label>
+                              <input
+                                type="date"
+                                value={movementExpiry}
+                                onChange={(e) => setMovementExpiry(e.target.value)}
+                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="font-bold text-slate-500 block mb-1">Warehouse (Rack)</label>
                               <input
                                 type="text"
                                 value={movementWarehouse}
@@ -1594,6 +1745,127 @@ export default function Inventory({ token, role }: { token: string; role: string
                   </form>
                 </div>
               </div>
+            )}
+
+            {showNewReceiveForm && (
+              <form onSubmit={handleRegisterAndReceiveSubmit} className="mt-6 space-y-4 animate-in fade-in duration-300">
+                <div className="bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/50 p-4 rounded-2xl">
+                  <h4 className="font-bold text-indigo-900 dark:text-indigo-400 text-xs uppercase tracking-wider mb-2">1. Material Specifications</h4>
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Material Name*</label>
+                      <input type="text" required value={newMaterialName} onChange={e=>setNewMaterialName(e.target.value)} placeholder="e.g. Laminate Sheet" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">SKU (Auto-Generated if blank)</label>
+                      <input type="text" value={newMaterialSku} onChange={e=>setNewMaterialSku(e.target.value)} placeholder="e.g. LAM-001" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 text-xs mt-3">
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Category*</label>
+                      <select required value={newMaterialCategoryId} onChange={e=>setNewMaterialCategoryId(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm">
+                        <option value="">Select Category</option>
+                        {categories.map(c=>(
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Brand</label>
+                      <input type="text" value={newMaterialBrand} onChange={e=>setNewMaterialBrand(e.target.value)} placeholder="e.g. Merino" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Size / Variant</label>
+                      <input type="text" value={newMaterialSize} onChange={e=>setNewMaterialSize(e.target.value)} placeholder="e.g. 8x4" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/50 p-4 rounded-2xl">
+                  <h4 className="font-bold text-emerald-950 dark:text-emerald-400 text-xs uppercase tracking-wider mb-2">2. Goods Receipt / Receiving Flow</h4>
+                  <div className="grid grid-cols-3 gap-2 text-xs">
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Quantity to Receive*</label>
+                      <input type="number" step="any" required value={movementQty || ""} onChange={e=>setMovementQty(parseFloat(e.target.value) || 0)} placeholder="e.g. 20" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-bold" />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Purchase Cost (INR)*</label>
+                      <input type="number" step="any" required value={movementCost || ""} onChange={e=>setMovementCost(parseFloat(e.target.value) || 0)} placeholder="e.g. 350" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-bold" />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Supplier</label>
+                      <select value={movementSupplierId} onChange={e=>setMovementSupplierId(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm">
+                        <option value="">-- Direct Inward --</option>
+                        {suppliers.map(s=>(
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-xs mt-3">
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Invoice Number</label>
+                      <input type="text" value={movementInvoiceNumber} onChange={e=>setMovementInvoiceNumber(e.target.value)} placeholder="e.g. INV-001" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Purchase Order</label>
+                      <select value={movementPOId} onChange={e=>setMovementPOId(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm">
+                        <option value="">-- Select PO (Optional) --</option>
+                        {purchaseOrders.map(po=>(
+                          <option key={po.id} value={po.id}>{po.po_number || po.id.substring(0,8)}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 text-xs mt-3">
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">MRP (INR)</label>
+                      <input type="number" step="any" value={movementMRP || ""} onChange={e=>setMovementMRP(parseFloat(e.target.value) || 0)} placeholder="e.g. 500" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Price (INR)</label>
+                      <input type="number" step="any" value={movementPrice || ""} onChange={e=>setMovementPrice(parseFloat(e.target.value) || 0)} placeholder="e.g. 450" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Selling Cost (INR)</label>
+                      <input type="number" step="any" value={movementSellingCost || ""} onChange={e=>setMovementSellingCost(parseFloat(e.target.value) || 0)} placeholder="e.g. 420" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-2 text-xs mt-3">
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Vehicle Number</label>
+                      <input type="text" value={movementVehicleNumber} onChange={e=>setMovementVehicleNumber(e.target.value)} placeholder="e.g. MH-12-PQ-1234" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Batch Number</label>
+                      <input type="text" value={movementBatchNumber} onChange={e=>setMovementBatchNumber(e.target.value)} placeholder="e.g. B-01" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Expiry Date</label>
+                      <input type="date" value={movementExpiry} onChange={e=>setMovementExpiry(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Warehouse (Rack)</label>
+                      <input type="text" value={movementWarehouse} onChange={e=>setMovementWarehouse(e.target.value)} placeholder="e.g. Rack A-1" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                  </div>
+
+                  <div className="mt-3">
+                    <label className="font-bold text-slate-500 block mb-1">Remarks / Note</label>
+                    <input type="text" value={movementNotes} onChange={e=>setMovementNotes(e.target.value)} placeholder="e.g. Initial purchase batch receipt" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                  </div>
+                </div>
+
+                <button type="submit" disabled={movementSubmitting || movementQty <= 0 || movementCost <= 0 || !newMaterialName} className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md transition-all flex items-center justify-center gap-1.5 disabled:opacity-50">
+                  {movementSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  Register Specs & Receive Stock Flow
+                </button>
+              </form>
             )}
           </div>
         </div>

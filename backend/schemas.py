@@ -1421,6 +1421,10 @@ class InventoryReceiveRequest(BaseModel):
     brand: Optional[str] = None
     size_variant: Optional[str] = None
     unit: Optional[str] = "Sheets"
+    mrp: Optional[float] = None
+    price: Optional[float] = None
+    selling_cost: Optional[float] = None
+    expiry: Optional[date] = None
 
 
 
