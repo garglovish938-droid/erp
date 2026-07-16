@@ -22,6 +22,7 @@ export default function Inventory({ token, role }: { token: string; role: string
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
   const [customFields, setCustomFields] = useState<any[]>([]);
+  const [purchaseOrders, setPurchaseOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
@@ -75,7 +76,9 @@ export default function Inventory({ token, role }: { token: string; role: string
   const [formData, setFormData] = useState<any>({
     name: "", sku: "", barcode: "", category_id: "", supplier_id: "", 
     brand: "", size_variant: "", quantity: 0, unit: "Sheets", 
-    minimum_stock_level: 5, unit_cost: 0
+    minimum_stock_level: 5, unit_cost: 0,
+    price: 0, batch: "", location: "", warehouse: "", expiry: "",
+    mrp: 0, purchase_cost: 0, selling_cost: 0
   });
   const [formCustomValues, setFormCustomValues] = useState<Record<string, string>>({});
   
@@ -107,6 +110,11 @@ export default function Inventory({ token, role }: { token: string; role: string
   const [movementWarehouse, setMovementWarehouse] = useState<string>("");
   const [movementNotes, setMovementNotes] = useState<string>("");
   const [movementCost, setMovementCost] = useState<number>(0);
+  const [movementInvoiceNumber, setMovementInvoiceNumber] = useState<string>("");
+  const [movementPOId, setMovementPOId] = useState<string>("");
+  const [movementVehicleNumber, setMovementVehicleNumber] = useState<string>("");
+  const [movementBatchNumber, setMovementBatchNumber] = useState<string>("");
+  const [movementReceivingDate, setMovementReceivingDate] = useState<string>(new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }));
   const [movementSubmitting, setMovementSubmitting] = useState<boolean>(false);
 
   // Confirmation Modals
@@ -142,12 +150,13 @@ export default function Inventory({ token, role }: { token: string; role: string
     try {
       setLoading(true);
       const includeDeleted = statusFilter === "archived";
-      const [itemsData, catData, supData, projData, fieldsData] = await Promise.all([
+      const [itemsData, catData, supData, projData, fieldsData, poData] = await Promise.all([
         inventoryService.getInventory(includeDeleted),
         inventoryService.getCategories(),
         supplierService.getSuppliers(),
         apiRequest("/api/projects").catch(() => []),
-        inventoryService.getCustomFields("InventoryItem").catch(() => [])
+        inventoryService.getCustomFields("InventoryItem").catch(() => []),
+        inventoryService.getPurchaseOrders().catch(() => [])
       ]);
 
       setItems(Array.isArray(itemsData) ? itemsData : []);
@@ -155,6 +164,7 @@ export default function Inventory({ token, role }: { token: string; role: string
       setSuppliers(Array.isArray(supData) ? supData : []);
       setProjects(Array.isArray(projData) ? projData : []);
       setCustomFields(Array.isArray(fieldsData) ? fieldsData : []);
+      setPurchaseOrders(Array.isArray(poData) ? poData : []);
     } catch (e: any) {
       console.error(e);
       showToast(e.message || "Error retrieving inventory items list", "error");
@@ -393,23 +403,47 @@ export default function Inventory({ token, role }: { token: string; role: string
     setSubmitError("");
     setMovementSubmitting(true);
     try {
-      const res = await apiRequest("/api/inventory/movement", {
-        method: "POST",
-        body: JSON.stringify({
-          barcode: scanBarcode,
-          transaction_type: movementType,
-          quantity: movementQty,
-          project_id: movementType === "issue" ? movementProjectId : undefined,
-          supplier_id: movementType === "receive" ? movementSupplierId : undefined,
-          warehouse: movementType === "transfer" ? movementWarehouse : undefined,
-          notes: movementNotes || undefined,
-          unit_cost: (movementType === "receive" && movementCost > 0) ? movementCost : undefined,
-        })
-      });
+      let res;
+      if (movementType === "receive") {
+        res = await apiRequest("/api/inventory/receive-log", {
+          method: "POST",
+          body: JSON.stringify({
+            barcode: scanBarcode,
+            received_quantity: movementQty,
+            supplier_id: movementSupplierId || undefined,
+            purchase_order_id: movementPOId || undefined,
+            invoice_number: movementInvoiceNumber || undefined,
+            vehicle_number: movementVehicleNumber || undefined,
+            batch_number: movementBatchNumber || undefined,
+            receiving_date: movementReceivingDate || undefined,
+            warehouse: movementWarehouse || undefined,
+            remarks: movementNotes || undefined,
+            unit_cost: movementCost > 0 ? movementCost : undefined,
+          })
+        });
+      } else {
+        res = await apiRequest("/api/inventory/movement", {
+          method: "POST",
+          body: JSON.stringify({
+            barcode: scanBarcode,
+            transaction_type: movementType,
+            quantity: movementQty,
+            project_id: movementType === "issue" ? movementProjectId : undefined,
+            supplier_id: movementType === "receive" ? movementSupplierId : undefined,
+            warehouse: movementType === "transfer" ? movementWarehouse : undefined,
+            notes: movementNotes || undefined,
+            unit_cost: (movementType === "receive" && movementCost > 0) ? movementCost : undefined,
+          })
+        });
+      }
       showToast(res.message || "Stock movement processed", "success");
       setMovementQty(0);
       setMovementNotes("");
       setMovementCost(0);
+      setMovementInvoiceNumber("");
+      setMovementPOId("");
+      setMovementVehicleNumber("");
+      setMovementBatchNumber("");
       fetchData();
       
       // Refresh current lookup values
@@ -428,7 +462,9 @@ export default function Inventory({ token, role }: { token: string; role: string
     setFormData({
       name: "", sku: "", barcode: "", category_id: "", supplier_id: "", 
       brand: "", size_variant: "", quantity: 0, unit: "Sheets", 
-      minimum_stock_level: 5, unit_cost: 0
+      minimum_stock_level: 5, unit_cost: 0,
+      price: 0, batch: "", location: "", warehouse: "", expiry: "",
+      mrp: 0, purchase_cost: 0, selling_cost: 0
     });
     setFormCustomValues({});
     setSubmitError("");
@@ -449,7 +485,15 @@ export default function Inventory({ token, role }: { token: string; role: string
       quantity: item.quantity,
       unit: item.unit,
       minimum_stock_level: item.minimum_stock_level,
-      unit_cost: item.unit_cost
+      unit_cost: item.unit_cost,
+      price: item.price || 0,
+      batch: item.batch || "",
+      location: item.location || "",
+      warehouse: item.warehouse || "",
+      expiry: item.expiry || "",
+      mrp: item.mrp || 0,
+      purchase_cost: item.purchase_cost || 0,
+      selling_cost: item.selling_cost || 0
     });
 
     const valMap: Record<string, string> = {};
@@ -471,7 +515,12 @@ export default function Inventory({ token, role }: { token: string; role: string
         ...formData,
         quantity: parseFloat(formData.quantity) || 0,
         unit_cost: parseFloat(formData.unit_cost) || 0,
-        minimum_stock_level: parseFloat(formData.minimum_stock_level) || 0
+        minimum_stock_level: parseFloat(formData.minimum_stock_level) || 0,
+        price: parseFloat(formData.price) || 0,
+        mrp: parseFloat(formData.mrp) || 0,
+        purchase_cost: parseFloat(formData.purchase_cost) || 0,
+        selling_cost: parseFloat(formData.selling_cost) || 0,
+        expiry: formData.expiry || null
       };
 
       let savedItem: any;
@@ -1062,8 +1111,8 @@ export default function Inventory({ token, role }: { token: string; role: string
                   <input type="text" value={formData.size_variant} onChange={e=>setFormData({...formData, size_variant: e.target.value})} placeholder="e.g. 8x4, 12mm" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
                 </div>
                 <div>
-                  <label className="text-xs font-semibold text-slate-400 block mb-1">Initial Qty</label>
-                  <input type="number" disabled={editMode} value={formData.quantity} onChange={e=>setFormData({...formData, quantity: parseFloat(e.target.value) || 0})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl disabled:opacity-50" />
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Quantity*</label>
+                  <input type="number" step="any" required value={formData.quantity} onChange={e=>setFormData({...formData, quantity: parseFloat(e.target.value) || 0})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
                 </div>
                 <div>
                   <label className="text-xs font-semibold text-slate-400 block mb-1">Minimum Alert Qty*</label>
@@ -1071,9 +1120,42 @@ export default function Inventory({ token, role }: { token: string; role: string
                 </div>
               </div>
 
-              <div>
-                <label className="text-xs font-semibold text-slate-400 block mb-1">Standard Purchase Unit Cost (INR)*</label>
-                <input type="number" step="0.01" required value={formData.unit_cost} onChange={e=>setFormData({...formData, unit_cost: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+              <div className="grid grid-cols-4 gap-2">
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Purchase Cost (INR)*</label>
+                  <input type="number" step="0.01" required value={formData.purchase_cost || formData.unit_cost} onChange={e=>setFormData({...formData, purchase_cost: parseFloat(e.target.value) || 0, unit_cost: parseFloat(e.target.value) || 0})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Selling Cost (INR)</label>
+                  <input type="number" step="0.01" value={formData.selling_cost} onChange={e=>setFormData({...formData, selling_cost: parseFloat(e.target.value) || 0})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">MRP (INR)</label>
+                  <input type="number" step="0.01" value={formData.mrp} onChange={e=>setFormData({...formData, mrp: parseFloat(e.target.value) || 0})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Price (INR)</label>
+                  <input type="number" step="0.01" value={formData.price} onChange={e=>setFormData({...formData, price: parseFloat(e.target.value) || 0})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-4 gap-2">
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Batch Number</label>
+                  <input type="text" value={formData.batch} onChange={e=>setFormData({...formData, batch: e.target.value})} placeholder="e.g. B-01" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Location / Rack</label>
+                  <input type="text" value={formData.location || formData.rack} onChange={e=>setFormData({...formData, location: e.target.value, rack: e.target.value})} placeholder="e.g. Rack A" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Warehouse</label>
+                  <input type="text" value={formData.warehouse} onChange={e=>setFormData({...formData, warehouse: e.target.value})} placeholder="e.g. Main WH" className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1">Expiry Date</label>
+                  <input type="date" value={formData.expiry} onChange={e=>setFormData({...formData, expiry: e.target.value})} className="w-full p-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl" />
+                </div>
               </div>
 
               {/* Dynamic Custom Fields */}
@@ -1372,30 +1454,103 @@ export default function Inventory({ token, role }: { token: string; role: string
                       )}
 
                       {movementType === "receive" && (
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="font-bold text-slate-500 block mb-1">Unit Cost (INR)</label>
-                            <input
-                              type="number"
-                              step="any"
-                              value={movementCost || ""}
-                              onChange={(e) => setMovementCost(parseFloat(e.target.value))}
-                              placeholder="e.g. 350"
-                              className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
-                            />
+                        <div className="space-y-3">
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="font-bold text-slate-500 block mb-1">Unit Cost (INR)</label>
+                              <input
+                                type="number"
+                                step="any"
+                                value={movementCost || ""}
+                                onChange={(e) => setMovementCost(parseFloat(e.target.value))}
+                                placeholder="e.g. 350"
+                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="font-bold text-slate-500 block mb-1">Supplier</label>
+                              <select
+                                value={movementSupplierId}
+                                onChange={(e) => setMovementSupplierId(e.target.value)}
+                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                              >
+                                <option value="">-- Direct Inward --</option>
+                                {suppliers.map((s: any) => (
+                                  <option key={s.id} value={s.id}>{s.name}</option>
+                                ))}
+                              </select>
+                            </div>
                           </div>
-                          <div>
-                            <label className="font-bold text-slate-500 block mb-1">Supplier</label>
-                            <select
-                              value={movementSupplierId}
-                              onChange={(e) => setMovementSupplierId(e.target.value)}
-                              className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
-                            >
-                              <option value="">-- Direct Inward --</option>
-                              {suppliers.map((s: any) => (
-                                <option key={s.id} value={s.id}>{s.name}</option>
-                              ))}
-                            </select>
+
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="font-bold text-slate-500 block mb-1">Invoice Number</label>
+                              <input
+                                type="text"
+                                value={movementInvoiceNumber}
+                                onChange={(e) => setMovementInvoiceNumber(e.target.value)}
+                                placeholder="e.g. INV-2026-001"
+                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="font-bold text-slate-500 block mb-1">Purchase Order</label>
+                              <select
+                                value={movementPOId}
+                                onChange={(e) => setMovementPOId(e.target.value)}
+                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                              >
+                                <option value="">-- Select PO (Optional) --</option>
+                                {purchaseOrders.map((po: any) => (
+                                  <option key={po.id} value={po.id}>{po.po_number || po.id.substring(0, 8)}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="font-bold text-slate-500 block mb-1">Vehicle Number</label>
+                              <input
+                                type="text"
+                                value={movementVehicleNumber}
+                                onChange={(e) => setMovementVehicleNumber(e.target.value)}
+                                placeholder="e.g. MH-12-PQ-1234"
+                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="font-bold text-slate-500 block mb-1">Batch Number</label>
+                              <input
+                                type="text"
+                                value={movementBatchNumber}
+                                onChange={(e) => setMovementBatchNumber(e.target.value)}
+                                placeholder="e.g. BATCH-A1"
+                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="font-bold text-slate-500 block mb-1">Receiving Date</label>
+                              <input
+                                type="date"
+                                value={movementReceivingDate}
+                                onChange={(e) => setMovementReceivingDate(e.target.value)}
+                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="font-bold text-slate-500 block mb-1">Warehouse Location (Rack)</label>
+                              <input
+                                type="text"
+                                value={movementWarehouse}
+                                onChange={(e) => setMovementWarehouse(e.target.value)}
+                                placeholder="e.g. Rack A-1"
+                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
+                              />
+                            </div>
                           </div>
                         </div>
                       )}

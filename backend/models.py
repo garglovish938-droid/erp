@@ -73,6 +73,14 @@ class InventoryItem(Base):
     unit_cost = Column(Float, default=0.0, nullable=False)
     supplier_id = Column(String(36), ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True)
     rack = Column(String(50), nullable=True)
+    price = Column(Float, default=0.0, nullable=True)
+    batch = Column(String(100), nullable=True)
+    location = Column(String(100), nullable=True)
+    warehouse = Column(String(100), nullable=True)
+    expiry = Column(Date, nullable=True)
+    mrp = Column(Float, default=0.0, nullable=True)
+    purchase_cost = Column(Float, default=0.0, nullable=True)
+    selling_cost = Column(Float, default=0.0, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
@@ -200,6 +208,10 @@ class StockTransaction(Base):
     attachment_url = Column(String(255), nullable=True)
     opening_stock = Column(Float, nullable=True)
     remaining_quantity = Column(Float, nullable=True)
+    vehicle_number = Column(String(50), nullable=True)
+    batch_number = Column(String(50), nullable=True)
+    barcode = Column(String(50), nullable=True)
+    receiving_date = Column(Date, nullable=True)
 
     # Relationships
     inventory = relationship("InventoryItem", back_populates="stock_transactions")

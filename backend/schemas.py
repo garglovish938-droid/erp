@@ -229,6 +229,14 @@ class InventoryItemUpdate(BaseModel):
     unit_cost: Optional[float] = None
     supplier_id: Optional[str] = None
     rack: Optional[str] = None
+    price: Optional[float] = None
+    batch: Optional[str] = None
+    location: Optional[str] = None
+    warehouse: Optional[str] = None
+    expiry: Optional[date] = None
+    mrp: Optional[float] = None
+    purchase_cost: Optional[float] = None
+    selling_cost: Optional[float] = None
 
     @field_validator('category_id', 'supplier_id', mode='before')
     @classmethod
@@ -237,7 +245,7 @@ class InventoryItemUpdate(BaseModel):
             return None
         return v
 
-    @field_validator('quantity', 'minimum_stock_level', 'unit_cost')
+    @field_validator('quantity', 'minimum_stock_level', 'unit_cost', 'price', 'mrp', 'purchase_cost', 'selling_cost')
     @classmethod
     def validate_non_negative(cls, v: Optional[float], info) -> Optional[float]:
         if v is not None and v < 0:
@@ -260,6 +268,14 @@ class InventoryItemResponse(BaseSchema):
     unit_cost: float
     supplier_id: Optional[str]
     rack: Optional[str] = None
+    price: float = 0.0
+    batch: Optional[str] = None
+    location: Optional[str] = None
+    warehouse: Optional[str] = None
+    expiry: Optional[date] = None
+    mrp: float = 0.0
+    purchase_cost: float = 0.0
+    selling_cost: float = 0.0
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -1386,6 +1402,26 @@ class StockMovementRequest(BaseModel):
     warehouse: Optional[str] = None
     notes: Optional[str] = None
     unit_cost: Optional[float] = None
+
+class InventoryReceiveRequest(BaseModel):
+    sku: Optional[str] = None
+    name: Optional[str] = None
+    barcode: str
+    supplier_id: Optional[str] = None
+    invoice_number: Optional[str] = None
+    purchase_order_id: Optional[str] = None
+    receiving_date: Optional[date] = None
+    vehicle_number: Optional[str] = None
+    warehouse: Optional[str] = None
+    received_quantity: float
+    remarks: Optional[str] = None
+    batch_number: Optional[str] = None
+    unit_cost: Optional[float] = None
+    category_id: Optional[str] = None
+    brand: Optional[str] = None
+    size_variant: Optional[str] = None
+    unit: Optional[str] = "Sheets"
+
 
 
 

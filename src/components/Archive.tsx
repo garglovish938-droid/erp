@@ -132,6 +132,8 @@ export default function Archive({ token, role }: ArchiveProps) {
       else if (activeTab === "inventory") backendType = "inventory";
       else if (activeTab === "staff") backendType = "employee";
       else if (activeTab === "clients") backendType = "client";
+      else if (activeTab === "categories") backendType = "category";
+      else if (activeTab === "users") backendType = "user";
 
       await apiRequest("/api/archive/bulk", {
         method: "POST",

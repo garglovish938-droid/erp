@@ -228,7 +228,7 @@ export default function Dashboard({ token, role, name }: { token: string; role: 
 
   const fetchData = async () => {
     try {
-      const todayStr = new Date().toISOString().split("T")[0];
+      const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
       const [statsData, chartsData, notifData, widgetsData, attendanceData, purchasesData, expensesData, requestsData, financialData] = await Promise.all([
         fetchDataFromAPI("/api/dashboard/overview"),
         fetchDataFromAPI("/api/dashboard/charts"),

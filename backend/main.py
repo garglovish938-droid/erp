@@ -1476,6 +1476,100 @@ def lookup_barcode(barcode: str, db: Session = Depends(get_db), current_user: Us
         project_usage=project_usage
     )
 
+@app.post("/api/inventory/receive-log")
+def receive_inventory_item(
+    payload: schemas.InventoryReceiveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.require_store_or_higher)
+):
+    """Receive material and increase quantity or create a new one."""
+    import random
+    
+    db_item = None
+    if payload.barcode:
+        db_item = db.query(models.InventoryItem).filter(
+            models.InventoryItem.barcode == payload.barcode,
+            models.InventoryItem.is_deleted == False
+        ).with_for_update().first()
+        
+    if not db_item and payload.sku:
+        db_item = db.query(models.InventoryItem).filter(
+            models.InventoryItem.sku == payload.sku,
+            models.InventoryItem.is_deleted == False
+        ).with_for_update().first()
+
+    previous_qty = 0.0
+    if db_item:
+        previous_qty = db_item.quantity
+        db_item.quantity += payload.received_quantity
+        db_item.available_quantity += payload.received_quantity
+        if payload.unit_cost:
+            db_item.unit_cost = payload.unit_cost
+        if payload.warehouse:
+            db_item.rack = payload.warehouse
+        db.flush()
+    else:
+        if not payload.sku:
+            payload.sku = f"SKU-{random.randint(100000, 999999)}"
+        if not payload.name:
+            payload.name = f"Unnamed Material ({payload.barcode})"
+            
+        db_item = models.InventoryItem(
+            name=payload.name,
+            sku=payload.sku,
+            barcode=payload.barcode,
+            category_id=payload.category_id,
+            supplier_id=payload.supplier_id,
+            brand=payload.brand,
+            size_variant=payload.size_variant,
+            quantity=payload.received_quantity,
+            available_quantity=payload.received_quantity,
+            unit=payload.unit or "Sheets",
+            unit_cost=payload.unit_cost or 0.0,
+            minimum_stock_level=5.0,
+            rack=payload.warehouse or "unspecified",
+            created_at=datetime.utcnow()
+        )
+        db.add(db_item)
+        db.flush()
+
+    trans = models.StockTransaction(
+        inventory_id=db_item.id,
+        transaction_type="receive",
+        quantity=payload.received_quantity,
+        user_id=current_user.id,
+        notes=payload.remarks or f"Received stock of {payload.received_quantity} {db_item.unit}",
+        supplier_id=payload.supplier_id or db_item.supplier_id,
+        purchase_order_id=payload.purchase_order_id,
+        invoice_number=payload.invoice_number,
+        warehouse=payload.warehouse or db_item.rack,
+        unit_cost=payload.unit_cost or db_item.unit_cost or 0.0,
+        opening_stock=previous_qty,
+        remaining_quantity=db_item.quantity,
+        vehicle_number=payload.vehicle_number,
+        batch_number=payload.batch_number,
+        barcode=payload.barcode,
+        receiving_date=payload.receiving_date or date.today(),
+        created_at=datetime.utcnow()
+    )
+    db.add(trans)
+    
+    db.commit()
+    db.refresh(db_item)
+    
+    try:
+        broadcast_sync({"event": "inventory_change"})
+        broadcast_sync({"event": "dashboard_change"})
+    except Exception:
+         pass
+         
+    return {
+        "status": "success",
+        "message": f"Successfully received material. Item quantity updated to {db_item.quantity}.",
+        "item_id": db_item.id,
+        "new_quantity": db_item.quantity
+    }
+
 @app.post("/api/inventory/movement")
 def process_stock_movement(
     payload: schemas.StockMovementRequest,
@@ -7783,6 +7877,10 @@ def bulk_archive_action(
         model_class = MaterialRequest
     elif req.entity_type == "document":
         model_class = Document
+    elif req.entity_type == "category":
+        model_class = Category
+    elif req.entity_type == "user":
+        model_class = User
     else:
         raise HTTPException(status_code=400, detail=f"Invalid entity type: {req.entity_type}")
 
