@@ -126,6 +126,9 @@ export default function Inventory({ token, role }: { token: string; role: string
   const [movementPrice, setMovementPrice] = useState<number>(0);
   const [movementSellingCost, setMovementSellingCost] = useState<number>(0);
   const [movementExpiry, setMovementExpiry] = useState<string>("");
+  const [showReceiveEntryModal, setShowReceiveEntryModal] = useState<boolean>(false);
+  const [receiveTab, setReceiveTab] = useState<"existing" | "new">("existing");
+  const [selectedReceiveBarcode, setSelectedReceiveBarcode] = useState<string>("");
 
   // Confirmation Modals
   const [showConfirmModal, setShowConfirmModal] = useState(false);
@@ -473,6 +476,76 @@ export default function Inventory({ token, role }: { token: string; role: string
     }
   };
 
+  const handleManualReceiveSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitError("");
+    setMovementSubmitting(true);
+    try {
+      const barcodeToUse = receiveTab === "existing" ? selectedReceiveBarcode : scanBarcode;
+      if (!barcodeToUse) {
+        throw new Error("Please select a material or specify a barcode.");
+      }
+
+      const res = await apiRequest("/api/inventory/receive-log", {
+        method: "POST",
+        body: JSON.stringify({
+          barcode: barcodeToUse,
+          name: receiveTab === "new" ? newMaterialName : undefined,
+          sku: receiveTab === "new" ? newMaterialSku || undefined : undefined,
+          category_id: receiveTab === "new" ? newMaterialCategoryId || undefined : undefined,
+          brand: receiveTab === "new" ? newMaterialBrand || undefined : undefined,
+          size_variant: receiveTab === "new" ? newMaterialSize || undefined : undefined,
+          unit: receiveTab === "new" ? newMaterialUnit || "Sheets" : undefined,
+          received_quantity: movementQty,
+          supplier_id: movementSupplierId || undefined,
+          purchase_order_id: movementPOId || undefined,
+          invoice_number: movementInvoiceNumber || undefined,
+          vehicle_number: movementVehicleNumber || undefined,
+          batch_number: movementBatchNumber || undefined,
+          receiving_date: movementReceivingDate || undefined,
+          warehouse: movementWarehouse || undefined,
+          remarks: movementNotes || undefined,
+          unit_cost: movementCost > 0 ? movementCost : undefined,
+          mrp: movementMRP > 0 ? movementMRP : undefined,
+          price: movementPrice > 0 ? movementPrice : undefined,
+          selling_cost: movementSellingCost > 0 ? movementSellingCost : undefined,
+          expiry: movementExpiry || undefined
+        })
+      });
+      showToast(res.message || "Receiving entry saved successfully", "success");
+      setShowReceiveEntryModal(false);
+      
+      // Reset specs
+      setNewMaterialName("");
+      setNewMaterialSku("");
+      setNewMaterialCategoryId("");
+      setNewMaterialBrand("");
+      setNewMaterialSize("");
+      setNewMaterialUnit("Sheets");
+      
+      // Reset receiving inputs
+      setMovementQty(0);
+      setMovementNotes("");
+      setMovementCost(0);
+      setMovementInvoiceNumber("");
+      setMovementPOId("");
+      setMovementVehicleNumber("");
+      setMovementBatchNumber("");
+      setMovementMRP(0);
+      setMovementPrice(0);
+      setMovementSellingCost(0);
+      setMovementExpiry("");
+      setSelectedReceiveBarcode("");
+      setScanBarcode("");
+      
+      fetchData();
+    } catch (err: any) {
+      setSubmitError(err.message || "Failed to log receiving entry");
+    } finally {
+      setMovementSubmitting(false);
+    }
+  };
+
   const handleStockMovementSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitError("");
@@ -752,13 +825,28 @@ export default function Inventory({ token, role }: { token: string; role: string
         </div>
         <div className="flex gap-2">
           {isStoreOrHigher && (
-            <button
-              onClick={handleOpenAdd}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-xs font-bold shadow transition-all duration-200 animate-in fade-in"
-            >
-              <Plus className="h-4 w-4" />
-              Add Material Specs
-            </button>
+            <>
+              <button
+                onClick={handleOpenAdd}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-xs font-bold shadow transition-all duration-200 animate-in fade-in"
+              >
+                <Plus className="h-4 w-4" />
+                Add Material Specs
+              </button>
+              <button
+                onClick={() => {
+                  setShowReceiveEntryModal(true);
+                  setReceiveTab("existing");
+                  setSelectedReceiveBarcode("");
+                  setScanBarcode("");
+                  setSubmitError("");
+                }}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-xs font-bold shadow transition-all duration-200 animate-in fade-in"
+              >
+                <Plus className="h-4 w-4" />
+                Receiving Entry (Inward)
+              </button>
+            </>
           )}
           <button
             onClick={() => {
@@ -1867,6 +1955,212 @@ export default function Inventory({ token, role }: { token: string; role: string
                 </button>
               </form>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* MANUAL GOODS RECEIPT (RECEIVING ENTRY) MODAL */}
+      {showReceiveEntryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-4xl p-6 shadow-2xl my-8">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Plus className="w-5 h-5 text-indigo-500" />
+                  Goods Inward / Receiving Entry Log
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Log inventory receiving logs for existing warehouse stock or register new specifications.</p>
+              </div>
+              <button title="Close" onClick={() => { setShowReceiveEntryModal(false); }} className="text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded-xl"><X className="w-5 h-5" /></button>
+            </div>
+
+            {submitError && <div className="bg-rose-500/10 text-rose-500 p-3 border border-rose-200/20 rounded-xl text-xs mb-4">{submitError}</div>}
+
+            {/* Tabs Selector */}
+            <div className="flex gap-2 p-1 bg-slate-100 dark:bg-slate-950 rounded-xl mb-4 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => {
+                  setReceiveTab("existing");
+                  setSelectedReceiveBarcode("");
+                  setSubmitError("");
+                }}
+                className={`flex-1 py-2 text-center rounded-lg transition-all ${
+                  receiveTab === "existing"
+                    ? "bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm font-bold"
+                    : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-300"
+                }`}
+              >
+                Inward Existing Stock (Old Material)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setReceiveTab("new");
+                  setScanBarcode(`BAR-${Math.floor(100000 + Math.random() * 900000)}`);
+                  setSubmitError("");
+                }}
+                className={`flex-1 py-2 text-center rounded-lg transition-all ${
+                  receiveTab === "new"
+                    ? "bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm font-bold"
+                    : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-300"
+                }`}
+              >
+                Register & Inward New Material
+              </button>
+            </div>
+
+            <form onSubmit={handleManualReceiveSubmit} className="space-y-4">
+              {receiveTab === "existing" ? (
+                <div className="bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/50 p-4 rounded-2xl">
+                  <h4 className="font-bold text-indigo-900 dark:text-indigo-400 text-xs uppercase tracking-wider mb-2">Select Target Stock</h4>
+                  <div className="text-xs">
+                    <label className="font-bold text-slate-500 block mb-1">Choose Catalog Material*</label>
+                    <select
+                      required
+                      value={selectedReceiveBarcode}
+                      onChange={(e) => setSelectedReceiveBarcode(e.target.value)}
+                      className="w-full p-3 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl"
+                    >
+                      <option value="">-- Choose Material --</option>
+                      {items.map((it: any) => (
+                        <option key={it.id} value={it.barcode}>{it.name} ({it.sku})</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/50 p-4 rounded-2xl">
+                  <h4 className="font-bold text-indigo-900 dark:text-indigo-400 text-xs uppercase tracking-wider mb-2">1. Material Specifications</h4>
+                  <div className="grid grid-cols-3 gap-3 text-xs">
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Material Name*</label>
+                      <input type="text" required={receiveTab === "new"} value={newMaterialName} onChange={e=>setNewMaterialName(e.target.value)} placeholder="e.g. Laminate Sheet" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">SKU (Auto-Generated if blank)</label>
+                      <input type="text" value={newMaterialSku} onChange={e=>setNewMaterialSku(e.target.value)} placeholder="e.g. LAM-001" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Barcode Value*</label>
+                      <input type="text" required={receiveTab === "new"} value={scanBarcode} onChange={e=>setScanBarcode(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-mono" />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-2 text-xs mt-3">
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Category*</label>
+                      <select required={receiveTab === "new"} value={newMaterialCategoryId} onChange={e=>setNewMaterialCategoryId(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm">
+                        <option value="">Select</option>
+                        {categories.map(c=>(
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Brand</label>
+                      <input type="text" value={newMaterialBrand} onChange={e=>setNewMaterialBrand(e.target.value)} placeholder="e.g. Merino" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Size / Variant</label>
+                      <input type="text" value={newMaterialSize} onChange={e=>setNewMaterialSize(e.target.value)} placeholder="e.g. 8x4" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-500 block mb-1">Unit</label>
+                      <input type="text" value={newMaterialUnit} onChange={e=>setNewMaterialUnit(e.target.value)} placeholder="e.g. Sheets" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* General receiving fields block */}
+              <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/50 p-4 rounded-2xl">
+                <h4 className="font-bold text-emerald-950 dark:text-emerald-400 text-xs uppercase tracking-wider mb-2">2. Goods Receipt / Inward Log</h4>
+                <div className="grid grid-cols-3 gap-2 text-xs">
+                  <div>
+                    <label className="font-bold text-slate-500 block mb-1">Quantity to Receive*</label>
+                    <input type="number" step="any" required value={movementQty || ""} onChange={e=>setMovementQty(parseFloat(e.target.value) || 0)} placeholder="e.g. 20" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-bold" />
+                  </div>
+                  <div>
+                    <label className="font-bold text-slate-500 block mb-1">Purchase Cost (INR)*</label>
+                    <input type="number" step="any" required value={movementCost || ""} onChange={e=>setMovementCost(parseFloat(e.target.value) || 0)} placeholder="e.g. 350" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-bold" />
+                  </div>
+                  <div>
+                    <label className="font-bold text-slate-500 block mb-1">Supplier</label>
+                    <select value={movementSupplierId} onChange={e=>setMovementSupplierId(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm">
+                      <option value="">-- Direct Inward --</option>
+                      {suppliers.map(s=>(
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs mt-3">
+                  <div>
+                    <label className="font-bold text-slate-500 block mb-1">Invoice Number</label>
+                    <input type="text" value={movementInvoiceNumber} onChange={e=>setMovementInvoiceNumber(e.target.value)} placeholder="e.g. INV-001" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                  </div>
+                  <div>
+                    <label className="font-bold text-slate-500 block mb-1">Purchase Order</label>
+                    <select value={movementPOId} onChange={e=>setMovementPOId(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm">
+                      <option value="">-- Select PO (Optional) --</option>
+                      {purchaseOrders.map(po=>(
+                        <option key={po.id} value={po.id}>{po.po_number || po.id.substring(0,8)}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 text-xs mt-3">
+                  <div>
+                    <label className="font-bold text-slate-500 block mb-1">MRP (INR)</label>
+                    <input type="number" step="any" value={movementMRP || ""} onChange={e=>setMovementMRP(parseFloat(e.target.value) || 0)} placeholder="e.g. 500" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                  </div>
+                  <div>
+                    <label className="font-bold text-slate-500 block mb-1">Price (INR)</label>
+                    <input type="number" step="any" value={movementPrice || ""} onChange={e=>setMovementPrice(parseFloat(e.target.value) || 0)} placeholder="e.g. 450" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                  </div>
+                  <div>
+                    <label className="font-bold text-slate-500 block mb-1">Selling Cost (INR)</label>
+                    <input type="number" step="any" value={movementSellingCost || ""} onChange={e=>setMovementSellingCost(parseFloat(e.target.value) || 0)} placeholder="e.g. 420" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-4 gap-2 text-xs mt-3">
+                  <div>
+                    <label className="font-bold text-slate-500 block mb-1">Vehicle Number</label>
+                    <input type="text" value={movementVehicleNumber} onChange={e=>setMovementVehicleNumber(e.target.value)} placeholder="e.g. MH-12-PQ-1234" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                  </div>
+                  <div>
+                    <label className="font-bold text-slate-500 block mb-1">Batch Number</label>
+                    <input type="text" value={movementBatchNumber} onChange={e=>setMovementBatchNumber(e.target.value)} placeholder="e.g. B-01" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                  </div>
+                  <div>
+                    <label className="font-bold text-slate-500 block mb-1">Expiry Date</label>
+                    <input type="date" value={movementExpiry} onChange={e=>setMovementExpiry(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                  </div>
+                  <div>
+                    <label className="font-bold text-slate-500 block mb-1">Warehouse (Rack)</label>
+                    <input type="text" value={movementWarehouse} onChange={e=>setMovementWarehouse(e.target.value)} placeholder="e.g. Rack A-1" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                  </div>
+                </div>
+
+                <div className="mt-3">
+                  <label className="font-bold text-slate-500 block mb-1">Remarks / Note</label>
+                  <input type="text" value={movementNotes} onChange={e=>setMovementNotes(e.target.value)} placeholder="e.g. Initial purchase batch receipt" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={movementSubmitting || movementQty <= 0 || movementCost <= 0 || (receiveTab === "existing" && !selectedReceiveBarcode) || (receiveTab === "new" && !newMaterialName)}
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                {movementSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Log Inward Receiving Entry
+              </button>
+            </form>
           </div>
         </div>
       )}
