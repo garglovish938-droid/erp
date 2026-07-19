@@ -1764,41 +1764,7 @@ export default function Inventory({ token, role }: { token: string; role: string
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-3 gap-2">
-                            <div>
-                              <label className="font-bold text-slate-500 block mb-1">MRP (INR)</label>
-                              <input
-                                type="number"
-                                step="any"
-                                value={movementMRP || ""}
-                                onChange={(e) => setMovementMRP(parseFloat(e.target.value) || 0)}
-                                placeholder="e.g. 500"
-                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
-                              />
-                            </div>
-                            <div>
-                              <label className="font-bold text-slate-500 block mb-1">Price (INR)</label>
-                              <input
-                                type="number"
-                                step="any"
-                                value={movementPrice || ""}
-                                onChange={(e) => setMovementPrice(parseFloat(e.target.value) || 0)}
-                                placeholder="e.g. 450"
-                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
-                              />
-                            </div>
-                            <div>
-                              <label className="font-bold text-slate-500 block mb-1">Selling Cost (INR)</label>
-                              <input
-                                type="number"
-                                step="any"
-                                value={movementSellingCost || ""}
-                                onChange={(e) => setMovementSellingCost(parseFloat(e.target.value) || 0)}
-                                placeholder="e.g. 420"
-                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
-                              />
-                            </div>
-                          </div>
+
 
                           <div className="grid grid-cols-3 gap-2">
                             <div>
@@ -1948,20 +1914,7 @@ export default function Inventory({ token, role }: { token: string; role: string
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2 text-xs mt-3">
-                    <div>
-                      <label className="font-bold text-slate-500 block mb-1">MRP (INR)</label>
-                      <input type="number" step="any" value={movementMRP || ""} onChange={e=>setMovementMRP(parseFloat(e.target.value) || 0)} placeholder="e.g. 500" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
-                    </div>
-                    <div>
-                      <label className="font-bold text-slate-500 block mb-1">Price (INR)</label>
-                      <input type="number" step="any" value={movementPrice || ""} onChange={e=>setMovementPrice(parseFloat(e.target.value) || 0)} placeholder="e.g. 450" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
-                    </div>
-                    <div>
-                      <label className="font-bold text-slate-500 block mb-1">Selling Cost (INR)</label>
-                      <input type="number" step="any" value={movementSellingCost || ""} onChange={e=>setMovementSellingCost(parseFloat(e.target.value) || 0)} placeholder="e.g. 420" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
-                    </div>
-                  </div>
+
 
                   <div className="grid grid-cols-4 gap-2 text-xs mt-3">
                     <div>
@@ -2151,20 +2104,7 @@ export default function Inventory({ token, role }: { token: string; role: string
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-2 text-xs mt-3">
-                  <div>
-                    <label className="font-bold text-slate-500 block mb-1">MRP (INR)</label>
-                    <input type="number" step="any" value={movementMRP || ""} onChange={e=>setMovementMRP(parseFloat(e.target.value) || 0)} placeholder="e.g. 500" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
-                  </div>
-                  <div>
-                    <label className="font-bold text-slate-500 block mb-1">Price (INR)</label>
-                    <input type="number" step="any" value={movementPrice || ""} onChange={e=>setMovementPrice(parseFloat(e.target.value) || 0)} placeholder="e.g. 450" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
-                  </div>
-                  <div>
-                    <label className="font-bold text-slate-500 block mb-1">Selling Cost (INR)</label>
-                    <input type="number" step="any" value={movementSellingCost || ""} onChange={e=>setMovementSellingCost(parseFloat(e.target.value) || 0)} placeholder="e.g. 420" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
-                  </div>
-                </div>
+
 
                 <div className="grid grid-cols-4 gap-2 text-xs mt-3">
                   <div>
