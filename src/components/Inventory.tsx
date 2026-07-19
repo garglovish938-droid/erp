@@ -1688,34 +1688,7 @@ export default function Inventory({ token, role }: { token: string; role: string
 
                       {movementType === "receive" && (
                         <div className="space-y-3">
-                          <div className="grid grid-cols-2 gap-2">
-                            <div>
-                              <label className="font-bold text-slate-500 block mb-1">Unit Cost (INR)</label>
-                              <input
-                                type="number"
-                                step="any"
-                                value={movementCost || ""}
-                                onChange={(e) => setMovementCost(parseFloat(e.target.value))}
-                                placeholder="e.g. 350"
-                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
-                              />
-                            </div>
-                            <div>
-                              <label className="font-bold text-slate-500 block mb-1">Supplier</label>
-                              <select
-                                value={movementSupplierId}
-                                onChange={(e) => setMovementSupplierId(e.target.value)}
-                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
-                              >
-                                <option value="">-- Direct Inward --</option>
-                                {suppliers.map((s: any) => (
-                                  <option key={s.id} value={s.id}>{s.name}</option>
-                                ))}
-                              </select>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2">
+                          <div className="grid grid-cols-3 gap-2">
                             <div>
                               <label className="font-bold text-slate-500 block mb-1">Invoice Number</label>
                               <input
@@ -1727,61 +1700,11 @@ export default function Inventory({ token, role }: { token: string; role: string
                               />
                             </div>
                             <div>
-                              <label className="font-bold text-slate-500 block mb-1">Purchase Order</label>
-                              <select
-                                value={movementPOId}
-                                onChange={(e) => setMovementPOId(e.target.value)}
-                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
-                              >
-                                <option value="">-- Select PO (Optional) --</option>
-                                {purchaseOrders.map((po: any) => (
-                                  <option key={po.id} value={po.id}>{po.po_number || po.id.substring(0, 8)}</option>
-                                ))}
-                              </select>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2">
-                            <div>
-                              <label className="font-bold text-slate-500 block mb-1">Vehicle Number</label>
-                              <input
-                                type="text"
-                                value={movementVehicleNumber}
-                                onChange={(e) => setMovementVehicleNumber(e.target.value)}
-                                placeholder="e.g. MH-12-PQ-1234"
-                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
-                              />
-                            </div>
-                            <div>
-                              <label className="font-bold text-slate-500 block mb-1">Batch Number</label>
-                              <input
-                                type="text"
-                                value={movementBatchNumber}
-                                onChange={(e) => setMovementBatchNumber(e.target.value)}
-                                placeholder="e.g. BATCH-A1"
-                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
-                              />
-                            </div>
-                          </div>
-
-
-
-                          <div className="grid grid-cols-3 gap-2">
-                            <div>
                               <label className="font-bold text-slate-500 block mb-1">Receiving Date</label>
                               <input
                                 type="date"
                                 value={movementReceivingDate}
                                 onChange={(e) => setMovementReceivingDate(e.target.value)}
-                                className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
-                              />
-                            </div>
-                            <div>
-                              <label className="font-bold text-slate-500 block mb-1">Expiry Date</label>
-                              <input
-                                type="date"
-                                value={movementExpiry}
-                                onChange={(e) => setMovementExpiry(e.target.value)}
                                 className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm"
                               />
                             </div>
@@ -1884,50 +1807,8 @@ export default function Inventory({ token, role }: { token: string; role: string
                       <input type="number" step="any" required value={movementQty || ""} onChange={e=>setMovementQty(parseFloat(e.target.value) || 0)} placeholder="e.g. 20" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-bold" />
                     </div>
                     <div>
-                      <label className="font-bold text-slate-500 block mb-1">Purchase Cost (INR)*</label>
-                      <input type="number" step="any" required value={movementCost || ""} onChange={e=>setMovementCost(parseFloat(e.target.value) || 0)} placeholder="e.g. 350" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-bold" />
-                    </div>
-                    <div>
-                      <label className="font-bold text-slate-500 block mb-1">Supplier</label>
-                      <select value={movementSupplierId} onChange={e=>setMovementSupplierId(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm">
-                        <option value="">-- Direct Inward --</option>
-                        {suppliers.map(s=>(
-                          <option key={s.id} value={s.id}>{s.name}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 text-xs mt-3">
-                    <div>
                       <label className="font-bold text-slate-500 block mb-1">Invoice Number</label>
                       <input type="text" value={movementInvoiceNumber} onChange={e=>setMovementInvoiceNumber(e.target.value)} placeholder="e.g. INV-001" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
-                    </div>
-                    <div>
-                      <label className="font-bold text-slate-500 block mb-1">Purchase Order</label>
-                      <select value={movementPOId} onChange={e=>setMovementPOId(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm">
-                        <option value="">-- Select PO (Optional) --</option>
-                        {purchaseOrders.map(po=>(
-                          <option key={po.id} value={po.id}>{po.po_number || po.id.substring(0,8)}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-
-
-                  <div className="grid grid-cols-4 gap-2 text-xs mt-3">
-                    <div>
-                      <label className="font-bold text-slate-500 block mb-1">Vehicle Number</label>
-                      <input type="text" value={movementVehicleNumber} onChange={e=>setMovementVehicleNumber(e.target.value)} placeholder="e.g. MH-12-PQ-1234" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
-                    </div>
-                    <div>
-                      <label className="font-bold text-slate-500 block mb-1">Batch Number</label>
-                      <input type="text" value={movementBatchNumber} onChange={e=>setMovementBatchNumber(e.target.value)} placeholder="e.g. B-01" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
-                    </div>
-                    <div>
-                      <label className="font-bold text-slate-500 block mb-1">Expiry Date</label>
-                      <input type="date" value={movementExpiry} onChange={e=>setMovementExpiry(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
                     </div>
                     <div>
                       <label className="font-bold text-slate-500 block mb-1">Warehouse (Rack)</label>
@@ -1941,7 +1822,7 @@ export default function Inventory({ token, role }: { token: string; role: string
                   </div>
                 </div>
 
-                <button type="submit" disabled={movementSubmitting || movementQty <= 0 || movementCost <= 0 || !newMaterialName} className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md transition-all flex items-center justify-center gap-1.5 disabled:opacity-50">
+                <button type="submit" disabled={movementSubmitting || movementQty <= 0 || !newMaterialName} className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md transition-all flex items-center justify-center gap-1.5 disabled:opacity-50">
                   {movementSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   Register Specs & Receive Stock Flow
                 </button>
@@ -2074,50 +1955,8 @@ export default function Inventory({ token, role }: { token: string; role: string
                     <input type="number" step="any" required value={movementQty || ""} onChange={e=>setMovementQty(parseFloat(e.target.value) || 0)} placeholder="e.g. 20" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-bold" />
                   </div>
                   <div>
-                    <label className="font-bold text-slate-500 block mb-1">Purchase Cost (INR)*</label>
-                    <input type="number" step="any" required value={movementCost || ""} onChange={e=>setMovementCost(parseFloat(e.target.value) || 0)} placeholder="e.g. 350" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-bold" />
-                  </div>
-                  <div>
-                    <label className="font-bold text-slate-500 block mb-1">Supplier</label>
-                    <select value={movementSupplierId} onChange={e=>setMovementSupplierId(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm">
-                      <option value="">-- Direct Inward --</option>
-                      {suppliers.map(s=>(
-                        <option key={s.id} value={s.id}>{s.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 text-xs mt-3">
-                  <div>
                     <label className="font-bold text-slate-500 block mb-1">Invoice Number</label>
                     <input type="text" value={movementInvoiceNumber} onChange={e=>setMovementInvoiceNumber(e.target.value)} placeholder="e.g. INV-001" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
-                  </div>
-                  <div>
-                    <label className="font-bold text-slate-500 block mb-1">Purchase Order</label>
-                    <select value={movementPOId} onChange={e=>setMovementPOId(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm">
-                      <option value="">-- Select PO (Optional) --</option>
-                      {purchaseOrders.map(po=>(
-                        <option key={po.id} value={po.id}>{po.po_number || po.id.substring(0,8)}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-
-
-                <div className="grid grid-cols-4 gap-2 text-xs mt-3">
-                  <div>
-                    <label className="font-bold text-slate-500 block mb-1">Vehicle Number</label>
-                    <input type="text" value={movementVehicleNumber} onChange={e=>setMovementVehicleNumber(e.target.value)} placeholder="e.g. MH-12-PQ-1234" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
-                  </div>
-                  <div>
-                    <label className="font-bold text-slate-500 block mb-1">Batch Number</label>
-                    <input type="text" value={movementBatchNumber} onChange={e=>setMovementBatchNumber(e.target.value)} placeholder="e.g. B-01" className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
-                  </div>
-                  <div>
-                    <label className="font-bold text-slate-500 block mb-1">Expiry Date</label>
-                    <input type="date" value={movementExpiry} onChange={e=>setMovementExpiry(e.target.value)} className="w-full p-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm" />
                   </div>
                   <div>
                     <label className="font-bold text-slate-500 block mb-1">Warehouse (Rack)</label>
@@ -2133,7 +1972,7 @@ export default function Inventory({ token, role }: { token: string; role: string
 
               <button
                 type="submit"
-                disabled={movementSubmitting || movementQty <= 0 || movementCost <= 0 || (receiveTab === "existing" && !selectedReceiveBarcode) || (receiveTab === "new" && !newMaterialName)}
+                disabled={movementSubmitting || movementQty <= 0 || (receiveTab === "existing" && !selectedReceiveBarcode) || (receiveTab === "new" && !newMaterialName)}
                 className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
               >
                 {movementSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
