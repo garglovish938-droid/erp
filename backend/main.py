@@ -1505,8 +1505,20 @@ def receive_inventory_item(
         db_item.available_quantity += payload.received_quantity
         if payload.unit_cost:
             db_item.unit_cost = payload.unit_cost
+            db_item.purchase_cost = payload.unit_cost
         if payload.warehouse:
             db_item.rack = payload.warehouse
+            db_item.warehouse = payload.warehouse
+        if payload.price:
+            db_item.price = payload.price
+        if payload.mrp:
+            db_item.mrp = payload.mrp
+        if payload.selling_cost:
+            db_item.selling_cost = payload.selling_cost
+        if payload.expiry:
+            db_item.expiry = payload.expiry
+        if payload.batch_number:
+            db_item.batch = payload.batch_number
         db.flush()
     else:
         if not payload.sku:
@@ -1526,8 +1538,15 @@ def receive_inventory_item(
             available_quantity=payload.received_quantity,
             unit=payload.unit or "Sheets",
             unit_cost=payload.unit_cost or 0.0,
+            purchase_cost=payload.unit_cost or 0.0,
             minimum_stock_level=5.0,
             rack=payload.warehouse or "unspecified",
+            warehouse=payload.warehouse,
+            price=payload.price or 0.0,
+            mrp=payload.mrp or 0.0,
+            selling_cost=payload.selling_cost or 0.0,
+            expiry=payload.expiry,
+            batch=payload.batch_number,
             created_at=datetime.utcnow()
         )
         db.add(db_item)
