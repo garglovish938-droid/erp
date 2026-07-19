@@ -91,6 +91,79 @@ class AuthRateLimiter:
 auth_limiter = AuthRateLimiter(limit=5, window=60)
 
 
+from ai_orchestration.memory_cache import system_cache
+from functools import wraps
+import inspect as py_inspect
+
+def cache_response(expire_seconds: int = 15):
+    def decorator(func):
+        if py_inspect.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                key_parts = [func.__name__]
+                for arg in args:
+                    if not hasattr(arg, 'execute') and not str(type(arg)).endswith('Session'):
+                        key_parts.append(str(arg))
+                for k, v in sorted(kwargs.items()):
+                    if k not in ['db', 'current_user']:
+                        key_parts.append(f"{k}:{v}")
+                
+                cache_key = f"api_cache:{':'.join(key_parts)}"
+                cached_val = system_cache.get(cache_key)
+                if cached_val:
+                    try:
+                        return json.loads(cached_val)
+                    except Exception:
+                        pass
+                
+                result = await func(*args, **kwargs)
+                try:
+                    if hasattr(result, 'dict'):
+                        serializable = result.dict()
+                    elif hasattr(result, 'model_dump'):
+                        serializable = result.model_dump()
+                    else:
+                        serializable = result
+                    system_cache.set(cache_key, json.dumps(serializable), expire=expire_seconds)
+                except Exception as e:
+                    print(f"[Cache Error] Failed to serialize async for cache: {e}")
+                return result
+            return async_wrapper
+        else:
+            @wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                key_parts = [func.__name__]
+                for arg in args:
+                    if not hasattr(arg, 'execute') and not str(type(arg)).endswith('Session'):
+                        key_parts.append(str(arg))
+                for k, v in sorted(kwargs.items()):
+                    if k not in ['db', 'current_user']:
+                        key_parts.append(f"{k}:{v}")
+                
+                cache_key = f"api_cache:{':'.join(key_parts)}"
+                cached_val = system_cache.get(cache_key)
+                if cached_val:
+                    try:
+                        return json.loads(cached_val)
+                    except Exception:
+                        pass
+                
+                result = func(*args, **kwargs)
+                try:
+                    if hasattr(result, 'dict'):
+                        serializable = result.dict()
+                    elif hasattr(result, 'model_dump'):
+                        serializable = result.model_dump()
+                    else:
+                        serializable = result
+                    system_cache.set(cache_key, json.dumps(serializable), expire=expire_seconds)
+                except Exception as e:
+                    print(f"[Cache Error] Failed to serialize sync for cache: {e}")
+                return result
+            return sync_wrapper
+    return decorator
+
+
 # Initialize FastAPI App
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -4058,30 +4131,46 @@ def get_versions(entity_type: str, entity_id: str, db: Session = Depends(get_db)
 
 # --- REAL-TIME EXEC DASHBOARD ---
 @app.get("/api/dashboard/overview", response_model=schemas.DashboardOverview)
+@cache_response(expire_seconds=15)
 def get_dashboard_overview(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
-    items = db.query(InventoryItem).filter(InventoryItem.is_deleted == False).all()
-    total_val = sum(i.quantity * i.unit_cost for i in items)
-    total_items = len(items)
-    low_stock = sum(1 for i in items if 0 < i.quantity <= i.minimum_stock_level)
-    out_of_stock = sum(1 for i in items if i.quantity == 0)
+    # Database-level sum and count aggregations (O(1)/O(log N) instead of memory-heavy O(N) Python loops)
+    total_val = db.query(func.sum(InventoryItem.quantity * InventoryItem.unit_cost)).filter(InventoryItem.is_deleted == False).scalar() or 0.0
+    total_items = db.query(func.count(InventoryItem.id)).filter(InventoryItem.is_deleted == False).scalar() or 0
+    low_stock = db.query(func.count(InventoryItem.id)).filter(
+        InventoryItem.is_deleted == False,
+        InventoryItem.quantity > 0,
+        InventoryItem.quantity <= InventoryItem.minimum_stock_level
+    ).scalar() or 0
+    out_of_stock = db.query(func.count(InventoryItem.id)).filter(
+        InventoryItem.is_deleted == False,
+        InventoryItem.quantity == 0
+    ).scalar() or 0
     
-    projects = db.query(Project).filter(Project.is_deleted == False).all()
-    active_proj = sum(1 for p in projects if p.status == "active")
-    completed_proj = sum(1 for p in projects if p.status == "completed")
-    delayed_proj = sum(1 for p in projects if p.status == "delayed")
+    active_proj = db.query(func.count(Project.id)).filter(Project.is_deleted == False, Project.status == "active").scalar() or 0
+    completed_proj = db.query(func.count(Project.id)).filter(Project.is_deleted == False, Project.status == "completed").scalar() or 0
+    delayed_proj = db.query(func.count(Project.id)).filter(Project.is_deleted == False, Project.status == "delayed").scalar() or 0
     
-    pos = db.query(PurchaseOrder).filter(PurchaseOrder.is_deleted == False).all()
-    open_pos = sum(1 for po in pos if po.status in ["pending", "approved", "ordered"])
-    pending_deliveries = sum(1 for po in pos if po.status == "delivered")
+    open_pos = db.query(func.count(PurchaseOrder.id)).filter(
+        PurchaseOrder.is_deleted == False,
+        PurchaseOrder.status.in_(["pending", "approved", "ordered"])
+    ).scalar() or 0
+    pending_deliveries = db.query(func.count(PurchaseOrder.id)).filter(
+        PurchaseOrder.is_deleted == False,
+        PurchaseOrder.status == "delivered"
+    ).scalar() or 0
     
     # Staff Presence Today
     today = date.today()
-    attendance_today = db.query(Attendance).join(Staff).filter(
+    present_employees = db.query(func.count(Attendance.id)).join(Staff).filter(
         Attendance.date == today,
-        Staff.is_deleted == False
-    ).all()
-    present_employees = sum(1 for a in attendance_today if a.status == "present")
-    absent_employees = sum(1 for a in attendance_today if a.status == "absent")
+        Staff.is_deleted == False,
+        Attendance.status == "present"
+    ).scalar() or 0
+    absent_employees = db.query(func.count(Attendance.id)).join(Staff).filter(
+        Attendance.date == today,
+        Staff.is_deleted == False,
+        Attendance.status == "absent"
+    ).scalar() or 0
 
     # Expenses Today
     expenses_today = db.query(func.sum(DailyExpense.amount)).filter(
@@ -4108,6 +4197,7 @@ def get_dashboard_overview(db: Session = Depends(get_db), current_user: User = D
     }
 
 @app.get("/api/dashboard/charts")
+@cache_response(expire_seconds=15)
 def get_dashboard_charts(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
     # Weekly stock changes (last 7 days)
     weekly_movement = []
@@ -5696,6 +5786,7 @@ def get_staff_performance(staff_id: str, db: Session = Depends(get_db), current_
 
 # --- VISUALIZATION DASHBOARD ANALYTICS ---
 @app.get("/api/dashboard/visualization")
+@cache_response(expire_seconds=15)
 def get_visualization_stats(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
     # 1. Attendance Trend (last 7 days)
     attendance_trend = []
@@ -5838,6 +5929,7 @@ def get_visualization_stats(db: Session = Depends(get_db), current_user: User = 
 # ============================================================
 
 @app.get("/api/attendance/dashboard")
+@cache_response(expire_seconds=15)
 def get_attendance_dashboard(target_date: Optional[date] = Query(None), db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
     """Attendance dashboard KPIs for today (or a given date)."""
     check_date = target_date or date.today()
@@ -6525,6 +6617,7 @@ def export_purchases(
 
 
 @app.get("/api/purchases/dashboard")
+@cache_response(expire_seconds=15)
 def get_purchase_dashboard(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
     """Purchase Management Dashboard Statistics."""
     today_dt = date.today()
@@ -6807,6 +6900,7 @@ def delete_expense(
 
 
 @app.get("/api/expenses/dashboard")
+@cache_response(expire_seconds=15)
 def get_expenses_dashboard(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
     """Expenses dashboard statistics."""
     today_dt = date.today()
@@ -8534,6 +8628,7 @@ def permanent_delete_payment(
 
 
 @app.get("/api/financials/dashboard-summary")
+@cache_response(expire_seconds=15)
 def get_financials_summary(db: Session = Depends(get_db), current_user: User = Depends(auth.require_any_authenticated)):
     """Fetch financial summary cards overview statistics."""
     return crud.get_financial_dashboard_stats(db)
