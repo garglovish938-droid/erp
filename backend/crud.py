@@ -579,12 +579,61 @@ def get_inventory_item_by_sku(db: Session, sku: str) -> Optional[InventoryItem]:
 def get_inventory_item_by_barcode(db: Session, barcode: str) -> Optional[InventoryItem]:
     return db.query(InventoryItem).filter(InventoryItem.barcode == barcode, InventoryItem.is_deleted == False).first()
 
+def generate_auto_sku(db: Session, category_id: Optional[str], brand: Optional[str]) -> str:
+    from models import Category, InventoryItem
+    import re
+    # 1. Category Code
+    category_code = "GEN"
+    if category_id:
+        cat = db.query(Category).filter(Category.id == category_id).first()
+        if cat and cat.name:
+            clean_cat = re.sub(r'[^a-zA-Z0-9]', '', cat.name).upper()
+            if clean_cat:
+                category_code = clean_cat[:3]
+                
+    # 2. Brand Code
+    brand_code = "AL"
+    if brand:
+        clean_brand = re.sub(r'[^a-zA-Z0-9]', '', brand).upper()
+        if clean_brand:
+            brand_code = clean_brand[:3]
+            
+    # 3. Year
+    year = datetime.now().strftime("%y")
+    
+    # 4. Running Number
+    prefix = f"{brand_code}-{category_code}-{year}-"
+    max_item = db.query(InventoryItem).filter(
+        InventoryItem.sku.like(f"{prefix}%")
+    ).order_by(InventoryItem.sku.desc()).first()
+    
+    next_num = 1
+    if max_item and max_item.sku:
+        try:
+            parts = max_item.sku.split("-")
+            if len(parts) >= 4:
+                last_part = parts[-1]
+                next_num = int(last_part) + 1
+        except Exception:
+            pass
+            
+    running_number_str = f"{next_num:06d}"
+    return f"{prefix}{running_number_str}"
+
 def create_inventory_item(db: Session, item: InventoryItemCreate, user_id: Optional[str] = None) -> InventoryItem:
+    sku = item.sku
+    if not sku:
+        sku = generate_auto_sku(db, item.category_id, item.brand)
+        
+    barcode = item.barcode
+    if not barcode:
+        barcode = sku
+        
     db_item = InventoryItem(
         category_id=item.category_id,
         name=item.name,
-        sku=item.sku,
-        barcode=item.barcode,
+        sku=sku,
+        barcode=barcode,
         brand=item.brand,
         size_variant=item.size_variant,
         quantity=item.quantity,
@@ -592,7 +641,12 @@ def create_inventory_item(db: Session, item: InventoryItemCreate, user_id: Optio
         minimum_stock_level=item.minimum_stock_level,
         unit_cost=item.unit_cost,
         supplier_id=item.supplier_id,
-        rack=item.rack
+        rack=item.rack,
+        shelf=item.shelf,
+        bin=item.bin,
+        safety_stock=item.safety_stock,
+        reorder_level=item.reorder_level,
+        critical_stock=item.critical_stock
     )
     db.add(db_item)
     db.commit()
@@ -600,6 +654,22 @@ def create_inventory_item(db: Session, item: InventoryItemCreate, user_id: Optio
     update_inventory_reserved_and_available(db, db_item.id)
     
     check_item_stock_level(db, db_item)
+    
+    # Store initial batch if quantity > 0
+    if db_item.quantity > 0:
+        from models import BatchMaster
+        batch_no = f"BAT-{db_item.sku}-INIT"
+        db_batch = BatchMaster(
+            inventory_id=db_item.id,
+            batch_number=batch_no,
+            quantity=db_item.quantity,
+            purchase_date=date.today()
+        )
+        db.add(db_batch)
+        db.commit()
+        db_item.batch = batch_no
+        db.commit()
+        
     save_version_snapshot(db, "InventoryItem", db_item.id, item.model_dump(), user_id)
     log_detailed_activity(db, user_id, "Inventory", "create", db_item.id, f"Created inventory item: {db_item.name} ({db_item.sku})")
     try:
@@ -4694,5 +4764,387 @@ def get_supplier_timeline(db: Session, supplier_id: str) -> List[dict]:
         
     timeline.sort(key=lambda x: x["date"], reverse=True)
     return timeline
+
+
+# --- WMS Operations CRUD handlers ---
+def receive_material_wms(db: Session, req: MaterialReceiveRequest, user_id: str, client_info: dict) -> InventoryItem:
+    from models import InventoryItem, BarcodeTransaction, BatchMaster, SerialMaster, PurchaseOrder
+    db_item = db.query(InventoryItem).filter(InventoryItem.barcode == req.barcode, InventoryItem.is_deleted == False).first()
+    if not db_item:
+        raise ValueError(f"No active inventory item found with barcode {req.barcode}")
+        
+    if req.warehouse:
+        db_item.warehouse = req.warehouse
+    if req.rack:
+        db_item.rack = req.rack
+    if req.shelf:
+        db_item.shelf = req.shelf
+    if req.bin:
+        db_item.bin = req.bin
+        
+    db_item.quantity += req.quantity
+    
+    batch_no = req.batch_number
+    if batch_no:
+        db_batch = db.query(BatchMaster).filter(BatchMaster.batch_number == batch_no).first()
+        if not db_batch:
+            db_batch = BatchMaster(
+                inventory_id=db_item.id,
+                batch_number=batch_no,
+                quantity=req.quantity,
+                purchase_date=date.today()
+            )
+            db.add(db_batch)
+        else:
+            db_batch.quantity += req.quantity
+        db_item.batch = batch_no
+        
+    if req.serial_number:
+        from models import SerialMaster
+        db_serial = db.query(SerialMaster).filter(SerialMaster.serial_number == req.serial_number).first()
+        if not db_serial:
+            db_serial = SerialMaster(
+                inventory_id=db_item.id,
+                serial_number=req.serial_number,
+                status="available"
+            )
+            db.add(db_serial)
+            
+    if req.purchase_order_id:
+        po = db.query(PurchaseOrder).filter(PurchaseOrder.id == req.purchase_order_id).first()
+        if po:
+            po.received_quantity = (po.received_quantity or 0.0) + req.quantity
+            po.pending_quantity = max(0.0, po.quantity - po.received_quantity)
+            if po.received_quantity >= po.quantity:
+                po.status = "received"
+            else:
+                po.status = "delivered"
+                
+    db.commit()
+    db.refresh(db_item)
+    update_inventory_reserved_and_available(db, db_item.id)
+    check_item_stock_level(db, db_item)
+    
+    db_tx = BarcodeTransaction(
+        inventory_id=db_item.id,
+        transaction_type="receive",
+        quantity=req.quantity,
+        to_warehouse=db_item.warehouse,
+        to_location=f"{db_item.rack or ''}-{db_item.shelf or ''}-{db_item.bin or ''}",
+        purchase_order_id=req.purchase_order_id,
+        batch_number=req.batch_number,
+        serial_number=req.serial_number,
+        user_id=user_id,
+        ip_address=client_info.get("ip"),
+        device=client_info.get("device"),
+        browser=client_info.get("browser"),
+        notes=req.notes
+    )
+    db.add(db_tx)
+    
+    from models import StockTransaction
+    db_stock_tx = StockTransaction(
+        inventory_id=db_item.id,
+        transaction_type="in",
+        quantity=req.quantity,
+        user_id=user_id,
+        notes=req.notes or f"WMS Inward Scan: Batch {req.batch_number or 'N/A'}",
+        purchase_order_id=req.purchase_order_id,
+        warehouse=db_item.warehouse,
+        batch_number=req.batch_number,
+        barcode=req.barcode
+    )
+    db.add(db_stock_tx)
+    db.commit()
+    
+    log_detailed_activity(db, user_id, "WMS", "receive", db_item.id, f"Scanned inward {req.quantity} units of {db_item.sku}")
+    return db_item
+
+def issue_material_wms(db: Session, req: MaterialIssueRequest, user_id: str, client_info: dict) -> InventoryItem:
+    from models import InventoryItem, BarcodeTransaction, Project, ProjectBOM, SerialMaster
+    db_item = db.query(InventoryItem).filter(InventoryItem.barcode == req.barcode, InventoryItem.is_deleted == False).first()
+    if not db_item:
+        raise ValueError(f"No active inventory item found with barcode {req.barcode}")
+        
+    if db_item.quantity < req.quantity:
+        raise ValueError(f"Insufficient stock for {db_item.sku}. Available: {db_item.quantity}, Requested: {req.quantity}")
+        
+    project = db.query(Project).filter(Project.id == req.project_id, Project.is_deleted == False).first()
+    if not project:
+        raise ValueError(f"No active project found with ID {req.project_id}")
+        
+    db_item.quantity -= req.quantity
+    
+    if req.serial_number:
+        db_serial = db.query(SerialMaster).filter(
+            SerialMaster.inventory_id == db_item.id,
+            SerialMaster.serial_number == req.serial_number
+        ).first()
+        if db_serial:
+            db_serial.status = "issued"
+            db_serial.project_id = req.project_id
+            
+    bom_item = db.query(ProjectBOM).filter(
+        ProjectBOM.project_id == req.project_id,
+        ProjectBOM.inventory_id == db_item.id
+    ).first()
+    if bom_item:
+        bom_item.used_quantity += req.quantity
+        bom_item.consumed_quantity += req.quantity
+        if bom_item.used_quantity >= bom_item.required_quantity:
+            bom_item.status = "fulfilled"
+        else:
+            bom_item.status = "partial"
+            
+    db.commit()
+    db.refresh(db_item)
+    update_inventory_reserved_and_available(db, db_item.id)
+    check_item_stock_level(db, db_item)
+    
+    db_tx = BarcodeTransaction(
+        inventory_id=db_item.id,
+        transaction_type="issue",
+        quantity=req.quantity,
+        from_warehouse=db_item.warehouse,
+        from_location=f"{db_item.rack or ''}-{db_item.shelf or ''}-{db_item.bin or ''}",
+        project_id=req.project_id,
+        serial_number=req.serial_number,
+        user_id=user_id,
+        ip_address=client_info.get("ip"),
+        device=client_info.get("device"),
+        browser=client_info.get("browser"),
+        notes=req.notes
+    )
+    db.add(db_tx)
+    
+    from models import StockTransaction
+    db_stock_tx = StockTransaction(
+        inventory_id=db_item.id,
+        transaction_type="out",
+        quantity=-req.quantity,
+        user_id=user_id,
+        project_id=req.project_id,
+        notes=req.notes or f"WMS Outward Scan for Project: {project.name}",
+        warehouse=db_item.warehouse,
+        barcode=req.barcode
+    )
+    db.add(db_stock_tx)
+    
+    from models import ProjectMaterialHistory
+    db_history = ProjectMaterialHistory(
+        project_id=req.project_id,
+        inventory_id=db_item.id,
+        user_id=user_id,
+        username=client_info.get("username", "System"),
+        action="used",
+        quantity=req.quantity,
+        notes=req.notes or "WMS scan issue",
+        status="approved"
+    )
+    db.add(db_history)
+    db.commit()
+    
+    log_detailed_activity(db, user_id, "WMS", "issue", db_item.id, f"Scanned outward {req.quantity} units of {db_item.sku} to project {project.name}")
+    return db_item
+
+def transfer_material_wms(db: Session, req: StockTransferRequest, user_id: str, client_info: dict) -> InventoryItem:
+    from models import InventoryItem, BarcodeTransaction
+    db_item = db.query(InventoryItem).filter(InventoryItem.barcode == req.barcode, InventoryItem.is_deleted == False).first()
+    if not db_item:
+        raise ValueError(f"No active inventory item found with barcode {req.barcode}")
+        
+    old_warehouse = db_item.warehouse
+    old_location = f"{db_item.rack or ''}-{db_item.shelf or ''}-{db_item.bin or ''}"
+    
+    db_item.warehouse = req.to_warehouse
+    if req.to_rack:
+        db_item.rack = req.to_rack
+    if req.to_shelf:
+        db_item.shelf = req.to_shelf
+    if req.to_bin:
+        db_item.bin = req.to_bin
+        
+    db.commit()
+    db.refresh(db_item)
+    
+    db_tx = BarcodeTransaction(
+        inventory_id=db_item.id,
+        transaction_type="transfer",
+        quantity=req.quantity,
+        from_warehouse=old_warehouse,
+        from_location=old_location,
+        to_warehouse=req.to_warehouse,
+        to_location=f"{req.to_rack or ''}-{req.to_shelf or ''}-{req.to_bin or ''}",
+        user_id=user_id,
+        ip_address=client_info.get("ip"),
+        device=client_info.get("device"),
+        browser=client_info.get("browser"),
+        notes=req.notes
+    )
+    db.add(db_tx)
+    
+    from models import StockTransaction
+    db_stock_tx = StockTransaction(
+        inventory_id=db_item.id,
+        transaction_type="transfer",
+        quantity=req.quantity,
+        user_id=user_id,
+        notes=req.notes or f"WMS stock transfer from {old_warehouse or 'N/A'} to {req.to_warehouse}",
+        warehouse=req.to_warehouse,
+        barcode=req.barcode
+    )
+    db.add(db_stock_tx)
+    db.commit()
+    
+    log_detailed_activity(db, user_id, "WMS", "transfer", db_item.id, f"Scanned transfer of {db_item.sku} to warehouse {req.to_warehouse}")
+    return db_item
+
+def return_material_wms(db: Session, req: ReturnMaterialRequest, user_id: str, client_info: dict) -> InventoryItem:
+    from models import InventoryItem, BarcodeTransaction
+    db_item = db.query(InventoryItem).filter(InventoryItem.barcode == req.barcode, InventoryItem.is_deleted == False).first()
+    if not db_item:
+        raise ValueError(f"No active inventory item found with barcode {req.barcode}")
+        
+    if req.reason.lower() in ["unused", "replacement"]:
+        db_item.quantity += req.quantity
+        
+    db.commit()
+    db.refresh(db_item)
+    update_inventory_reserved_and_available(db, db_item.id)
+    check_item_stock_level(db, db_item)
+    
+    db_tx = BarcodeTransaction(
+        inventory_id=db_item.id,
+        transaction_type="return",
+        quantity=req.quantity,
+        to_warehouse=db_item.warehouse,
+        to_location=f"{db_item.rack or ''}-{db_item.shelf or ''}-{db_item.bin or ''}",
+        project_id=req.project_id,
+        user_id=user_id,
+        ip_address=client_info.get("ip"),
+        device=client_info.get("device"),
+        browser=client_info.get("browser"),
+        notes=f"Return Reason: {req.reason}. Notes: {req.notes or ''}"
+    )
+    db.add(db_tx)
+    
+    from models import StockTransaction
+    tx_type = "damaged" if req.reason.lower() == "damage" else "return"
+    db_stock_tx = StockTransaction(
+        inventory_id=db_item.id,
+        transaction_type=tx_type,
+        quantity=req.quantity if tx_type == "return" else 0.0,
+        user_id=user_id,
+        project_id=req.project_id,
+        notes=f"WMS Return Scan ({req.reason}): {req.notes or ''}",
+        warehouse=db_item.warehouse,
+        barcode=req.barcode
+    )
+    db.add(db_stock_tx)
+    
+    if req.project_id:
+        from models import ProjectMaterialHistory
+        db_history = ProjectMaterialHistory(
+            project_id=req.project_id,
+            inventory_id=db_item.id,
+            user_id=user_id,
+            username=client_info.get("username", "System"),
+            action="returned",
+            quantity=req.quantity,
+            notes=f"Returned unused ({req.reason})",
+            status="approved"
+        )
+        db.add(db_history)
+        
+    db.commit()
+    log_detailed_activity(db, user_id, "WMS", "return", db_item.id, f"Scanned return of {db_item.sku} ({req.reason})")
+    return db_item
+
+def perform_audit_wms(db: Session, req: StockAuditCreate, audited_by: str) -> StockAudit:
+    from models import StockAudit, StockAuditItem, InventoryItem, StockTransaction, BarcodeTransaction
+    db_audit = StockAudit(
+        warehouse=req.warehouse,
+        rack=req.rack,
+        shelf=req.shelf,
+        audited_by=audited_by,
+        status="completed"
+    )
+    db.add(db_audit)
+    db.commit()
+    db.refresh(db_audit)
+    
+    summary = []
+    for item in req.items:
+        diff = item.actual_qty - item.expected_qty
+        db_item = StockAuditItem(
+            audit_id=db_audit.id,
+            inventory_id=item.inventory_id,
+            expected_qty=item.expected_qty,
+            actual_qty=item.actual_qty,
+            difference=diff,
+            notes=item.notes
+        )
+        db.add(db_item)
+        
+        if diff != 0:
+            db_inv = db.query(InventoryItem).filter(InventoryItem.id == item.inventory_id).first()
+            if db_inv:
+                db_inv.quantity = item.actual_qty
+                update_inventory_reserved_and_available(db, db_inv.id)
+                check_item_stock_level(db, db_inv)
+                
+                db_stock_tx = StockTransaction(
+                    inventory_id=db_inv.id,
+                    transaction_type="adjustment",
+                    quantity=diff,
+                    user_id=audited_by,
+                    notes=f"WMS Audit adjustment (expected {item.expected_qty}, actual {item.actual_qty})",
+                    warehouse=req.warehouse,
+                    barcode=db_inv.barcode
+                )
+                db.add(db_stock_tx)
+                
+                db_tx = BarcodeTransaction(
+                    inventory_id=db_inv.id,
+                    transaction_type="adjustment",
+                    quantity=diff,
+                    user_id=audited_by,
+                    notes=f"Stock audit difference: {diff}"
+                )
+                db.add(db_tx)
+                
+                summary.append(f"{db_inv.sku}: Diff {diff}")
+                
+    db_audit.report_summary = "; ".join(summary) or "All item counts matched expected levels."
+    db.commit()
+    db.refresh(db_audit)
+    
+    log_detailed_activity(db, audited_by, "WMS", "audit", db_audit.id, f"Performed stock audit in {req.warehouse}")
+    return db_audit
+
+def dispatch_project_wms(db: Session, req: DispatchLogCreate, user_id: str) -> DispatchLog:
+    from models import DispatchLog, Project
+    project = db.query(Project).filter(Project.id == req.project_id).first()
+    if not project:
+        raise ValueError("No active project found with target ID")
+        
+    project.status = "completed"
+    project.completion_percentage = 100
+    
+    db_dispatch = DispatchLog(
+        project_id=req.project_id,
+        dispatched_by=user_id,
+        recipient_name=req.recipient_name,
+        vehicle_details=req.vehicle_details,
+        tracking_number=req.tracking_number,
+        notes=req.notes,
+        status="dispatched"
+    )
+    db.add(db_dispatch)
+    db.commit()
+    db.refresh(db_dispatch)
+    
+    log_detailed_activity(db, user_id, "WMS", "dispatch", project.id, f"Dispatched finished project: {project.name}")
+    return db_dispatch
 
 

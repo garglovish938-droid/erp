@@ -73,6 +73,11 @@ class InventoryItem(Base):
     unit_cost = Column(Float, default=0.0, nullable=False)
     supplier_id = Column(String(36), ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True)
     rack = Column(String(50), nullable=True)
+    shelf = Column(String(50), nullable=True)
+    bin = Column(String(50), nullable=True)
+    safety_stock = Column(Float, default=5.0, nullable=False)
+    reorder_level = Column(Float, default=10.0, nullable=False)
+    critical_stock = Column(Float, default=2.0, nullable=False)
     price = Column(Float, default=0.0, nullable=True)
     batch = Column(String(100), nullable=True)
     location = Column(String(100), nullable=True)
@@ -838,6 +843,148 @@ class FactoryWalletTransaction(Base):
     user = relationship("User", foreign_keys=[user_id])
     approver = relationship("User", foreign_keys=[approved_by])
     wallet = relationship("FactoryWallet", foreign_keys=[wallet_id])
+
+
+class WarehouseLocation(Base):
+    __tablename__ = "warehouse_locations"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    warehouse = Column(String(100), nullable=False)
+    rack = Column(String(50), nullable=False)
+    shelf = Column(String(50), nullable=False)
+    bin = Column(String(50), nullable=False)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    __table_args__ = (
+        UniqueConstraint("warehouse", "rack", "shelf", "bin", name="uq_warehouse_location"),
+    )
+
+class BatchMaster(Base):
+    __tablename__ = "batch_master"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="CASCADE"), nullable=False, index=True)
+    batch_number = Column(String(100), unique=True, index=True, nullable=False)
+    manufacturing_date = Column(Date, nullable=True)
+    purchase_date = Column(Date, nullable=True)
+    supplier_batch = Column(String(100), nullable=True)
+    quantity = Column(Float, default=0.0, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    inventory = relationship("InventoryItem")
+
+class SerialMaster(Base):
+    __tablename__ = "serial_master"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="CASCADE"), nullable=False, index=True)
+    serial_number = Column(String(100), unique=True, index=True, nullable=False)
+    status = Column(String(20), default="available", nullable=False) # available, issued, dispatched, returned, damaged
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    batch_id = Column(String(36), ForeignKey("batch_master.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    inventory = relationship("InventoryItem")
+    project = relationship("Project")
+    batch = relationship("BatchMaster")
+
+class BarcodeTransaction(Base):
+    __tablename__ = "barcode_transactions"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="CASCADE"), nullable=False, index=True)
+    transaction_type = Column(String(50), nullable=False)  # receive, issue, transfer, dispatch, return, adjustment
+    quantity = Column(Float, nullable=False)
+    
+    # Location fields
+    from_warehouse = Column(String(100), nullable=True)
+    from_location = Column(String(100), nullable=True) # rack-shelf-bin
+    to_warehouse = Column(String(100), nullable=True)
+    to_location = Column(String(100), nullable=True)
+    
+    # Context fields
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
+    purchase_order_id = Column(String(36), ForeignKey("purchase_orders.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    
+    # Batch / Serial reference
+    batch_number = Column(String(100), nullable=True)
+    serial_number = Column(String(100), nullable=True)
+    
+    # Audit trail details
+    ip_address = Column(String(50), nullable=True)
+    device = Column(String(255), nullable=True)
+    browser = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    inventory = relationship("InventoryItem")
+    project = relationship("Project")
+    user = relationship("User")
+    purchase_order = relationship("PurchaseOrder")
+
+class StockAudit(Base):
+    __tablename__ = "stock_audit"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    audit_date = Column(Date, default=date.today, nullable=False)
+    warehouse = Column(String(100), nullable=False)
+    rack = Column(String(50), nullable=True)
+    shelf = Column(String(50), nullable=True)
+    
+    status = Column(String(20), default="pending", nullable=False) # pending, completed
+    audited_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    report_summary = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    auditor = relationship("User")
+    items = relationship("StockAuditItem", back_populates="audit", cascade="all, delete-orphan")
+
+class StockAuditItem(Base):
+    __tablename__ = "stock_audit_items"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    audit_id = Column(String(36), ForeignKey("stock_audit.id", ondelete="CASCADE"), nullable=False, index=True)
+    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="CASCADE"), nullable=False, index=True)
+    expected_qty = Column(Float, nullable=False)
+    actual_qty = Column(Float, nullable=False)
+    difference = Column(Float, nullable=False)
+    notes = Column(Text, nullable=True)
+    scanned_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    audit = relationship("StockAudit", back_populates="items")
+    inventory = relationship("InventoryItem")
+
+class DispatchLog(Base):
+    __tablename__ = "dispatch_log"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    dispatch_date = Column(DateTime, default=datetime.utcnow, nullable=False)
+    dispatched_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    recipient_name = Column(String(100), nullable=True)
+    vehicle_details = Column(String(150), nullable=True)
+    tracking_number = Column(String(100), nullable=True)
+    notes = Column(Text, nullable=True)
+    status = Column(String(20), default="dispatched", nullable=False) # dispatched, delivered
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    project = relationship("Project")
+    dispatcher = relationship("User")
+
+class LabelPrintLog(Base):
+    __tablename__ = "label_print_log"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="CASCADE"), nullable=False, index=True)
+    printed_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    label_type = Column(String(50), nullable=False)  # 50x25, 60x40, A4
+    copies = Column(Integer, default=1, nullable=False)
+    printed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    inventory = relationship("InventoryItem")
+    printer = relationship("User")
 
 
 

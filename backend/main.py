@@ -1147,12 +1147,14 @@ def read_inventory(include_deleted: bool = False, db: Session = Depends(get_db),
 
 @app.post("/api/inventory", response_model=schemas.InventoryItemResponse)
 def create_inventory_item(item_in: schemas.InventoryItemCreate, db: Session = Depends(get_db), current_user: User = Depends(auth.require_store_or_higher)):
-    db_item = crud.get_inventory_item_by_sku(db, item_in.sku)
-    if db_item:
-        raise HTTPException(status_code=400, detail="SKU already exists")
-    db_item_bar = crud.get_inventory_item_by_barcode(db, item_in.barcode)
-    if db_item_bar:
-        raise HTTPException(status_code=400, detail="Barcode already exists")
+    if item_in.sku:
+        db_item = crud.get_inventory_item_by_sku(db, item_in.sku)
+        if db_item:
+            raise HTTPException(status_code=400, detail="SKU already exists")
+    if item_in.barcode:
+        db_item_bar = crud.get_inventory_item_by_barcode(db, item_in.barcode)
+        if db_item_bar:
+            raise HTTPException(status_code=400, detail="Barcode already exists")
     res = crud.create_inventory_item(db=db, item=item_in, user_id=current_user.id)
     from services.event_service import EventService
     EventService.publish(
@@ -1208,6 +1210,393 @@ def restore_inventory_item(item_id: str, db: Session = Depends(get_db), current_
         return {"status": "success", "message": "Item restored"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# --- WMS ENDPOINTS ---
+@app.post("/api/barcode/scan", response_model=schemas.BarcodeLookupResponse)
+def barcode_scan_lookup(
+    req: schemas.BarcodeScanRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_any_authenticated)
+):
+    from sqlalchemy.orm import joinedload
+    from models import InventoryItem, StockTransaction, ProjectBOM, Project, Supplier
+    
+    item = db.query(InventoryItem).options(
+        joinedload(InventoryItem.category),
+        joinedload(InventoryItem.supplier)
+    ).filter(
+        (InventoryItem.barcode == req.barcode) | (InventoryItem.sku == req.barcode),
+        InventoryItem.is_deleted == False
+    ).first()
+    
+    if not item:
+        raise HTTPException(status_code=404, detail="Material not found in inventory")
+        
+    last_purchase = None
+    last_txn = db.query(StockTransaction).filter(
+        StockTransaction.inventory_id == item.id,
+        StockTransaction.transaction_type == "in"
+    ).order_by(StockTransaction.created_at.desc()).first()
+    
+    if last_txn:
+        last_purchase = {
+            "date": last_txn.created_at.strftime("%Y-%m-%d"),
+            "quantity": last_txn.quantity,
+            "po_number": last_txn.grn_number or "N/A"
+        }
+        
+    project_usages = []
+    usages = db.query(ProjectBOM).options(
+        joinedload(ProjectBOM.project)
+    ).filter(
+        ProjectBOM.inventory_id == item.id,
+        ProjectBOM.used_quantity > 0
+    ).all()
+    
+    for usage in usages:
+        project_usages.append({
+            "project_id": usage.project_id,
+            "project_name": usage.project.name if usage.project else "Unknown",
+            "total_used": usage.used_quantity,
+            "total_consumed": usage.consumed_quantity
+        })
+        
+    supplier_details = None
+    if item.supplier:
+        supplier_details = {
+            "name": item.supplier.name,
+            "contact_person": item.supplier.contact_person,
+            "phone": item.supplier.phone,
+            "email": item.supplier.email
+        }
+        
+    return {
+        "item": item,
+        "supplier": supplier_details,
+        "last_purchase": last_purchase,
+        "project_usage": project_usages
+    }
+
+@app.post("/api/wms/receive")
+def wms_receive_material(
+    req: schemas.MaterialReceiveRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_store_or_higher)
+):
+    client_info = {
+        "ip": request.client.host if request.client else "127.0.0.1",
+        "device": request.headers.get("user-agent", "Unknown Device")[:100],
+        "browser": request.headers.get("user-agent", "Unknown Browser")[:255],
+        "username": current_user.full_name
+    }
+    try:
+        item = crud.receive_material_wms(db, req, current_user.id, client_info)
+        broadcast_sync({"event": "inventory_change"})
+        return {"status": "success", "message": f"Successfully received {req.quantity} units of {item.name}", "item": item}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/wms/issue")
+def wms_issue_material(
+    req: schemas.MaterialIssueRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_store_or_higher)
+):
+    client_info = {
+        "ip": request.client.host if request.client else "127.0.0.1",
+        "device": request.headers.get("user-agent", "Unknown Device")[:100],
+        "browser": request.headers.get("user-agent", "Unknown Browser")[:255],
+        "username": current_user.full_name
+    }
+    try:
+        item = crud.issue_material_wms(db, req, current_user.id, client_info)
+        broadcast_sync({"event": "inventory_change"})
+        return {"status": "success", "message": f"Successfully issued {req.quantity} units of {item.name}", "item": item}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/wms/transfer")
+def wms_transfer_material(
+    req: schemas.StockTransferRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_store_or_higher)
+):
+    client_info = {
+        "ip": request.client.host if request.client else "127.0.0.1",
+        "device": request.headers.get("user-agent", "Unknown Device")[:100],
+        "browser": request.headers.get("user-agent", "Unknown Browser")[:255],
+        "username": current_user.full_name
+    }
+    try:
+        item = crud.transfer_material_wms(db, req, current_user.id, client_info)
+        broadcast_sync({"event": "inventory_change"})
+        return {"status": "success", "message": "Relocated item successfully", "item": item}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/wms/return")
+def wms_return_material(
+    req: schemas.ReturnMaterialRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_store_or_higher)
+):
+    client_info = {
+        "ip": request.client.host if request.client else "127.0.0.1",
+        "device": request.headers.get("user-agent", "Unknown Device")[:100],
+        "browser": request.headers.get("user-agent", "Unknown Browser")[:255],
+        "username": current_user.full_name
+    }
+    try:
+        item = crud.return_material_wms(db, req, current_user.id, client_info)
+        broadcast_sync({"event": "inventory_change"})
+        return {"status": "success", "message": f"Returned {req.quantity} units under reason '{req.reason}'", "item": item}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/wms/dispatch")
+def wms_dispatch_project(
+    req: schemas.DispatchLogCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_store_or_higher)
+):
+    try:
+        log = crud.dispatch_project_wms(db, req, current_user.id)
+        broadcast_sync({"event": "inventory_change"})
+        return {"status": "success", "message": "Project dispatch completed successfully", "log": log}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/wms/audit")
+def wms_stock_audit(
+    req: schemas.StockAuditCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_store_or_higher)
+):
+    try:
+        audit = crud.perform_audit_wms(db, req, current_user.id)
+        broadcast_sync({"event": "inventory_change"})
+        return {"status": "success", "message": "Stock audit committed successfully", "audit": audit}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/wms/dashboard")
+def get_wms_dashboard_stats(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_any_authenticated)
+):
+    from models import BarcodeTransaction, InventoryItem, PurchaseOrder, StockAudit
+    from datetime import date, datetime
+    
+    today = date.today()
+    scans_today = db.query(BarcodeTransaction).filter(
+        BarcodeTransaction.created_at >= datetime.combine(today, datetime.min.time())
+    ).count()
+    
+    inwards_today = db.query(BarcodeTransaction).filter(
+        BarcodeTransaction.transaction_type == "receive",
+        BarcodeTransaction.created_at >= datetime.combine(today, datetime.min.time())
+    ).count()
+    
+    outwards_today = db.query(BarcodeTransaction).filter(
+        BarcodeTransaction.transaction_type == "issue",
+        BarcodeTransaction.created_at >= datetime.combine(today, datetime.min.time())
+    ).count()
+    
+    dispatches_today = db.query(BarcodeTransaction).filter(
+        BarcodeTransaction.transaction_type == "dispatch",
+        BarcodeTransaction.created_at >= datetime.combine(today, datetime.min.time())
+    ).count()
+    
+    low_stock = db.query(InventoryItem).filter(
+        InventoryItem.quantity <= InventoryItem.reorder_level,
+        InventoryItem.is_deleted == False
+    ).count()
+    
+    critical_stock = db.query(InventoryItem).filter(
+        InventoryItem.quantity <= InventoryItem.critical_stock,
+        InventoryItem.is_deleted == False
+    ).count()
+    
+    pending_po = db.query(PurchaseOrder).filter(
+        PurchaseOrder.status.in_(["pending", "approved", "ordered"]),
+        PurchaseOrder.is_deleted == False
+    ).count()
+    
+    damaged_returns = db.query(BarcodeTransaction).filter(
+        BarcodeTransaction.transaction_type == "return",
+        BarcodeTransaction.notes.like("%damage%"),
+        BarcodeTransaction.created_at >= datetime.combine(today, datetime.min.time())
+    ).count()
+    
+    return {
+        "scans_today": scans_today,
+        "inwards_today": inwards_today,
+        "outwards_today": outwards_today,
+        "dispatches_today": dispatches_today,
+        "low_stock_count": low_stock,
+        "critical_stock_count": critical_stock,
+        "pending_po_count": pending_po,
+        "damaged_returns_count": damaged_returns
+    }
+
+@app.get("/api/wms/print-label")
+def wms_print_label(
+    inventory_id: str,
+    label_type: str = "50x25",
+    copies: int = 1,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_store_or_higher)
+):
+    import io
+    from fastapi.responses import StreamingResponse
+    from models import InventoryItem, LabelPrintLog
+    
+    db_item = db.query(InventoryItem).filter(InventoryItem.id == inventory_id, InventoryItem.is_deleted == False).first()
+    if not db_item:
+        raise HTTPException(status_code=404, detail="Inventory item not found")
+        
+    log = LabelPrintLog(
+        inventory_id=db_item.id,
+        printed_by=current_user.id,
+        label_type=label_type,
+        copies=copies
+    )
+    db.add(log)
+    db.commit()
+    
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import A4
+    
+    buffer = io.BytesIO()
+    
+    if label_type == "50x25":
+        width = 50 * 2.83465
+        height = 25 * 2.83465
+        p = canvas.Canvas(buffer, pagesize=(width, height))
+        for _ in range(copies):
+            draw_single_label(p, db_item, width, height)
+            p.showPage()
+        p.save()
+    elif label_type == "60x40":
+        width = 60 * 2.83465
+        height = 40 * 2.83465
+        p = canvas.Canvas(buffer, pagesize=(width, height))
+        for _ in range(copies):
+            draw_single_label(p, db_item, width, height)
+            p.showPage()
+        p.save()
+    else:
+        p = canvas.Canvas(buffer, pagesize=A4)
+        a4_w, a4_h = A4
+        margin_x = 20
+        margin_y = 30
+        col_w = (a4_w - 2 * margin_x) / 3
+        row_h = (a4_h - 2 * margin_y) / 8
+        
+        current_copy = 0
+        while current_copy < copies:
+            for row in range(8):
+                for col in range(3):
+                    if current_copy >= copies:
+                        break
+                    x = margin_x + col * col_w
+                    y = a4_h - margin_y - (row + 1) * row_h
+                    p.saveState()
+                    p.translate(x, y)
+                    draw_single_label_a4(p, db_item, col_w, row_h)
+                    p.restoreState()
+                    current_copy += 1
+            if current_copy < copies:
+                p.showPage()
+        p.save()
+        
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=label_{db_item.sku}.pdf"}
+    )
+
+def draw_single_label(p, item, w, h):
+    p.setFont("Helvetica-Bold", 7)
+    p.drawString(5, h - 10, "ALLURE LIVING")
+    
+    p.setFont("Helvetica", 6)
+    name_str = item.name[:25] + ".." if len(item.name) > 25 else item.name
+    p.drawString(5, h - 18, name_str)
+    
+    p.setFont("Helvetica-Bold", 6)
+    p.drawString(5, h - 26, f"SKU: {item.sku}")
+    p.drawString(5, h - 34, f"Loc: R{item.rack or 'X'}-S{item.shelf or 'X'}")
+    
+    from reportlab.graphics.barcode import code128
+    from reportlab.graphics.shapes import Drawing
+    try:
+        bc = code128.Code128(item.barcode, barHeight=12, barWidth=0.6, fontSize=4, humanReadable=True)
+        d = Drawing(bc.width, 15)
+        d.add(bc)
+        d.drawOn(p, 5, 2)
+    except Exception:
+        p.drawString(5, 5, f"BC: {item.barcode}")
+        
+    from reportlab.graphics.barcode.qr import QrCodeWidget
+    try:
+        qr = QrCodeWidget(f"http://allure.erp/material/{item.id}")
+        qr.barBorder = 0
+        qr.boxAnchor = 'ne'
+        qr_size = min(w * 0.3, h * 0.5)
+        qr.width = qr_size
+        qr.height = qr_size
+        d = Drawing(qr_size, qr_size)
+        d.add(qr)
+        d.drawOn(p, w - qr_size - 5, h - qr_size - 5)
+    except Exception:
+        pass
+
+def draw_single_label_a4(p, item, w, h):
+    p.setStrokeColorRGB(0.8, 0.8, 0.8)
+    p.rect(2, 2, w - 4, h - 4)
+    draw_single_label(p, item, w - 4, h - 4)
+
+@app.get("/api/wms/barcode-image")
+def get_barcode_image(text: str):
+    import io
+    from reportlab.graphics.barcode import code128
+    from reportlab.graphics.shapes import Drawing
+    from reportlab.graphics import renderPM
+    from fastapi.responses import StreamingResponse
+    try:
+        bc = code128.Code128(text, barHeight=40, barWidth=1.2, humanReadable=True)
+        d = Drawing(bc.width, 50)
+        d.add(bc)
+        png_data = renderPM.drawToString(d, fmt="PNG")
+        return StreamingResponse(io.BytesIO(png_data), media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to generate barcode: {str(e)}")
+
+@app.get("/api/wms/qr-image")
+def get_qr_image(text: str):
+    import io
+    from reportlab.graphics.barcode.qr import QrCodeWidget
+    from reportlab.graphics.shapes import Drawing
+    from reportlab.graphics import renderPM
+    from fastapi.responses import StreamingResponse
+    try:
+        qr = QrCodeWidget(text)
+        qr.width = 120
+        qr.height = 120
+        qr.barBorder = 0
+        d = Drawing(120, 120)
+        d.add(qr)
+        png_data = renderPM.drawToString(d, fmt="PNG")
+        return StreamingResponse(io.BytesIO(png_data), media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to generate QR code: {str(e)}")
 
 
 @app.get("/api/inventory/{item_id}/receiving-history", response_model=List[schemas.StockTransactionResponse])

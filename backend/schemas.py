@@ -191,8 +191,8 @@ class ClientResponse(BaseSchema):
 class InventoryItemCreate(BaseModel):
     category_id: Optional[str] = None
     name: str
-    sku: str
-    barcode: str
+    sku: Optional[str] = None
+    barcode: Optional[str] = None
     brand: Optional[str] = None
     size_variant: Optional[str] = None
     quantity: float = 0.0
@@ -201,6 +201,11 @@ class InventoryItemCreate(BaseModel):
     unit_cost: float = 0.0
     supplier_id: Optional[str] = None
     rack: Optional[str] = None
+    shelf: Optional[str] = None
+    bin: Optional[str] = None
+    safety_stock: float = 5.0
+    reorder_level: float = 10.0
+    critical_stock: float = 2.0
 
     @field_validator('category_id', 'supplier_id', mode='before')
     @classmethod
@@ -268,6 +273,11 @@ class InventoryItemResponse(BaseSchema):
     unit_cost: float
     supplier_id: Optional[str]
     rack: Optional[str] = None
+    shelf: Optional[str] = None
+    bin: Optional[str] = None
+    safety_stock: float = 5.0
+    reorder_level: float = 10.0
+    critical_stock: float = 2.0
     price: float = 0.0
     batch: Optional[str] = None
     location: Optional[str] = None
@@ -1425,6 +1435,161 @@ class InventoryReceiveRequest(BaseModel):
     price: Optional[float] = None
     selling_cost: Optional[float] = None
     expiry: Optional[date] = None
+
+
+# WMS schemas
+class WarehouseLocationCreate(BaseModel):
+    warehouse: str
+    rack: str
+    shelf: str
+    bin: str
+    description: Optional[str] = None
+
+class WarehouseLocationResponse(BaseModel):
+    id: str
+    warehouse: str
+    rack: str
+    shelf: str
+    bin: str
+    description: Optional[str]
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class BatchCreate(BaseModel):
+    inventory_id: str
+    batch_number: str
+    manufacturing_date: Optional[date] = None
+    purchase_date: Optional[date] = None
+    supplier_batch: Optional[str] = None
+    quantity: float = 0.0
+
+class BatchResponse(BaseModel):
+    id: str
+    inventory_id: str
+    batch_number: str
+    manufacturing_date: Optional[date]
+    purchase_date: Optional[date]
+    supplier_batch: Optional[str]
+    quantity: float
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class SerialCreate(BaseModel):
+    inventory_id: str
+    serial_number: str
+    status: str = "available"
+    project_id: Optional[str] = None
+    batch_id: Optional[str] = None
+
+class SerialResponse(BaseModel):
+    id: str
+    inventory_id: str
+    serial_number: str
+    status: str
+    project_id: Optional[str]
+    batch_id: Optional[str]
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class StockAuditItemCreate(BaseModel):
+    inventory_id: str
+    expected_qty: float
+    actual_qty: float
+    notes: Optional[str] = None
+
+class StockAuditItemResponse(BaseModel):
+    id: str
+    audit_id: str
+    inventory_id: str
+    expected_qty: float
+    actual_qty: float
+    difference: float
+    notes: Optional[str]
+    scanned_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class StockAuditCreate(BaseModel):
+    warehouse: str
+    rack: Optional[str] = None
+    shelf: Optional[str] = None
+    items: List[StockAuditItemCreate]
+
+class StockAuditResponse(BaseModel):
+    id: str
+    audit_date: date
+    warehouse: str
+    rack: Optional[str]
+    shelf: Optional[str]
+    status: str
+    audited_by: Optional[str]
+    report_summary: Optional[str]
+    created_at: datetime
+    items: List[StockAuditItemResponse] = []
+    model_config = ConfigDict(from_attributes=True)
+
+class DispatchLogCreate(BaseModel):
+    project_id: str
+    recipient_name: Optional[str] = None
+    vehicle_details: Optional[str] = None
+    tracking_number: Optional[str] = None
+    notes: Optional[str] = None
+
+class DispatchLogResponse(BaseModel):
+    id: str
+    project_id: str
+    dispatch_date: datetime
+    dispatched_by: Optional[str]
+    recipient_name: Optional[str]
+    vehicle_details: Optional[str]
+    tracking_number: Optional[str]
+    notes: Optional[str]
+    status: str
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class LabelPrintRequest(BaseModel):
+    inventory_id: str
+    label_type: str  # 50x25, 60x40, A4
+    copies: int = 1
+
+class BarcodeScanRequest(BaseModel):
+    barcode: str
+
+class MaterialReceiveRequest(BaseModel):
+    barcode: str
+    quantity: float
+    warehouse: Optional[str] = None
+    rack: Optional[str] = None
+    shelf: Optional[str] = None
+    bin: Optional[str] = None
+    purchase_order_id: Optional[str] = None
+    batch_number: Optional[str] = None
+    serial_number: Optional[str] = None
+    notes: Optional[str] = None
+
+class MaterialIssueRequest(BaseModel):
+    barcode: str
+    project_id: str
+    quantity: float
+    serial_number: Optional[str] = None
+    notes: Optional[str] = None
+
+class StockTransferRequest(BaseModel):
+    barcode: str
+    from_warehouse: Optional[str] = None
+    to_warehouse: str
+    to_rack: Optional[str] = None
+    to_shelf: Optional[str] = None
+    to_bin: Optional[str] = None
+    quantity: float
+    notes: Optional[str] = None
+
+class ReturnMaterialRequest(BaseModel):
+    barcode: str
+    quantity: float
+    reason: str  # Damage, Replacement, Repair, Unused
+    project_id: Optional[str] = None
+    notes: Optional[str] = None
 
 
 
