@@ -4,14 +4,14 @@ const RENDER_BACKEND_URL = "https://factory-erp-backend-cwcb.onrender.com";
 
 const getApiUrl = () => {
   if (typeof window !== 'undefined') {
+    // If running in development environment locally, target localhost:8000
+    if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      return "http://127.0.0.1:8000";
+    }
+
     const envUrl = process.env.NEXT_PUBLIC_API_URL || "";
     if (envUrl) {
       return envUrl;
-    }
-    
-    // If running in development environment on port 3000, target localhost:8000
-    if (window.location.port === "3000") {
-      return "http://127.0.0.1:8000";
     }
     
     // Otherwise, we are behind Nginx gateway, use current origin dynamically
