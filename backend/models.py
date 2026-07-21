@@ -157,6 +157,7 @@ class Project(Base):
     completion_percentage = Column(Integer, default=0, nullable=False)  # NEW: 0-100
     progress_mode = Column(String(20), default="manual", nullable=False)
     department = Column(String(100), nullable=True)
+    barcode = Column(String(50), unique=True, index=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     version_id = Column(Integer, default=1, nullable=False)
     
@@ -985,6 +986,24 @@ class LabelPrintLog(Base):
 
     inventory = relationship("InventoryItem")
     printer = relationship("User")
+
+
+class BarcodeHistory(Base):
+    __tablename__ = "barcode_history"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    barcode = Column(String(50), unique=True, index=True, nullable=False)
+    barcode_type = Column(String(20), nullable=False) # inventory, project
+    inventory_id = Column(String(36), ForeignKey("inventory.id", ondelete="CASCADE"), nullable=True)
+    project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
+    generated_date = Column(DateTime, default=datetime.utcnow, nullable=False)
+    generated_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    print_count = Column(Integer, default=0, nullable=False)
+    status = Column(String(20), default="active", nullable=False) # active, inactive
+
+    inventory = relationship("InventoryItem")
+    project = relationship("Project")
+    creator = relationship("User", foreign_keys=[generated_by])
 
 
 

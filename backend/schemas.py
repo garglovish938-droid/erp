@@ -1592,6 +1592,29 @@ class ReturnMaterialRequest(BaseModel):
     notes: Optional[str] = None
 
 
+class BarcodeHistoryResponse(BaseModel):
+    id: str
+    barcode: str
+    barcode_type: str
+    inventory_id: Optional[str] = None
+    project_id: Optional[str] = None
+    generated_date: datetime
+    generated_by: Optional[str] = None
+    print_count: int
+    status: str
+    entity_name: Optional[str] = None
+    creator_name: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class BarcodeGenerateRequest(BaseModel):
+    entity_type: str  # "inventory" or "project"
+    entity_id: str
+
+
+
 
 
 

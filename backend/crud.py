@@ -625,9 +625,7 @@ def create_inventory_item(db: Session, item: InventoryItemCreate, user_id: Optio
     if not sku:
         sku = generate_auto_sku(db, item.category_id, item.brand)
         
-    barcode = item.barcode
-    if not barcode:
-        barcode = sku
+    barcode = generate_auto_barcode_al(db)
         
     db_item = InventoryItem(
         category_id=item.category_id,
@@ -670,6 +668,17 @@ def create_inventory_item(db: Session, item: InventoryItemCreate, user_id: Optio
         db_item.batch = batch_no
         db.commit()
         
+    from models import BarcodeHistory
+    db_hist = BarcodeHistory(
+        barcode=db_item.barcode,
+        barcode_type="inventory",
+        inventory_id=db_item.id,
+        generated_by=user_id,
+        status="active"
+    )
+    db.add(db_hist)
+    db.commit()
+
     save_version_snapshot(db, "InventoryItem", db_item.id, item.model_dump(), user_id)
     log_detailed_activity(db, user_id, "Inventory", "create", db_item.id, f"Created inventory item: {db_item.name} ({db_item.sku})")
     try:
@@ -862,6 +871,7 @@ def get_project(db: Session, project_id: str) -> Optional[Project]:
     return db.query(Project).filter(Project.id == project_id, Project.is_deleted == False).first()
 
 def create_project(db: Session, project: ProjectCreate, user_id: Optional[str] = None) -> Project:
+    barcode = generate_auto_barcode_prj(db)
     db_project = Project(
         name=project.name,
         client_id=project.client_id,
@@ -870,14 +880,26 @@ def create_project(db: Session, project: ProjectCreate, user_id: Optional[str] =
         start_date=project.start_date,
         end_date=project.end_date,
         budget=project.budget,
-        department=project.department
+        department=project.department,
+        barcode=barcode
     )
     db.add(db_project)
     db.commit()
     db.refresh(db_project)
     
+    from models import BarcodeHistory
+    db_hist = BarcodeHistory(
+        barcode=barcode,
+        barcode_type="project",
+        project_id=db_project.id,
+        generated_by=user_id,
+        status="active"
+    )
+    db.add(db_hist)
+    db.commit()
+    
     save_version_snapshot(db, "Project", db_project.id, project.model_dump(), user_id)
-    log_detailed_activity(db, user_id, "Project", "create", db_project.id, f"Created project: {db_project.name}")
+    log_detailed_activity(db, user_id, "Project", "create", db_project.id, f"Created project: {db_project.name} (Barcode: {barcode})")
     return db_project
  
 def update_project(db: Session, project_id: str, project_in: ProjectUpdate, user_id: Optional[str] = None, ip_address: Optional[str] = None, device: Optional[str] = None) -> Optional[Project]:
@@ -5146,5 +5168,57 @@ def dispatch_project_wms(db: Session, req: DispatchLogCreate, user_id: str) -> D
     
     log_detailed_activity(db, user_id, "WMS", "dispatch", project.id, f"Dispatched finished project: {project.name}")
     return db_dispatch
+
+
+def generate_auto_barcode_al(db: Session) -> str:
+    from models import InventoryItem, BarcodeHistory
+    # Find max barcode starting with AL-
+    max_inv = db.query(InventoryItem).filter(InventoryItem.barcode.like("AL-%")).order_by(InventoryItem.barcode.desc()).first()
+    max_hist = db.query(BarcodeHistory).filter(BarcodeHistory.barcode.like("AL-%")).order_by(BarcodeHistory.barcode.desc()).first()
+    
+    next_num = 1
+    val_inv = 0
+    val_hist = 0
+    
+    if max_inv and max_inv.barcode:
+        try:
+            val_inv = int(max_inv.barcode.split("-")[-1])
+        except Exception:
+            pass
+            
+    if max_hist and max_hist.barcode:
+        try:
+            val_hist = int(max_hist.barcode.split("-")[-1])
+        except Exception:
+            pass
+            
+    next_num = max(val_inv, val_hist) + 1
+    return f"AL-{next_num:06d}"
+
+
+def generate_auto_barcode_prj(db: Session) -> str:
+    from models import Project, BarcodeHistory
+    max_prj = db.query(Project).filter(Project.barcode.like("PRJ-%")).order_by(Project.barcode.desc()).first()
+    max_hist = db.query(BarcodeHistory).filter(BarcodeHistory.barcode.like("PRJ-%")).order_by(BarcodeHistory.barcode.desc()).first()
+    
+    next_num = 1
+    val_prj = 0
+    val_hist = 0
+    
+    if max_prj and max_prj.barcode:
+        try:
+            val_prj = int(max_prj.barcode.split("-")[-1])
+        except Exception:
+            pass
+            
+    if max_hist and max_hist.barcode:
+        try:
+            val_hist = int(max_hist.barcode.split("-")[-1])
+        except Exception:
+            pass
+            
+    next_num = max(val_prj, val_hist) + 1
+    return f"PRJ-{next_num:06d}"
+
 
 

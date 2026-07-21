@@ -20,7 +20,7 @@ import DailyExpenses from "@/components/DailyExpenses";
 import Archive from "@/components/Archive";
 import FactoryFund from "@/components/FactoryFund";
 import ProjectPayments from "@/components/ProjectPayments";
-import WmsHub from "@/components/WmsHub";
+import BarcodeCenter from "@/components/BarcodeCenter";
 
 import { apiRequest } from "@/services/apiClient";
 import { API_BASE_URL } from "@/lib/api";
@@ -333,7 +333,7 @@ export default function Home() {
 
         <main className="flex-1 overflow-y-auto p-4 md:p-8 relative bg-slate-50/50 dark:bg-slate-950/50">
           {activeTab === "dashboard" && <Dashboard token={user.token} role={user.role} name={user.name} />}
-          {activeTab === "wms" && <WmsHub token={user.token} role={user.role} />}
+          {activeTab === "barcode-center" && <BarcodeCenter token={user.token} role={user.role} />}
           {activeTab === "attendance" && <AttendanceDashboard token={user.token} role={user.role} />}
           {activeTab === "inventory" && <Inventory token={user.token} role={user.role} />}
           {activeTab === "projects" && <Projects token={user.token} role={user.role} />}

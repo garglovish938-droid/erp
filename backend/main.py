@@ -1278,6 +1278,194 @@ def barcode_scan_lookup(
         "project_usage": project_usages
     }
 
+
+@app.post("/api/barcode/center/scan")
+def barcode_center_scan(
+    req: schemas.BarcodeLookup,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_any_authenticated)
+):
+    from sqlalchemy.orm import joinedload
+    from models import InventoryItem, StockTransaction, ProjectBOM, Project
+    
+    # 1. Check if inventory item
+    item = db.query(InventoryItem).options(
+        joinedload(InventoryItem.category),
+        joinedload(InventoryItem.supplier)
+    ).filter(
+        (InventoryItem.barcode == req.barcode) | (InventoryItem.sku == req.barcode),
+        InventoryItem.is_deleted == False
+    ).first()
+    
+    if item:
+        last_purchase = None
+        last_txn = db.query(StockTransaction).filter(
+            StockTransaction.inventory_id == item.id,
+            StockTransaction.transaction_type == "in"
+        ).order_by(StockTransaction.created_at.desc()).first()
+        
+        if last_txn:
+            last_purchase = {
+                "date": last_txn.created_at.strftime("%Y-%m-%d"),
+                "quantity": last_txn.quantity,
+                "po_number": last_txn.grn_number or "N/A"
+            }
+            
+        project_usages = []
+        usages = db.query(ProjectBOM).options(
+            joinedload(ProjectBOM.project)
+        ).filter(
+            ProjectBOM.inventory_id == item.id,
+            ProjectBOM.used_quantity > 0
+        ).all()
+        
+        for usage in usages:
+            project_usages.append({
+                "project_id": usage.project_id,
+                "project_name": usage.project.name if usage.project else "Unknown",
+                "total_used": usage.used_quantity,
+                "total_consumed": usage.consumed_quantity
+            })
+            
+        supplier_details = None
+        if item.supplier:
+            supplier_details = {
+                "name": item.supplier.name,
+                "contact_person": item.supplier.contact_person,
+                "phone": item.supplier.phone,
+                "email": item.supplier.email
+            }
+            
+        return {
+            "type": "inventory",
+            "item": item,
+            "supplier": supplier_details,
+            "last_purchase": last_purchase,
+            "project_usage": project_usages
+        }
+
+    # 2. Check if project
+    project = db.query(Project).filter(
+        (Project.barcode == req.barcode) | (Project.id == req.barcode),
+        Project.is_deleted == False
+    ).first()
+    
+    if project:
+        return {
+            "type": "project",
+            "project": project
+        }
+        
+    raise HTTPException(status_code=404, detail="Barcode not registered in inventory or projects")
+
+
+@app.post("/api/barcode/center/generate")
+def barcode_center_generate(
+    req: schemas.BarcodeGenerateRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_store_or_higher)
+):
+    from models import InventoryItem, Project, BarcodeHistory
+    
+    barcode = None
+    if req.entity_type == "inventory":
+        item = db.query(InventoryItem).filter(InventoryItem.id == req.entity_id, InventoryItem.is_deleted == False).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Inventory item not found")
+        if item.barcode and item.barcode.startswith("AL-"):
+            barcode = item.barcode
+        else:
+            barcode = crud.generate_auto_barcode_al(db)
+            item.barcode = barcode
+            db.commit()
+            
+            # Log in history
+            db_hist = BarcodeHistory(
+                barcode=barcode,
+                barcode_type="inventory",
+                inventory_id=item.id,
+                generated_by=current_user.id,
+                status="active"
+            )
+            db.add(db_hist)
+            db.commit()
+            
+    elif req.entity_type == "project":
+        project = db.query(Project).filter(Project.id == req.entity_id, Project.is_deleted == False).first()
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        if project.barcode and project.barcode.startswith("PRJ-"):
+            barcode = project.barcode
+        else:
+            barcode = crud.generate_auto_barcode_prj(db)
+            project.barcode = barcode
+            db.commit()
+            
+            # Log in history
+            db_hist = BarcodeHistory(
+                barcode=barcode,
+                barcode_type="project",
+                project_id=project.id,
+                generated_by=current_user.id,
+                status="active"
+            )
+            db.add(db_hist)
+            db.commit()
+    else:
+        raise HTTPException(status_code=400, detail="Invalid entity type")
+        
+    return {"status": "success", "barcode": barcode}
+
+
+@app.get("/api/barcode/center/history", response_model=List[schemas.BarcodeHistoryResponse])
+def get_barcode_history(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_any_authenticated)
+):
+    from models import BarcodeHistory
+    histories = db.query(BarcodeHistory).order_by(BarcodeHistory.generated_date.desc()).all()
+    
+    result = []
+    for h in histories:
+        entity_name = "N/A"
+        if h.barcode_type == "inventory" and h.inventory:
+            entity_name = h.inventory.name
+        elif h.barcode_type == "project" and h.project:
+            entity_name = h.project.name
+            
+        creator_name = h.creator.full_name if h.creator else "System"
+        
+        result.append({
+            "id": h.id,
+            "barcode": h.barcode,
+            "barcode_type": h.barcode_type,
+            "inventory_id": h.inventory_id,
+            "project_id": h.project_id,
+            "generated_date": h.generated_date,
+            "generated_by": h.generated_by,
+            "print_count": h.print_count,
+            "status": h.status,
+            "entity_name": entity_name,
+            "creator_name": creator_name
+        })
+    return result
+
+
+@app.post("/api/barcode/center/print-log")
+def log_barcode_print(
+    barcode: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_any_authenticated)
+):
+    from models import BarcodeHistory
+    hist = db.query(BarcodeHistory).filter(BarcodeHistory.barcode == barcode).first()
+    if hist:
+        hist.print_count += 1
+        db.commit()
+        return {"status": "success", "print_count": hist.print_count}
+    return {"status": "error", "message": "Barcode not found in history"}
+
+
 @app.post("/api/wms/receive")
 def wms_receive_material(
     req: schemas.MaterialReceiveRequest,

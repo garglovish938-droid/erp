@@ -39,7 +39,7 @@ export default function Sidebar({
 
   const allMenu = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, roles: workerRoles },
-    { id: "wms", label: "WMS Operations", icon: ScanBarcode, roles: [...storeRoles, ...managerRoles] },
+    { id: "barcode-center", label: "Barcode Center", icon: ScanBarcode, roles: [...storeRoles, ...managerRoles, ...accountantRoles] },
     { id: "inventory", label: "Inventory", icon: PackageSearch, roles: [...storeRoles, ...accountantRoles] },
     { id: "requests", label: "Material Request", icon: ArrowLeftRight, roles: [...storeRoles, ...managerRoles, "worker", "operator", "carpenter"] },
     { id: "purchasing", label: "Purchase Management", icon: ShoppingCart, roles: [...storeRoles, ...accountantRoles] },

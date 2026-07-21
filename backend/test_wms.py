@@ -84,7 +84,7 @@ class TestWMS(unittest.TestCase):
         expected_prefix = f"HAF-HIN-{yy}-"
         
         self.assertTrue(item.sku.startswith(expected_prefix))
-        self.assertEqual(item.barcode, item.sku) # standard default
+        self.assertTrue(item.barcode.startswith("AL-")) # new WMS + Barcode Center default
         self.assertTrue(item.sku.endswith("000001"))
         
         # Create second item with same prefix to assert serial increment
