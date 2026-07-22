@@ -34,6 +34,69 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
   const [filterStartDate, setFilterStartDate] = useState("");
   const [filterEndDate, setFilterEndDate] = useState("");
   const [filterStatus, setFilterStatus] = useState(""); // all, approved, pending, rejected
+  const [dateRangeType, setDateRangeType] = useState("all");
+
+  const handleDateRangeChange = (val: string) => {
+    setDateRangeType(val);
+    const today = new Date();
+    
+    const formatDate = (date: Date) => {
+      const yyyy = date.getFullYear();
+      const mm = String(date.getMonth() + 1).padStart(2, '0');
+      const dd = String(date.getDate()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}`;
+    };
+
+    let start = "";
+    let end = "";
+
+    switch (val) {
+      case "today":
+        start = formatDate(today);
+        end = formatDate(today);
+        break;
+      case "yesterday":
+        const yesterday = new Date(today);
+        yesterday.setDate(today.getDate() - 1);
+        start = formatDate(yesterday);
+        end = formatDate(yesterday);
+        break;
+      case "last7":
+        const last7 = new Date(today);
+        last7.setDate(today.getDate() - 6);
+        start = formatDate(last7);
+        end = formatDate(today);
+        break;
+      case "last30":
+        const last30 = new Date(today);
+        last30.setDate(today.getDate() - 29);
+        start = formatDate(last30);
+        end = formatDate(today);
+        break;
+      case "thisMonth":
+        const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+        start = formatDate(startOfMonth);
+        end = formatDate(today);
+        break;
+      case "lastMonth":
+        const startOfLastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        const endOfLastMonth = new Date(today.getFullYear(), today.getMonth(), 0);
+        start = formatDate(startOfLastMonth);
+        end = formatDate(endOfLastMonth);
+        break;
+      case "custom":
+        start = filterStartDate || formatDate(today);
+        end = filterEndDate || formatDate(today);
+        break;
+      default:
+        start = "";
+        end = "";
+        break;
+    }
+
+    setFilterStartDate(start);
+    setFilterEndDate(end);
+  };
   
   // Form Modal
   const [showAddModal, setShowAddModal] = useState(false);
@@ -395,7 +458,14 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
       const res = await fetch(`${API_BASE_URL}/api/expenses/export?${params}`, {
         headers: { Authorization: `Bearer ${userToken}` }
       });
-      if (!res.ok) throw new Error("Export failed");
+      if (!res.ok) {
+        let errMsg = "Export failed";
+        try {
+          const body = await res.json();
+          if (body && body.detail) errMsg = body.detail;
+        } catch (_) {}
+        throw new Error(errMsg);
+      }
       const blob = await res.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -405,8 +475,8 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
       document.body.appendChild(link);
       link.click();
       link.parentNode?.removeChild(link);
-    } catch (err) {
-      showToast("Failed to download report. Please check filters.", "error");
+    } catch (err: any) {
+      showToast(err.message || "Failed to download report. Please check filters.", "error");
     }
   };
 
@@ -493,12 +563,12 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
       </div>
 
       {/* Filters Area */}
-      <div className="bg-white dark:bg-slate-950 p-4 rounded-2xl border border-slate-100 dark:border-slate-900 grid grid-cols-1 md:grid-cols-5 gap-3">
+      <div className="bg-white dark:bg-slate-950 p-4 rounded-2xl border border-slate-100 dark:border-slate-900 flex flex-col sm:flex-row flex-wrap gap-3 items-stretch sm:items-center">
         {/* Category */}
         <select
           value={filterCategory}
           onChange={(e) => setFilterCategory(e.target.value)}
-          className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+          className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800 flex-1 min-w-[150px]"
         >
           <option value="">All Categories</option>
           {categories.map((c) => (
@@ -510,7 +580,7 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
         <select
           value={filterProject}
           onChange={(e) => setFilterProject(e.target.value)}
-          className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+          className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800 flex-1 min-w-[150px]"
         >
           <option value="">All Projects</option>
           {projects.map((p) => (
@@ -522,7 +592,7 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
         <select
           value={filterStatus}
           onChange={(e) => setFilterStatus(e.target.value)}
-          className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800"
+          className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800 flex-1 min-w-[150px]"
         >
           <option value="">All Statuses</option>
           <option value="approved">Approved</option>
@@ -530,8 +600,45 @@ export default function DailyExpenses({ token, role }: DailyExpensesProps) {
           <option value="rejected">Rejected</option>
         </select>
 
+        {/* Date Filter Dropdown */}
+        <select
+          value={dateRangeType}
+          onChange={(e) => handleDateRangeChange(e.target.value)}
+          className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800 flex-1 min-w-[150px]"
+        >
+          <option value="all">All Time</option>
+          <option value="today">Today</option>
+          <option value="yesterday">Yesterday</option>
+          <option value="last7">Last 7 Days</option>
+          <option value="last30">Last 30 Days</option>
+          <option value="thisMonth">This Month</option>
+          <option value="lastMonth">Last Month</option>
+          <option value="custom">Custom Date Range</option>
+        </select>
+
+        {/* Custom Date Picker Inputs */}
+        {dateRangeType === "custom" && (
+          <div className="flex gap-2 items-center flex-1 min-w-[260px]">
+            <input
+              type="date"
+              value={filterStartDate}
+              onChange={(e) => setFilterStartDate(e.target.value)}
+              className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800 w-full"
+              placeholder="Start Date"
+            />
+            <span className="text-slate-400 text-xs">to</span>
+            <input
+              type="date"
+              value={filterEndDate}
+              onChange={(e) => setFilterEndDate(e.target.value)}
+              className="px-3 py-2 text-sm border rounded-lg focus:outline-none dark:bg-slate-900 dark:border-slate-800 w-full"
+              placeholder="End Date"
+            />
+          </div>
+        )}
+
         {/* Search */}
-        <div className="relative md:col-span-2">
+        <div className="relative flex-1 min-w-[200px] md:flex-[2_2_0%]">
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
           <input
             type="text"

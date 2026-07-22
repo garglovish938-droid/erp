@@ -1363,7 +1363,7 @@ def barcode_center_scan(
 def barcode_center_generate(
     req: schemas.BarcodeGenerateRequest,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_store_or_higher)
+    current_user: models.User = Depends(auth.RoleChecker(["admin", "super_admin", "factory_manager", "project_manager", "inventory_manager", "store_assistant", "manager", "store", "accountant", "accounts_manager", "supervisor"]))
 ):
     from models import InventoryItem, Project, BarcodeHistory
     
@@ -1752,38 +1752,50 @@ def draw_single_label_a4(p, item, w, h):
     draw_single_label(p, item, w - 4, h - 4)
 
 @app.get("/api/wms/barcode-image")
-def get_barcode_image(text: str):
+def get_barcode_image(text: Optional[str] = Query(None), barcode: Optional[str] = Query(None)):
     import io
-    from reportlab.graphics.barcode import code128
-    from reportlab.graphics.shapes import Drawing
-    from reportlab.graphics import renderPM
+    import logging
+    from reportlab.graphics.barcode import createBarcodeDrawing
+    from reportlab.graphics import renderSVG
     from fastapi.responses import StreamingResponse
+    
+    val = text or barcode
+    if not val:
+        raise HTTPException(status_code=400, detail="Query parameter 'text' or 'barcode' is required")
+        
     try:
-        bc = code128.Code128(text, barHeight=40, barWidth=1.2, humanReadable=True)
-        d = Drawing(bc.width, 50)
-        d.add(bc)
-        png_data = renderPM.drawToString(d, fmt="PNG")
-        return StreamingResponse(io.BytesIO(png_data), media_type="image/png")
+        # Generate crisper vector barcode for thermal printer compatibility
+        d = createBarcodeDrawing('Code128', value=val, barHeight=40, barWidth=1.2, humanReadable=True)
+        svg_data = renderSVG.drawToString(d)
+        return StreamingResponse(io.BytesIO(svg_data.encode('utf-8')), media_type="image/svg+xml")
     except Exception as e:
+        logging.error(f"Failed to generate barcode SVG: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Failed to generate barcode: {str(e)}")
 
 @app.get("/api/wms/qr-image")
-def get_qr_image(text: str):
+def get_qr_image(text: Optional[str] = Query(None), barcode: Optional[str] = Query(None)):
     import io
+    import logging
     from reportlab.graphics.barcode.qr import QrCodeWidget
     from reportlab.graphics.shapes import Drawing
-    from reportlab.graphics import renderPM
+    from reportlab.graphics import renderSVG
     from fastapi.responses import StreamingResponse
+    
+    val = text or barcode
+    if not val:
+        raise HTTPException(status_code=400, detail="Query parameter 'text' or 'barcode' is required")
+        
     try:
-        qr = QrCodeWidget(text)
-        qr.width = 120
-        qr.height = 120
+        qr = QrCodeWidget(val)
+        qr.barWidth = 120
+        qr.barHeight = 120
         qr.barBorder = 0
         d = Drawing(120, 120)
         d.add(qr)
-        png_data = renderPM.drawToString(d, fmt="PNG")
-        return StreamingResponse(io.BytesIO(png_data), media_type="image/png")
+        svg_data = renderSVG.drawToString(d)
+        return StreamingResponse(io.BytesIO(svg_data.encode('utf-8')), media_type="image/svg+xml")
     except Exception as e:
+        logging.error(f"Failed to generate QR code SVG: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Failed to generate QR code: {str(e)}")
 
 
@@ -7542,92 +7554,209 @@ def export_expenses(
     current_user: User = Depends(auth.require_any_authenticated)
 ):
     """Export daily expenses as Excel, CSV, or PDF."""
-    from services.event_service import EventService
-    EventService.publish(
-        "REPORT_GENERATED",
-        {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
-        "reports",
-        {"type": "Expenses Report", "format": format}
-    )
-    import io
-    q = db.query(DailyExpense).filter(DailyExpense.is_deleted == False)
-    if start_date:
-        q = q.filter(DailyExpense.expense_date >= start_date)
-    if end_date:
-        q = q.filter(DailyExpense.expense_date <= end_date)
-    if category:
-        q = q.filter(DailyExpense.expense_category == category)
+    import logging
+    try:
+        from services.event_service import EventService
+        EventService.publish(
+            "REPORT_GENERATED",
+            {"id": current_user.id, "name": current_user.full_name or current_user.email, "role": current_user.role},
+            "reports",
+            {"type": "Expenses Report", "format": format}
+        )
+        import io
+        q = db.query(DailyExpense).filter(DailyExpense.is_deleted == False)
+        if start_date:
+            q = q.filter(DailyExpense.expense_date >= start_date)
+        if end_date:
+            q = q.filter(DailyExpense.expense_date <= end_date)
+        if category:
+            q = q.filter(DailyExpense.expense_category == category)
+            
+        rows_raw = q.order_by(DailyExpense.expense_date.desc()).all()
         
-    rows_raw = q.order_by(DailyExpense.expense_date.desc()).all()
-    
-    headers = ["Expense ID", "Date", "Category", "Description", "Amount", "Vendor", "Project", "Created By"]
-    rows = []
-    for exp in rows_raw:
-        proj_name = exp.project.name if exp.project else "N/A"
-        creator_name = exp.creator.full_name if exp.creator else "N/A"
-        rows.append([
-            exp.expense_id,
-            str(exp.expense_date),
-            exp.expense_category,
-            exp.description or "",
-            exp.amount,
-            exp.vendor or "",
-            proj_name,
-            creator_name
-        ])
+        total_amount = sum(exp.amount for exp in rows_raw)
         
-    if format == "csv":
-        buffer = io.StringIO()
-        writer = csv.writer(buffer)
-        writer.writerow(headers)
-        writer.writerows(rows)
-        buffer.seek(0)
-        return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv",
-                                 headers={"Content-Disposition": "attachment; filename=expenses.csv"})
-                                 
-    if format == "pdf":
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=letter)
-        styles = getSampleStyleSheet()
-        elements = [
-            Paragraph("Allure Living ERP – Daily Expenses Report", styles['Title']),
-            Spacer(1, 12)
-        ]
-        table_data = [headers] + rows
-        t = Table(table_data)
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#6366F1')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F9FAFB')]),
-        ]))
-        elements.append(t)
-        doc.build(elements)
-        buffer.seek(0)
-        return StreamingResponse(buffer, media_type="application/pdf",
-                                 headers={"Content-Disposition": "attachment; filename=expenses.pdf"})
+        headers = ["Expense Date", "Category", "Description", "Vendor", "Payment Method", "Amount", "Created By"]
+        
+        if format == "csv":
+            buffer = io.StringIO()
+            writer = csv.writer(buffer)
+            
+            gen_date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            filter_str = f"Date Filter: {start_date} to {end_date}" if (start_date or end_date) else "Date Filter: All Time"
+            writer.writerow(["Allure Living ERP – Daily Expenses Report"])
+            writer.writerow([f"Generated Date: {gen_date_str}"])
+            writer.writerow([filter_str])
+            writer.writerow([])
+            
+            writer.writerow(headers)
+            for exp in rows_raw:
+                p_mode = exp.payment_mode or "Cash"
+                vendor_name = exp.vendor or "N/A"
+                creator_name = exp.creator.full_name if exp.creator else "N/A"
+                writer.writerow([
+                    str(exp.expense_date),
+                    exp.expense_category,
+                    exp.description or "",
+                    vendor_name,
+                    p_mode,
+                    exp.amount,
+                    creator_name
+                ])
+            writer.writerow(["Grand Total", "", "", "", "", total_amount, ""])
+            buffer.seek(0)
+            return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv",
+                                     headers={"Content-Disposition": "attachment; filename=expenses.csv"})
+                                     
+        if format == "pdf":
+            buffer = io.BytesIO()
+            # letter width is 612, height is 792. printable width with 30pt margin is 552.
+            doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+            styles = getSampleStyleSheet()
+            
+            style_title = ParagraphStyle('DocTitle', parent=styles['Title'], fontSize=16, leading=20, textColor=colors.HexColor('#1E293B'))
+            style_meta = ParagraphStyle('DocMeta', parent=styles['Normal'], fontSize=8, leading=10, textColor=colors.HexColor('#64748B'))
+            style_th = ParagraphStyle('TableHeader', parent=styles['Normal'], fontSize=8, leading=10, textColor=colors.white, fontName='Helvetica-Bold')
+            style_td = ParagraphStyle('TableCell', parent=styles['Normal'], fontSize=7.5, leading=9.5, textColor=colors.HexColor('#334155'))
+            style_td_num = ParagraphStyle('TableCellNum', parent=styles['Normal'], fontSize=7.5, leading=9.5, textColor=colors.HexColor('#334155'), alignment=2)
+            style_td_bold = ParagraphStyle('TableCellBold', parent=styles['Normal'], fontSize=7.5, leading=9.5, textColor=colors.HexColor('#0F172A'), fontName='Helvetica-Bold')
+            style_td_bold_num = ParagraphStyle('TableCellBoldNum', parent=styles['Normal'], fontSize=7.5, leading=9.5, textColor=colors.HexColor('#0F172A'), fontName='Helvetica-Bold', alignment=2)
 
-    # Excel default
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Expenses"
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="6366F1", end_color="6366F1", fill_type="solid")
-    for col_idx, h in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col_idx, value=h)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal="center")
-    for row_idx, row in enumerate(rows, 2):
-        for col_idx, val in enumerate(row, 1):
-            ws.cell(row=row_idx, column=col_idx, value=val)
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return StreamingResponse(buffer, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                             headers={"Content-Disposition": "attachment; filename=expenses.xlsx"})
+            gen_date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            filter_str = f"Date Filter: {start_date} to {end_date}" if (start_date or end_date) else "Date Filter: All Time"
+
+            elements = [
+                Paragraph("Allure Living ERP – Daily Expenses Report", style_title),
+                Spacer(1, 4),
+                Paragraph(f"Report Generated: {gen_date_str} | {filter_str}", style_meta),
+                Spacer(1, 15)
+            ]
+            
+            table_data = []
+            table_data.append([Paragraph(h, style_th) for h in headers])
+            
+            for exp in rows_raw:
+                p_mode = exp.payment_mode or "Cash"
+                vendor_name = exp.vendor or "N/A"
+                creator_name = exp.creator.full_name if exp.creator else "N/A"
+                
+                row_cells = [
+                    Paragraph(str(exp.expense_date), style_td),
+                    Paragraph(exp.expense_category, style_td),
+                    Paragraph(exp.description or "", style_td),
+                    Paragraph(vendor_name, style_td),
+                    Paragraph(p_mode, style_td),
+                    Paragraph(format_inr(exp.amount), style_td_num),
+                    Paragraph(creator_name, style_td)
+                ]
+                table_data.append(row_cells)
+                
+            table_data.append([
+                Paragraph("Grand Total", style_td_bold),
+                Paragraph("", style_td),
+                Paragraph("", style_td),
+                Paragraph("", style_td),
+                Paragraph("", style_td),
+                Paragraph(format_inr(total_amount), style_td_bold_num),
+                Paragraph("", style_td)
+            ])
+            
+            col_widths = [65, 75, 175, 75, 60, 52, 50]
+            t = Table(table_data, colWidths=col_widths)
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#6366F1')),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E2E8F0')),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, colors.HexColor('#F8FAFC')]),
+                ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#F1F5F9')),
+            ]))
+            elements.append(t)
+            doc.build(elements)
+            buffer.seek(0)
+            return StreamingResponse(buffer, media_type="application/pdf",
+                                     headers={"Content-Disposition": "attachment; filename=expenses.pdf"})
+
+        # Excel default
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Expenses Report"
+        ws.views.sheetView[0].showGridLines = True
+        
+        ws.merge_cells("A1:G1")
+        title_cell = ws["A1"]
+        title_cell.value = "Allure Living – Daily Expenses Report"
+        title_cell.font = Font(name="Arial", size=14, bold=True, color="1E293B")
+        
+        gen_date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        filter_str = f"Date Filter: {start_date} to {end_date}" if (start_date or end_date) else "Date Filter: All Time"
+        ws.merge_cells("A2:G2")
+        meta_cell = ws["A2"]
+        meta_cell.value = f"Generated: {gen_date_str} | {filter_str}"
+        meta_cell.font = Font(name="Arial", size=9, italic=True, color="64748B")
+        
+        header_font = Font(name="Arial", size=10, bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="6366F1", end_color="6366F1", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center")
+        
+        for col_idx, h in enumerate(headers, 1):
+            cell = ws.cell(row=4, column=col_idx, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            
+        row_num = 5
+        for exp in rows_raw:
+            p_mode = exp.payment_mode or "Cash"
+            vendor_name = exp.vendor or "N/A"
+            creator_name = exp.creator.full_name if exp.creator else "N/A"
+            
+            ws.cell(row=row_num, column=1, value=str(exp.expense_date))
+            ws.cell(row=row_num, column=2, value=exp.expense_category)
+            ws.cell(row=row_num, column=3, value=exp.description or "")
+            ws.cell(row=row_num, column=4, value=vendor_name)
+            ws.cell(row=row_num, column=5, value=p_mode)
+            
+            amt_cell = ws.cell(row=row_num, column=6, value=exp.amount)
+            amt_cell.number_format = '"₹"#,##0.00'
+            
+            ws.cell(row=row_num, column=7, value=creator_name)
+            row_num += 1
+            
+        ws.cell(row=row_num, column=1, value="Grand Total").font = Font(name="Arial", size=10, bold=True)
+        total_fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
+        for col in range(1, 8):
+            cell = ws.cell(row=row_num, column=col)
+            cell.fill = total_fill
+            if col == 1:
+                cell.font = Font(name="Arial", size=10, bold=True)
+            elif col == 6:
+                cell.value = total_amount
+                cell.font = Font(name="Arial", size=10, bold=True)
+                cell.number_format = '"₹"#,##0.00'
+                
+        from openpyxl.utils import get_column_letter
+        for col in ws.columns:
+            max_len = 0
+            for cell in col:
+                if cell.row in [1, 2]:
+                    continue
+                if cell.value:
+                    max_len = max(max_len, len(str(cell.value)))
+            col_letter = get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+            
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        return StreamingResponse(buffer, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                 headers={"Content-Disposition": "attachment; filename=expenses.xlsx"})
+    except Exception as e:
+        logging.error(f"Failed to generate daily expenses report: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate daily expenses report: {str(e)}"
+        )
 
 
 @app.put("/api/purchasing/{po_id}", response_model=schemas.PurchaseOrderResponse)
