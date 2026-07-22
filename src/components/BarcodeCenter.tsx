@@ -6,6 +6,7 @@ import {
   CheckCircle2, XCircle, RefreshCw, FileSpreadsheet, LayoutGrid, Smartphone, History
 } from "lucide-react";
 import { apiRequest } from "@/services/apiClient";
+import { API_BASE_URL } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 interface BarcodeCenterProps {
@@ -197,7 +198,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
       await apiRequest(`/api/barcode/center/print-log?barcode=${barcodeVal}`, { method: "POST" });
     } catch (e) {}
     // Open print label PDF endpoint
-    window.open(`/api/wms/print-label?inventory_id=${itemId}&label_type=${sizeVal}&copies=${copiesVal}&token=${token}`);
+    window.open(`${API_BASE_URL}/api/wms/print-label?inventory_id=${itemId}&label_type=${sizeVal}&copies=${copiesVal}&token=${token}`);
   };
 
   return (
@@ -491,12 +492,12 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
               <p className="text-xs text-slate-450 font-bold">GENERATED ID: <span className="text-lg text-indigo-500 font-extrabold ml-1">{generatedBarcode}</span></p>
               <div className="flex gap-4">
                 <img 
-                  src={`/api/wms/barcode-image?barcode=${generatedBarcode}`} 
+                  src={`${API_BASE_URL}/api/wms/barcode-image?barcode=${generatedBarcode}`} 
                   alt="barcode symbol" 
                   className="h-12 bg-white p-1.5 rounded-xl border border-slate-200" 
                 />
                 <img 
-                  src={`/api/wms/qr-image?barcode=${generatedBarcode}`} 
+                  src={`${API_BASE_URL}/api/wms/qr-image?barcode=${generatedBarcode}`} 
                   alt="qr code symbol" 
                   className="w-12 h-12 bg-white p-1.5 rounded-xl border border-slate-200" 
                 />
