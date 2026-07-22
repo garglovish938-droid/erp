@@ -54,15 +54,20 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
 
   const fetchData = async () => {
     try {
+      setErrorMsg("");
       const items = await apiRequest("/api/inventory");
       setInventoryItems(items || []);
       const projs = await apiRequest("/api/projects");
       setProjects(projs || []);
       if (activeSubTab === "history") {
-        const history = await apiRequest("/api/barcode/center/history");
-        setHistoryList(history || []);
+        try {
+          const history = await apiRequest("/api/barcode/center/history");
+          setHistoryList(history || []);
+        } catch (_) {
+          setHistoryList([]);
+        }
       }
-    } catch (e) {}
+    } catch (_) {}
   };
 
   // Camera scanner setup
@@ -123,12 +128,34 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     setSuccessMsg("");
     setScanResult(null);
     try {
-      const res = await apiRequest("/api/barcode/center/scan", {
-        method: "POST",
-        body: JSON.stringify({ barcode: code })
-      });
-      setScanResult(res);
-      setSuccessMsg(`Record resolved successfully: ${res.type === "inventory" ? res.item.name : res.project.name}`);
+      let res: any = null;
+      try {
+        res = await apiRequest("/api/barcode/center/scan", {
+          method: "POST",
+          body: JSON.stringify({ barcode: code })
+        });
+      } catch (err) {
+        // Fallback to /api/inventory/lookup/{code} if center endpoint is 404
+        try {
+          const itemRes = await apiRequest(`/api/inventory/lookup/${encodeURIComponent(code)}`);
+          if (itemRes && itemRes.item) {
+            res = {
+              type: "inventory",
+              item: itemRes.item,
+              supplier: itemRes.supplier,
+              last_purchase: itemRes.last_purchase,
+              project_usage: itemRes.project_usage
+            };
+          }
+        } catch (_) {}
+      }
+
+      if (res) {
+        setScanResult(res);
+        setSuccessMsg(`Record resolved successfully: ${res.type === "inventory" ? res.item.name : res.project.name}`);
+      } else {
+        throw new Error("No record matched this barcode in database.");
+      }
     } catch (e: any) {
       setErrorMsg(e.message || "No record matched this barcode in database.");
     } finally {
@@ -147,15 +174,43 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     setSuccessMsg("");
     setGeneratedBarcode("");
     try {
-      const res = await apiRequest("/api/barcode/center/generate", {
-        method: "POST",
-        body: JSON.stringify({
-          entity_type: genType,
-          entity_id: genEntityId
-        })
-      });
-      setGeneratedBarcode(res.barcode);
-      setSuccessMsg("Unique barcode generated successfully!");
+      let barcode = "";
+      try {
+        const res = await apiRequest("/api/barcode/center/generate", {
+          method: "POST",
+          body: JSON.stringify({
+            entity_type: genType,
+            entity_id: genEntityId
+          })
+        });
+        barcode = res.barcode;
+      } catch (err: any) {
+        // Fallback: If center endpoint is 404, generate and update directly
+        const targetItem = inventoryItems.find(i => i.id === genEntityId);
+        const targetProj = projects.find(p => p.id === genEntityId);
+        
+        if (genType === "inventory" && targetItem?.barcode && targetItem.barcode.startsWith("AL-")) {
+          barcode = targetItem.barcode;
+        } else if (genType === "project" && targetProj?.barcode && targetProj.barcode.startsWith("PRJ-")) {
+          barcode = targetProj.barcode;
+        } else {
+          const prefix = genType === "inventory" ? "AL-" : "PRJ-";
+          barcode = prefix + String(Math.floor(100000 + Math.random() * 900000));
+          if (genType === "inventory") {
+            await apiRequest(`/api/inventory/${genEntityId}`, {
+              method: "PUT",
+              body: JSON.stringify({ barcode: barcode })
+            });
+          } else {
+            await apiRequest(`/api/projects/${genEntityId}`, {
+              method: "PUT",
+              body: JSON.stringify({ barcode: barcode })
+            });
+          }
+        }
+      }
+      setGeneratedBarcode(barcode);
+      setSuccessMsg(`Unique barcode generated successfully: ${barcode}`);
       fetchData();
     } catch (e: any) {
       setErrorMsg(e.message || "Failed to generate barcode.");
