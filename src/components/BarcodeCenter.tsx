@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { 
   ScanBarcode, QrCode, Printer, Search, AlertTriangle, 
   CheckCircle2, XCircle, Download, Smartphone, History,
-  Box, Layers, RefreshCw, Camera, Info, Eye, Zap
+  Box, Layers, RefreshCw, Camera, Info
 } from "lucide-react";
 import { apiRequest } from "@/services/apiClient";
 import { API_BASE_URL } from "@/lib/api";
@@ -48,7 +48,7 @@ function generateCode128SvgBars(text: string): string[] {
   return codes.map(c => CODE128B_PATTERNS[c] || CODE128B_PATTERNS[0]);
 }
 
-// Ultra-High Resolution Scannable Code128 Barcode (Bold 3px Module Width + 15-Module Quiet Zones)
+// Pure Industrial Code128 Barcode Generator (Bold 3px Module Width + 15-Module Quiet Zones)
 function Code128BarcodeSvg({ text, width = 380, height = 110 }: { text: string; width?: number; height?: number }) {
   const patterns = generateCode128SvgBars(text || "ALI-000001");
   const patternStr = patterns.join("");
@@ -58,10 +58,9 @@ function Code128BarcodeSvg({ text, width = 380, height = 110 }: { text: string; 
     totalModules += parseInt(patternStr[i], 10);
   }
   
-  // Mandatory ISO quiet zone: 15 modules left and right
   const quietZoneModules = 15;
   const totalWidthModules = totalModules + (quietZoneModules * 2);
-  const moduleWidth = 3; // Fixed 3px bold integer width to eliminate subpixel blurring on screens
+  const moduleWidth = 3;
   
   const svgWidth = totalWidthModules * moduleWidth;
   const barHeight = height - 28;
@@ -81,7 +80,7 @@ function Code128BarcodeSvg({ text, width = 380, height = 110 }: { text: string; 
   }
   
   return (
-    <div className="flex flex-col items-center justify-center bg-white p-4 rounded-2xl border-2 border-slate-300 shadow-md max-w-full overflow-x-auto">
+    <div className="flex flex-col items-center justify-center bg-white p-3 rounded-xl border border-slate-200 shadow-sm max-w-full overflow-x-auto">
       <svg 
         width={svgWidth} 
         height={height} 
@@ -619,13 +618,40 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
 
   return (
     <div className="space-y-8 max-w-7xl mx-auto pb-12">
-      {/* Printable Label View Modal */}
+      {/* Global CSS for Clean Thermal Printer & PDF Output (Prints ONLY pure barcode) */}
+      <style jsx global>{`
+        @media print {
+          body * {
+            visibility: hidden !important;
+          }
+          #printable-pure-barcode-area, #printable-pure-barcode-area * {
+            visibility: visible !important;
+          }
+          #printable-pure-barcode-area {
+            position: fixed !important;
+            left: 50% !important;
+            top: 50% !important;
+            transform: translate(-50%, -50%) !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: none !important;
+            background: #ffffff !important;
+            width: auto !important;
+            height: auto !important;
+            display: flex !important;
+            justify-content: center !important;
+            align-items: center !important;
+          }
+        }
+      `}</style>
+
+      {/* Printable Label View Modal - PURE BARCODE ONLY */}
       {printModalData && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl p-6 shadow-2xl max-w-lg w-full space-y-6 text-slate-900">
             <div className="flex justify-between items-center border-b pb-4">
               <h3 className="font-extrabold text-lg flex items-center gap-2">
-                <Printer className="w-5 h-5 text-indigo-600" /> Industrial Barcode Label Print
+                <Printer className="w-5 h-5 text-indigo-600" /> Barcode Label Print
               </h3>
               <button 
                 onClick={() => setPrintModalData(null)}
@@ -635,12 +661,14 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
               </button>
             </div>
 
-            <div className="flex flex-col items-center justify-center border-2 border-dashed border-slate-300 p-6 rounded-2xl bg-slate-50 space-y-3">
-              <p className="font-extrabold text-sm text-center uppercase tracking-wider">{printModalData.name}</p>
+            {/* PURE BARCODE ONLY CONTAINER */}
+            <div 
+              id="printable-pure-barcode-area" 
+              className="flex flex-col items-center justify-center p-6 rounded-2xl bg-white space-y-2 border border-slate-200"
+            >
               <div id={`barcode-svg-element-${printModalData.barcode}`}>
                 <Code128BarcodeSvg text={printModalData.barcode} width={380} height={110} />
               </div>
-              <p className="text-xs text-slate-500 font-mono">SKU: {printModalData.sku || printModalData.barcode} | Format: {printModalData.size} ({printModalData.copies} {printModalData.copies > 1 ? "copies" : "copy"})</p>
             </div>
 
             <div className="flex gap-3">
@@ -683,7 +711,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         </div>
       </div>
 
-      {/* Camera scanner modal with Native Html5Qrcode High-Speed Scanner Engine */}
+      {/* Camera scanner modal */}
       {cameraActive && (
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl max-w-md mx-auto relative space-y-4">
           <button 
