@@ -1,21 +1,17 @@
-# Build stage
-FROM node:18-alpine AS builder
+FROM python:3.11-slim
+
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
 COPY . .
-RUN mkdir -p public
-RUN npm run build
 
-# Production stage
-FROM node:18-alpine AS runner
-WORKDIR /app
-ENV NODE_ENV=production
-COPY --from=builder /app/package*.json ./
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/next.config.mjs ./
+ENV PYTHONPATH=/app/backend:$PYTHONPATH
+EXPOSE 8000
 
-EXPOSE 3000
-CMD ["npm", "start"]
+CMD ["sh", "-c", "python backend/run_migrations.py && uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
