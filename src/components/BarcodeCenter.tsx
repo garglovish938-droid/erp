@@ -87,7 +87,6 @@ function Code128BarcodeSvg({ text, width = 280, height = 75 }: { text: string; w
 }
 
 export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
-  // Normalize User Role for Access Control
   const userRole = (role || "").toLowerCase();
   const isAdmin = ["admin", "super_admin", "factory_manager", "manager"].includes(userRole);
   const isPurchase = ["purchase", "purchase_manager"].includes(userRole);
@@ -96,13 +95,11 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
   const isDispatch = ["dispatch", "supervisor"].includes(userRole);
   const isAuditor = ["auditor", "accountant", "accounts_manager"].includes(userRole);
 
-  // Tab Access Definition
   const canScan = isAdmin || isStore || isProduction || isDispatch;
   const canGenerate = isAdmin || isPurchase || isStore;
   const canPrint = isAdmin || isPurchase || isStore;
   const canViewHistory = isAdmin || isPurchase || isStore || isAuditor;
 
-  // Determine Default Tab
   const defaultTab = canScan ? "scan" : (canGenerate ? "gen" : (canPrint ? "print" : "history"));
   const [activeSubTab, setActiveSubTab] = useState<"gen" | "scan" | "print" | "history">(defaultTab);
 
@@ -110,46 +107,39 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
-  // Catalog Data
   const [inventoryItems, setInventoryItems] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
   const [historyList, setHistoryList] = useState<any[]>([]);
 
-  // Search Filters for Select Lists
   const [searchGenQuery, setSearchGenQuery] = useState("");
   const [searchPrintQuery, setSearchPrintQuery] = useState("");
 
-  // Camera Scanner & Multi-Camera Enumeration
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraDevices, setCameraDevices] = useState<{ id: string; label: string }[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
   const scannerRef = useRef<any>(null);
 
-  // Focus Ref for Hardware Scanner Input
   const scanInputRef = useRef<HTMLInputElement>(null);
+  const scannerBufferRef = useRef<string>("");
+  const lastKeyTimeRef = useRef<number>(0);
 
-  // Form State: Generate Barcode
   const [genType, setGenType] = useState<"inventory" | "project">("inventory");
   const [genEntityId, setGenEntityId] = useState("");
   const [generatedBarcode, setGeneratedBarcode] = useState("");
   const [isDuplicate, setIsDuplicate] = useState(false);
 
-  // Form State: Scan Barcode
   const [scanInput, setScanInput] = useState("");
   const [scanResult, setScanResult] = useState<any>(null);
   
-  // Stock Adjustment for Scanned Inventory Item
   const [adjustQty, setAdjustQty] = useState(0);
   const [adjustType, setAdjustType] = useState<"in" | "out">("in");
   const [adjustNotes, setAdjustNotes] = useState("");
 
-  // Form State: Print Barcode
   const [printType, setPrintType] = useState<"inventory" | "project">("inventory");
   const [printEntityId, setPrintEntityId] = useState("");
   const [printCopies, setPrintCopies] = useState(1);
-  const [printSize, setPrintSize] = useState("50x25"); // 50x25, 60x40, A4
+  const [printSize, setPrintSize] = useState("50x25");
 
-  // Printable View Modal
   const [printModalData, setPrintModalData] = useState<{ name: string; barcode: string; sku: string; copies: number; size: string } | null>(null);
 
   useEffect(() => {
@@ -162,6 +152,42 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     }
   }, [activeSubTab]);
 
+  // Global Keydown Listener for USB & Wireless Barcode Hardware Scanners
+  useEffect(() => {
+    if (activeSubTab !== "scan") return;
+
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // Ignore if user is actively typing inside another input element (like comments or remarks)
+      const target = e.target as HTMLElement;
+      if (target && target.tagName === "TEXTAREA") return;
+
+      const now = Date.now();
+      const timeDiff = now - lastKeyTimeRef.current;
+      lastKeyTimeRef.current = now;
+
+      if (e.key === "Enter") {
+        if (scannerBufferRef.current.trim()) {
+          const barcodeScanned = scannerBufferRef.current.trim();
+          scannerBufferRef.current = "";
+          setScanInput(barcodeScanned);
+          handleLookup(barcodeScanned);
+        }
+      } else if (e.key.length === 1) {
+        // Barcode scanners type characters within 50ms intervals
+        if (timeDiff > 100) {
+          scannerBufferRef.current = e.key;
+        } else {
+          scannerBufferRef.current += e.key;
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleGlobalKeyDown);
+    };
+  }, [activeSubTab, inventoryItems, projects]);
+
   // Request Camera Permissions & Enumerate Video Input Devices
   useEffect(() => {
     if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
@@ -170,11 +196,10 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
           .filter((d) => d.kind === "videoinput")
           .map((d, index) => ({
             id: d.deviceId,
-            label: d.label || `Camera ${index + 1} (${d.deviceId.slice(0, 5)}...)`
+            label: d.label || `Camera ${index + 1}`
           }));
         setCameraDevices(videoInputs);
         if (videoInputs.length > 0 && !selectedDeviceId) {
-          // Default to environment (rear) camera if labeled
           const rearCam = videoInputs.find(c => c.label.toLowerCase().includes("back") || c.label.toLowerCase().includes("rear") || c.label.toLowerCase().includes("environment"));
           setSelectedDeviceId(rearCam ? rearCam.id : videoInputs[0].id);
         }
@@ -239,7 +264,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     } catch (_) {}
   };
 
-  // Camera scanner initialization with selected device
+  // Camera scanner initialization with 1D (Code128) & 2D formats enabled
   useEffect(() => {
     if (!cameraActive) {
       if (scannerRef.current) {
@@ -256,9 +281,29 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     script.async = true;
     script.onload = () => {
       const Html5QrcodeScanner = (window as any).Html5QrcodeScanner;
+      const Html5QrcodeSupportedFormats = (window as any).Html5QrcodeSupportedFormats;
       if (!Html5QrcodeScanner) return;
 
-      const config: any = { fps: 10, qrbox: { width: 250, height: 250 } };
+      const config: any = { 
+        fps: 15, 
+        qrbox: { width: 280, height: 180 },
+        experimentalFeatures: {
+          useBarCodeDetectorIfSupported: true
+        }
+      };
+
+      if (Html5QrcodeSupportedFormats) {
+        config.formatsToSupport = [
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.UPC_A,
+          Html5QrcodeSupportedFormats.UPC_E,
+          Html5QrcodeSupportedFormats.QR_CODE
+        ];
+      }
+
       if (selectedDeviceId) {
         config.videoConstraints = { deviceId: { exact: selectedDeviceId } };
       }
@@ -306,45 +351,55 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     try {
       let res: any = null;
       
+      // 1. Try GET inventory lookup endpoint (verified live on backend)
       try {
-        res = await apiRequest("/api/barcode/center/scan", {
-          method: "POST",
-          body: JSON.stringify({ barcode: cleanCode })
-        });
+        const itemRes = await apiRequest(`/api/inventory/lookup/${encodeURIComponent(cleanCode)}`);
+        if (itemRes && (itemRes.item || itemRes.name || itemRes.id)) {
+          const matchedItem = itemRes.item || itemRes;
+          res = {
+            type: "inventory",
+            item: matchedItem,
+            supplier: itemRes.supplier,
+            last_purchase: itemRes.last_purchase,
+            project_usage: itemRes.project_usage || []
+          };
+        }
       } catch (_) {}
 
+      // 2. Try GET inventory scan endpoint
       if (!res) {
         try {
-          res = await apiRequest("/api/barcode/scan", {
+          const scanItem = await apiRequest(`/api/inventory/scan/${encodeURIComponent(cleanCode)}`);
+          if (scanItem && (scanItem.id || scanItem.name)) {
+            res = {
+              type: "inventory",
+              item: scanItem,
+              supplier: scanItem.supplier_name ? { name: scanItem.supplier_name } : null,
+              last_purchase: scanItem.last_transaction,
+              project_usage: []
+            };
+          }
+        } catch (_) {}
+      }
+
+      // 3. Try POST barcode center scan route
+      if (!res) {
+        try {
+          res = await apiRequest("/api/barcode/center/scan", {
             method: "POST",
             body: JSON.stringify({ barcode: cleanCode })
           });
         } catch (_) {}
       }
 
+      // 4. Client-side catalog resolution fallback (matching barcode, sku, id, or name)
       if (!res) {
-        try {
-          const itemRes = await apiRequest(`/api/inventory/lookup/${encodeURIComponent(cleanCode)}`);
-          if (itemRes && (itemRes.item || itemRes.name || itemRes.id)) {
-            const matchedItem = itemRes.item || itemRes;
-            res = {
-              type: "inventory",
-              item: matchedItem,
-              supplier: itemRes.supplier,
-              last_purchase: itemRes.last_purchase,
-              project_usage: itemRes.project_usage || []
-            };
-          }
-        } catch (_) {}
-      }
-
-      // Client-side catalog resolution fallback
-      if (!res) {
+        const cleanLower = cleanCode.toLowerCase();
         const itemMatch = inventoryItems.find(i => 
-          (i.barcode && i.barcode.toLowerCase() === cleanCode.toLowerCase()) || 
-          (i.sku && i.sku.toLowerCase() === cleanCode.toLowerCase()) ||
-          (i.id && String(i.id) === cleanCode) ||
-          (i.name && i.name.toLowerCase().includes(cleanCode.toLowerCase()))
+          (i.barcode && i.barcode.toLowerCase() === cleanLower) || 
+          (i.sku && i.sku.toLowerCase() === cleanLower) ||
+          (i.id && String(i.id).toLowerCase() === cleanLower) ||
+          (i.name && i.name.toLowerCase().trim() === cleanLower)
         );
         if (itemMatch) {
           res = {
@@ -356,9 +411,9 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
           };
         } else {
           const projMatch = projects.find(p => 
-            (p.barcode && p.barcode.toLowerCase() === cleanCode.toLowerCase()) ||
-            (p.id && String(p.id) === cleanCode) ||
-            (p.name && p.name.toLowerCase().includes(cleanCode.toLowerCase()))
+            (p.barcode && p.barcode.toLowerCase() === cleanLower) ||
+            (p.id && String(p.id).toLowerCase() === cleanLower) ||
+            (p.name && p.name.toLowerCase().trim() === cleanLower)
           );
           if (projMatch) {
             res = {
@@ -400,7 +455,6 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
       const targetItem = inventoryItems.find(i => String(i.id) === String(genEntityId));
       const targetProj = projects.find(p => String(p.id) === String(genEntityId));
 
-      // 1. Check if record already has an assigned barcode
       if (genType === "inventory" && targetItem?.barcode) {
         barcode = targetItem.barcode;
         alreadyExists = true;
@@ -409,7 +463,6 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         alreadyExists = true;
       }
 
-      // 2. Call backend barcode generation route if not locally assigned
       if (!barcode) {
         try {
           const res = await apiRequest("/api/barcode/center/generate", {
@@ -426,7 +479,6 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         } catch (_) {}
       }
 
-      // 3. Fallback client-side generator if backend route offline
       if (!barcode) {
         const prefix = genType === "inventory" ? "ALI-" : "ALP-";
         let maxSeq = 0;
@@ -462,7 +514,6 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         } catch (_) {}
       }
 
-      // Update local state item object
       if (genType === "inventory" && targetItem) {
         targetItem.barcode = barcode;
       } else if (genType === "project" && targetProj) {
@@ -532,7 +583,6 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     }
   };
 
-  // Filtered inventory items and projects for dropdowns
   const filteredGenItems = inventoryItems.filter(item => 
     !searchGenQuery || 
     item.name.toLowerCase().includes(searchGenQuery.toLowerCase()) || 
@@ -635,10 +685,9 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
             <XCircle className="w-6 h-6" />
           </button>
           <h3 className="text-white text-sm font-bold text-center flex items-center justify-center gap-2">
-            <Smartphone className="w-4 h-4 text-indigo-400" /> Camera Scanner Mode
+            <Smartphone className="w-4 h-4 text-indigo-400" /> Camera Scanner Mode (1D & 2D Enabled)
           </h3>
 
-          {/* Camera Device Selector Dropdown */}
           {cameraDevices.length > 1 && (
             <div className="space-y-1">
               <label className="text-[10px] uppercase font-bold text-slate-400">Switch Video Input Camera</label>
@@ -655,7 +704,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
           )}
 
           <div id="qr-reader-barcode-center" className="overflow-hidden rounded-2xl bg-black border border-slate-800" />
-          <p className="text-slate-450 text-[10px] text-center">Align Barcode or QR code inside the box to trigger instant scan</p>
+          <p className="text-slate-450 text-[10px] text-center">Align Code128 Barcode or QR code inside box to trigger instant scan</p>
         </div>
       )}
 
@@ -712,17 +761,17 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="glass p-6 rounded-3xl border border-slate-200/50 dark:border-slate-800/80 shadow-md lg:col-span-1 space-y-4">
             <h3 className="font-bold text-slate-800 dark:text-slate-200 text-sm flex items-center gap-2">
-              <ScanBarcode className="w-4 h-4 text-indigo-500" /> Hardware & Camera Scanner Input
+              <ScanBarcode className="w-4 h-4 text-indigo-500" /> Scanner Input
             </h3>
             <p className="text-slate-400 text-xs">
-              Supports USB/Wireless hardware scanners (autofocus ready), laptop webcams, and mobile camera switching.
+              Supports USB/Wireless hardware scanners (plug & play auto-trigger ready) or camera scan.
             </p>
             <div className="space-y-3">
               <div className="flex gap-2">
                 <input
                   ref={scanInputRef}
                   type="text"
-                  placeholder="Scan or type barcode (ALI-XXXXXX / ALP-XXXXXX)..."
+                  placeholder="Scan or type barcode (ALI-XXXXXX / ALP-XXXXXX / 1234)..."
                   value={scanInput}
                   onChange={(e) => setScanInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleLookup(scanInput)}
@@ -784,8 +833,8 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
                         <div className="bg-slate-50/50 dark:bg-slate-900/50 p-4 rounded-2xl space-y-2.5 text-xs">
                           <div className="flex justify-between"><span className="text-slate-400">Current Stock:</span><span className="font-bold text-slate-800 dark:text-slate-200">{scanResult.item.quantity} {scanResult.item.unit}</span></div>
                           <div className="flex justify-between"><span className="text-slate-400">Brand / Variant:</span><span className="font-bold text-slate-800 dark:text-slate-200">{scanResult.item.brand || "N/A"}</span></div>
-                          <div className="flex justify-between"><span className="text-slate-400">Supplier:</span><span className="font-bold text-slate-800 dark:text-slate-200 truncate max-w-[150px]">{scanResult.supplier?.name || "N/A"}</span></div>
-                          <div className="flex justify-between"><span className="text-slate-400">Location Rack:</span><span className="font-bold text-slate-800 dark:text-slate-200">{scanResult.item.rack || "N/A"}</span></div>
+                          <div className="flex justify-between"><span className="text-slate-400">Supplier:</span><span className="font-bold text-slate-800 dark:text-slate-200 truncate max-w-[150px]">{scanResult.supplier?.name || scanResult.item.supplier_name || "N/A"}</span></div>
+                          <div className="flex justify-between"><span className="text-slate-400">Location Rack:</span><span className="font-bold text-slate-800 dark:text-slate-200">{scanResult.item.rack || scanResult.item.rack_location || "N/A"}</span></div>
                         </div>
                       </div>
 
@@ -879,14 +928,14 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
             ) : (
               <div className="glass p-12 rounded-3xl border border-slate-200/50 dark:border-slate-800/80 shadow-md flex flex-col items-center justify-center text-slate-400 dark:text-slate-500">
                 <ScanBarcode className="w-16 h-16 text-slate-300 dark:text-slate-800 animate-pulse" />
-                <p className="text-xs font-semibold mt-4">Awaiting Scan lookup. Align or enter a barcode to view complete record specifications.</p>
+                <p className="text-xs font-semibold mt-4">Awaiting Scan lookup. Point hardware scanner or align camera to view complete record specifications.</p>
               </div>
             )}
           </div>
         </div>
       )}
 
-      {/* TAB 2: GENERATE BARCODE (WITH DUPLICATE PREVENTION) */}
+      {/* TAB 2: GENERATE BARCODE */}
       {activeSubTab === "gen" && canGenerate && (
         <form onSubmit={handleGenerate} className="glass p-8 rounded-3xl border border-slate-200/50 dark:border-slate-800/80 shadow-md max-w-2xl mx-auto space-y-6">
           <div className="border-b border-slate-200/50 dark:border-slate-800/60 pb-4">
@@ -937,7 +986,6 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
               </div>
             </div>
 
-            {/* Search Filter for Select List */}
             <div className="space-y-2">
               <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Search & Select Record *</label>
               <div className="relative mb-2">
@@ -997,7 +1045,6 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
             {loading ? "Checking & Generating..." : "Generate Barcode"}
           </button>
 
-          {/* DUPLICATE DETECTION NOTICE & BARCODE PREVIEW */}
           {generatedBarcode && (
             <div className={cn(
               "p-6 border rounded-2xl flex flex-col items-center justify-center space-y-4 animate-fade-in",
