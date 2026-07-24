@@ -15,6 +15,77 @@ interface BarcodeCenterProps {
   role: string;
 }
 
+// Code128B Pattern Definitions for 100% Client-Side Pure SVG Rendering
+const CODE128B_PATTERNS: { [key: number]: string } = {
+  0: "212222", 1: "222122", 2: "222221", 3: "121223", 4: "121322", 5: "131222", 6: "122213", 7: "122312", 8: "132212", 9: "221213",
+  10: "221312", 11: "231212", 12: "112232", 13: "122132", 14: "122231", 15: "113222", 16: "123122", 17: "123221", 18: "223211", 19: "221132",
+  20: "221231", 21: "213212", 22: "223112", 23: "312131", 24: "311222", 25: "321122", 26: "321221", 27: "312212", 28: "322112", 29: "322211",
+  30: "212123", 31: "212321", 32: "232121", 33: "111323", 34: "131123", 35: "131321", 36: "112313", 37: "132113", 38: "132311", 39: "211313",
+  40: "231113", 41: "231311", 42: "112133", 43: "112331", 44: "132131", 45: "113123", 46: "113321", 47: "133121", 48: "313121", 49: "211331",
+  50: "231131", 51: "213113", 52: "213311", 53: "213131", 54: "311123", 55: "311321", 56: "331121", 57: "312113", 58: "312311", 59: "332111",
+  60: "314111", 61: "221411", 62: "431111", 63: "111224", 64: "111422", 65: "121124", 66: "121421", 67: "141122", 68: "141221", 69: "112214",
+  70: "112412", 71: "122114", 72: "122411", 73: "142112", 74: "142211", 75: "241211", 76: "221114", 77: "413111", 78: "241112", 79: "134111",
+  80: "111242", 81: "121142", 82: "121241", 83: "114212", 84: "124112", 85: "124211", 86: "411212", 87: "421112", 88: "421211", 89: "212141",
+  90: "214121", 91: "412121", 92: "111143", 93: "111341", 94: "131141", 95: "114113", 96: "114311", 97: "411113", 98: "411311", 99: "113141",
+  100: "114131", 101: "311141", 102: "411131", 103: "211412", 104: "211214", 105: "211232", 106: "2331112"
+};
+
+function generateCode128SvgBars(text: string): string[] {
+  let checksum = 104;
+  const codes: number[] = [104];
+  
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i) - 32;
+    const validCode = (code >= 0 && code <= 95) ? code : 0;
+    codes.push(validCode);
+    checksum += validCode * (i + 1);
+  }
+  
+  const checkSymbol = checksum % 103;
+  codes.push(checkSymbol);
+  codes.push(106);
+  
+  return codes.map(c => CODE128B_PATTERNS[c] || CODE128B_PATTERNS[0]);
+}
+
+function Code128BarcodeSvg({ text, width = 280, height = 75 }: { text: string; width?: number; height?: number }) {
+  const patterns = generateCode128SvgBars(text || "AL-000000");
+  const patternStr = patterns.join("");
+  
+  let totalModules = 0;
+  for (let i = 0; i < patternStr.length; i++) {
+    totalModules += parseInt(patternStr[i], 10);
+  }
+  
+  const moduleWidth = (width - 30) / totalModules;
+  const barHeight = height - 22;
+  
+  let currentX = 15;
+  const rects: { x: number; w: number }[] = [];
+  let isBar = true;
+  
+  for (let i = 0; i < patternStr.length; i++) {
+    const modLen = parseInt(patternStr[i], 10);
+    const barW = modLen * moduleWidth;
+    if (isBar) {
+      rects.push({ x: currentX, w: barW });
+    }
+    currentX += barW;
+    isBar = !isBar;
+  }
+  
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
+      {rects.map((r, idx) => (
+        <rect key={idx} x={r.x} y={6} width={r.w} height={barHeight} fill="#000000" />
+      ))}
+      <text x={width / 2} y={height - 2} textAnchor="middle" fontSize="11" fontFamily="monospace" fontWeight="bold" fill="#000000">
+        {text}
+      </text>
+    </svg>
+  );
+}
+
 export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
   const [activeSubTab, setActiveSubTab] = useState<"gen" | "scan" | "print" | "history">("scan");
   const [loading, setLoading] = useState(false);
@@ -57,6 +128,9 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
   const [printCopies, setPrintCopies] = useState(1);
   const [printSize, setPrintSize] = useState("50x25"); // 50x25, 60x40, A4
 
+  // Printable View Modal
+  const [printModalData, setPrintModalData] = useState<{ name: string; barcode: string; sku: string; copies: number; size: string } | null>(null);
+
   useEffect(() => {
     fetchData();
   }, [activeSubTab]);
@@ -74,6 +148,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
       setInventoryItems(items || []);
       const projs = await apiRequest("/api/projects");
       setProjects(projs || []);
+
       if (activeSubTab === "history") {
         let history: any[] = [];
         try {
@@ -84,7 +159,6 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
           } catch (_) {}
         }
 
-        // Reconstruct history list from existing items & projects with barcodes if history endpoint returns 404/empty
         if (!history || history.length === 0) {
           const reconstructed: any[] = [];
           (items || []).forEach((it: any) => {
@@ -186,7 +260,6 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     try {
       let res: any = null;
       
-      // Try primary barcode scan endpoint
       try {
         res = await apiRequest("/api/barcode/center/scan", {
           method: "POST",
@@ -194,7 +267,6 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         });
       } catch (_) {}
 
-      // Try barcode scan alias endpoint
       if (!res) {
         try {
           res = await apiRequest("/api/barcode/scan", {
@@ -204,7 +276,6 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         } catch (_) {}
       }
 
-      // Try inventory lookup endpoint
       if (!res) {
         try {
           const itemRes = await apiRequest(`/api/inventory/lookup/${encodeURIComponent(cleanCode)}`);
@@ -221,12 +292,13 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         } catch (_) {}
       }
 
-      // Fallback: Client-side resolution from loaded inventoryItems or projects
+      // Client-side resolution fallback
       if (!res) {
         const itemMatch = inventoryItems.find(i => 
           (i.barcode && i.barcode.toLowerCase() === cleanCode.toLowerCase()) || 
           (i.sku && i.sku.toLowerCase() === cleanCode.toLowerCase()) ||
-          (i.id && String(i.id) === cleanCode)
+          (i.id && String(i.id) === cleanCode) ||
+          (i.name && i.name.toLowerCase().includes(cleanCode.toLowerCase()))
         );
         if (itemMatch) {
           res = {
@@ -239,7 +311,8 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         } else {
           const projMatch = projects.find(p => 
             (p.barcode && p.barcode.toLowerCase() === cleanCode.toLowerCase()) ||
-            (p.id && String(p.id) === cleanCode)
+            (p.id && String(p.id) === cleanCode) ||
+            (p.name && p.name.toLowerCase().includes(cleanCode.toLowerCase()))
           );
           if (projMatch) {
             res = {
@@ -256,7 +329,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
       } else {
         setErrorMsg(`No record matched barcode "${cleanCode}" in catalog.`);
       }
-    } catch (e: any) {
+    } catch (_) {
       setErrorMsg(`No record matched barcode "${cleanCode}" in catalog.`);
     } finally {
       setLoading(false);
@@ -276,8 +349,10 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
 
     try {
       let barcode = "";
-      
-      // Try primary barcode generation endpoint
+      const targetItem = inventoryItems.find(i => String(i.id) === String(genEntityId));
+      const targetProj = projects.find(p => String(p.id) === String(genEntityId));
+
+      // Try primary backend generate route
       try {
         const res = await apiRequest("/api/barcode/center/generate", {
           method: "POST",
@@ -291,7 +366,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         }
       } catch (_) {}
 
-      // Try barcode generate alias endpoint
+      // Try alias backend generate route
       if (!barcode) {
         try {
           const res = await apiRequest("/api/barcode/generate", {
@@ -310,11 +385,8 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         } catch (_) {}
       }
 
-      // Fallback client-side generator if backend routes return 404 (e.g. during deployment rollout)
+      // Universal client-side & PUT update fallback
       if (!barcode) {
-        const targetItem = inventoryItems.find(i => String(i.id) === String(genEntityId));
-        const targetProj = projects.find(p => String(p.id) === String(genEntityId));
-
         if (genType === "inventory" && targetItem?.barcode && targetItem.barcode.startsWith("AL-")) {
           barcode = targetItem.barcode;
         } else if (genType === "project" && targetProj?.barcode && targetProj.barcode.startsWith("PRJ-")) {
@@ -339,7 +411,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
           }
           barcode = `${prefix}${String(maxSeq + 1).padStart(6, "0")}`;
 
-          // Attempt updating item via PUT API
+          // Update backend item with generated barcode via PUT
           try {
             if (genType === "inventory") {
               await apiRequest(`/api/inventory/${genEntityId}`, {
@@ -353,24 +425,20 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
               });
             }
           } catch (_) {}
-
-          // Update local state array so UI reflects changes instantly
-          if (genType === "inventory" && targetItem) {
-            targetItem.barcode = barcode;
-          } else if (genType === "project" && targetProj) {
-            targetProj.barcode = barcode;
-          }
         }
       }
 
-      if (barcode) {
-        setGeneratedBarcode(barcode);
-        setSuccessMsg(`Barcode generated successfully: ${barcode}`);
-        fetchData();
-      } else {
-        setErrorMsg("Unable to generate barcode. Please check system connection.");
+      // Update local state item object
+      if (genType === "inventory" && targetItem) {
+        targetItem.barcode = barcode;
+      } else if (genType === "project" && targetProj) {
+        targetProj.barcode = barcode;
       }
-    } catch (e: any) {
+
+      setGeneratedBarcode(barcode);
+      setSuccessMsg(`Barcode generated successfully: ${barcode}`);
+      fetchData();
+    } catch (_) {
       setErrorMsg("Unable to generate barcode. Please try again.");
     } finally {
       setLoading(false);
@@ -403,30 +471,26 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     }
   };
 
-  const triggerPrintPdf = async (barcodeVal: string, sizeVal: string, copiesVal: number, entityId?: string) => {
+  const openPrintModal = (name: string, barcode: string, sku: string, copies: number = 1, size: string = "50x25") => {
+    setPrintModalData({ name, barcode, sku, copies, size });
     try {
-      await apiRequest(`/api/barcode/center/print-log?barcode=${encodeURIComponent(barcodeVal)}`, { method: "POST" });
-    } catch (e) {}
-    const query = entityId ? `inventory_id=${entityId}` : `barcode=${encodeURIComponent(barcodeVal)}`;
-    const pdfUrl = `${API_BASE_URL}/api/wms/print-label?${query}&label_type=${sizeVal}&copies=${copiesVal}&token=${token}`;
-    
-    const win = window.open(pdfUrl, "_blank");
-    if (!win) {
-      const link = document.createElement("a");
-      link.href = pdfUrl;
-      link.target = "_blank";
-      link.click();
-    }
+      apiRequest(`/api/barcode/center/print-log?barcode=${encodeURIComponent(barcode)}`, { method: "POST" });
+    } catch (_) {}
   };
 
-  const downloadBarcodePng = (barcodeVal: string) => {
-    const imageUrl = `${API_BASE_URL}/api/wms/barcode-image?barcode=${encodeURIComponent(barcodeVal)}`;
-    const link = document.createElement("a");
-    link.href = imageUrl;
-    link.download = `barcode_${barcodeVal}.svg`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const downloadBarcodeSvg = (barcodeVal: string) => {
+    const svgEl = document.getElementById(`barcode-svg-element-${barcodeVal}`);
+    if (svgEl) {
+      const svgData = new XMLSerializer().serializeToString(svgEl);
+      const blob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `barcode_${barcodeVal}.svg`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
   };
 
   // Filtered inventory items and projects for dropdowns
@@ -458,6 +522,50 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
 
   return (
     <div className="space-y-8 max-w-7xl mx-auto pb-12">
+      {/* Printable Label View Modal */}
+      {printModalData && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 shadow-2xl max-w-lg w-full space-y-6 text-slate-900">
+            <div className="flex justify-between items-center border-b pb-4">
+              <h3 className="font-extrabold text-lg flex items-center gap-2">
+                <Printer className="w-5 h-5 text-indigo-600" /> Label Print Preview
+              </h3>
+              <button 
+                onClick={() => setPrintModalData(null)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <XCircle className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="flex flex-col items-center justify-center border-2 border-dashed border-slate-300 p-6 rounded-2xl bg-slate-50 space-y-3">
+              <p className="font-extrabold text-sm text-center uppercase tracking-wider">{printModalData.name}</p>
+              <div id={`barcode-svg-element-${printModalData.barcode}`}>
+                <Code128BarcodeSvg text={printModalData.barcode} width={260} height={70} />
+              </div>
+              <p className="text-xs text-slate-500 font-mono">SKU: {printModalData.sku || printModalData.barcode} | Format: {printModalData.size} ({printModalData.copies} {printModalData.copies > 1 ? "copies" : "copy"})</p>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  window.print();
+                }}
+                className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-md cursor-pointer"
+              >
+                <Printer className="w-4 h-4" /> Trigger Printer / Save PDF
+              </button>
+              <button
+                onClick={() => downloadBarcodeSvg(printModalData.barcode)}
+                className="px-4 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+              >
+                <Download className="w-4 h-4" /> SVG
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header Banner */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-8 rounded-3xl border border-slate-800 text-white shadow-2xl relative overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_30%,rgba(99,102,241,0.15),transparent)]" />
@@ -596,13 +704,13 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
                       </div>
                       <div className="flex gap-2">
                         <button
-                          onClick={() => triggerPrintPdf(scanResult.item.barcode, "50x25", 1, scanResult.item.id)}
+                          onClick={() => openPrintModal(scanResult.item.name, scanResult.item.barcode || scanResult.item.sku, scanResult.item.sku, 1, "50x25")}
                           className="flex items-center gap-1.5 px-3.5 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
                         >
-                          <Printer className="w-3.5 h-3.5" /> Print PDF Label
+                          <Printer className="w-3.5 h-3.5" /> Print Label
                         </button>
                         <button
-                          onClick={() => downloadBarcodePng(scanResult.item.barcode)}
+                          onClick={() => downloadBarcodeSvg(scanResult.item.barcode || scanResult.item.sku)}
                           className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200/40 rounded-xl text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 cursor-pointer"
                         >
                           <Download className="w-3.5 h-3.5" /> SVG
@@ -688,7 +796,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
                         <p className="text-slate-400 text-xs mt-1">Barcode: <strong className="text-indigo-600 dark:text-indigo-400 font-mono">{scanResult.project.barcode}</strong></p>
                       </div>
                       <button
-                        onClick={() => triggerPrintPdf(scanResult.project.barcode, "50x25", 1, scanResult.project.id)}
+                        onClick={() => openPrintModal(scanResult.project.name, scanResult.project.barcode, scanResult.project.barcode, 1, "50x25")}
                         className="flex items-center gap-1.5 px-3.5 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
                       >
                         <Printer className="w-3.5 h-3.5" /> Print Label
@@ -823,24 +931,28 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
           {generatedBarcode && (
             <div className="p-6 border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30 rounded-2xl flex flex-col items-center justify-center space-y-4 animate-fade-in">
               <p className="text-xs text-slate-400 font-bold">GENERATED ID: <span className="text-xl text-indigo-500 font-extrabold font-mono ml-1">{generatedBarcode}</span></p>
-              <div className="flex gap-4 items-center bg-white p-3 rounded-2xl border border-slate-200">
-                <img 
-                  src={`${API_BASE_URL}/api/wms/barcode-image?barcode=${encodeURIComponent(generatedBarcode)}`} 
-                  alt="Code128 Barcode" 
-                  className="h-14" 
-                />
+              
+              <div id={`barcode-svg-element-${generatedBarcode}`}>
+                <Code128BarcodeSvg text={generatedBarcode} width={280} height={75} />
               </div>
+
               <div className="flex gap-3">
                 <button
                   type="button"
-                  onClick={() => triggerPrintPdf(generatedBarcode, "50x25", 1, genEntityId)}
+                  onClick={() => {
+                    const item = inventoryItems.find(i => String(i.id) === String(genEntityId));
+                    const proj = projects.find(p => String(p.id) === String(genEntityId));
+                    const name = item?.name || proj?.name || "Material";
+                    const sku = item?.sku || generatedBarcode;
+                    openPrintModal(name, generatedBarcode, sku, 1, "50x25");
+                  }}
                   className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 cursor-pointer shadow-sm"
                 >
                   <Printer className="w-3.5 h-3.5" /> Print PDF Label
                 </button>
                 <button
                   type="button"
-                  onClick={() => downloadBarcodePng(generatedBarcode)}
+                  onClick={() => downloadBarcodeSvg(generatedBarcode)}
                   className="flex items-center gap-1.5 px-4 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 cursor-pointer"
                 >
                   <Download className="w-3.5 h-3.5" /> Download SVG
@@ -953,16 +1065,18 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
           <button
             onClick={() => {
               if (printEntityId) {
-                const item = inventoryItems.find(i => i.id === printEntityId);
-                const proj = projects.find(p => p.id === printEntityId);
+                const item = inventoryItems.find(i => String(i.id) === String(printEntityId));
+                const proj = projects.find(p => String(p.id) === String(printEntityId));
                 const code = item?.barcode || proj?.barcode || printEntityId;
-                triggerPrintPdf(code, printSize, printCopies, printEntityId);
+                const name = item?.name || proj?.name || "Record Label";
+                const sku = item?.sku || code;
+                openPrintModal(name, code, sku, printCopies, printSize);
               }
             }}
             disabled={!printEntityId}
             className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black tracking-wider transition-all cursor-pointer shadow-md select-none disabled:opacity-50 flex items-center justify-center gap-2"
           >
-            <Printer className="w-4 h-4" /> Export PDF Label Sheet
+            <Printer className="w-4 h-4" /> Open Label Print Sheet
           </button>
         </div>
       )}
@@ -1007,7 +1121,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
                       <td className="p-4 font-extrabold">{h.print_count}</td>
                       <td className="p-4">
                         <button
-                          onClick={() => triggerPrintPdf(h.barcode, "50x25", 1, h.inventory_id || h.project_id)}
+                          onClick={() => openPrintModal(h.entity_name, h.barcode, h.barcode, 1, "50x25")}
                           className="flex items-center gap-1 px-2.5 py-1 bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 text-indigo-600 dark:text-indigo-400 border border-indigo-200/30 rounded-lg text-[10px] font-bold cursor-pointer transition-all"
                         >
                           <Printer className="w-3 h-3" /> Reprint
