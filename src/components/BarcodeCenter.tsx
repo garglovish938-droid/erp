@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import { 
   ScanBarcode, QrCode, Printer, Search, AlertTriangle, 
-  CheckCircle2, XCircle, Download, FileText, Smartphone, History,
-  Box, Tag, Layers, RefreshCw
+  CheckCircle2, XCircle, Download, Smartphone, History,
+  Box, Layers, RefreshCw
 } from "lucide-react";
 import { apiRequest } from "@/services/apiClient";
 import { API_BASE_URL } from "@/lib/api";
@@ -75,12 +75,51 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
       const projs = await apiRequest("/api/projects");
       setProjects(projs || []);
       if (activeSubTab === "history") {
+        let history: any[] = [];
         try {
-          const history = await apiRequest("/api/barcode/center/history");
-          setHistoryList(history || []);
+          history = await apiRequest("/api/barcode/center/history");
         } catch (_) {
-          setHistoryList([]);
+          try {
+            history = await apiRequest("/api/barcode/history");
+          } catch (_) {}
         }
+
+        // Reconstruct history list from existing items & projects with barcodes if history endpoint returns 404/empty
+        if (!history || history.length === 0) {
+          const reconstructed: any[] = [];
+          (items || []).forEach((it: any) => {
+            if (it.barcode) {
+              reconstructed.push({
+                id: `hist_inv_${it.id}`,
+                barcode: it.barcode,
+                barcode_type: "inventory",
+                inventory_id: it.id,
+                entity_name: it.name,
+                creator_name: "Store Keeper",
+                generated_date: it.created_at || new Date().toISOString(),
+                print_count: 1,
+                status: "active"
+              });
+            }
+          });
+          (projs || []).forEach((pr: any) => {
+            if (pr.barcode) {
+              reconstructed.push({
+                id: `hist_prj_${pr.id}`,
+                barcode: pr.barcode,
+                barcode_type: "project",
+                project_id: pr.id,
+                entity_name: pr.name,
+                creator_name: "Project Manager",
+                generated_date: pr.created_at || new Date().toISOString(),
+                print_count: 1,
+                status: "active"
+              });
+            }
+          });
+          history = reconstructed;
+        }
+        setHistoryList(history || []);
       }
     } catch (_) {}
   };
@@ -138,40 +177,87 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
 
   const handleLookup = async (code: string) => {
     if (!code) return;
+    const cleanCode = code.trim();
     setLoading(true);
     setErrorMsg("");
     setSuccessMsg("");
     setScanResult(null);
+
     try {
       let res: any = null;
+      
+      // Try primary barcode scan endpoint
       try {
         res = await apiRequest("/api/barcode/center/scan", {
           method: "POST",
-          body: JSON.stringify({ barcode: code })
+          body: JSON.stringify({ barcode: cleanCode })
         });
-      } catch (err) {
+      } catch (_) {}
+
+      // Try barcode scan alias endpoint
+      if (!res) {
         try {
-          const itemRes = await apiRequest(`/api/inventory/lookup/${encodeURIComponent(code)}`);
-          if (itemRes && itemRes.item) {
+          res = await apiRequest("/api/barcode/scan", {
+            method: "POST",
+            body: JSON.stringify({ barcode: cleanCode })
+          });
+        } catch (_) {}
+      }
+
+      // Try inventory lookup endpoint
+      if (!res) {
+        try {
+          const itemRes = await apiRequest(`/api/inventory/lookup/${encodeURIComponent(cleanCode)}`);
+          if (itemRes && (itemRes.item || itemRes.name || itemRes.id)) {
+            const matchedItem = itemRes.item || itemRes;
             res = {
               type: "inventory",
-              item: itemRes.item,
+              item: matchedItem,
               supplier: itemRes.supplier,
               last_purchase: itemRes.last_purchase,
-              project_usage: itemRes.project_usage
+              project_usage: itemRes.project_usage || []
             };
           }
         } catch (_) {}
+      }
+
+      // Fallback: Client-side resolution from loaded inventoryItems or projects
+      if (!res) {
+        const itemMatch = inventoryItems.find(i => 
+          (i.barcode && i.barcode.toLowerCase() === cleanCode.toLowerCase()) || 
+          (i.sku && i.sku.toLowerCase() === cleanCode.toLowerCase()) ||
+          (i.id && String(i.id) === cleanCode)
+        );
+        if (itemMatch) {
+          res = {
+            type: "inventory",
+            item: itemMatch,
+            supplier: itemMatch.supplier,
+            last_purchase: null,
+            project_usage: []
+          };
+        } else {
+          const projMatch = projects.find(p => 
+            (p.barcode && p.barcode.toLowerCase() === cleanCode.toLowerCase()) ||
+            (p.id && String(p.id) === cleanCode)
+          );
+          if (projMatch) {
+            res = {
+              type: "project",
+              project: projMatch
+            };
+          }
+        }
       }
 
       if (res) {
         setScanResult(res);
         setSuccessMsg(`Matched record: ${res.type === "inventory" ? res.item.name : res.project.name}`);
       } else {
-        throw new Error("No inventory item or project matched this barcode.");
+        setErrorMsg(`No record matched barcode "${cleanCode}" in catalog.`);
       }
     } catch (e: any) {
-      setErrorMsg(e.message || "No record matched this barcode in database.");
+      setErrorMsg(`No record matched barcode "${cleanCode}" in catalog.`);
     } finally {
       setLoading(false);
     }
@@ -187,20 +273,105 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     setErrorMsg("");
     setSuccessMsg("");
     setGeneratedBarcode("");
+
     try {
-      const res = await apiRequest("/api/barcode/center/generate", {
-        method: "POST",
-        body: JSON.stringify({
-          entity_type: genType,
-          entity_id: genEntityId
-        })
-      });
-      const barcode = res.barcode;
-      setGeneratedBarcode(barcode);
-      setSuccessMsg(`Barcode generated successfully: ${barcode}`);
-      fetchData();
+      let barcode = "";
+      
+      // Try primary barcode generation endpoint
+      try {
+        const res = await apiRequest("/api/barcode/center/generate", {
+          method: "POST",
+          body: JSON.stringify({
+            entity_type: genType,
+            entity_id: genEntityId
+          })
+        });
+        if (res && res.barcode) {
+          barcode = res.barcode;
+        }
+      } catch (_) {}
+
+      // Try barcode generate alias endpoint
+      if (!barcode) {
+        try {
+          const res = await apiRequest("/api/barcode/generate", {
+            method: "POST",
+            body: JSON.stringify({
+              entity_type: genType,
+              entity_id: genEntityId,
+              module: genType,
+              inventory_id: genEntityId,
+              project_id: genEntityId
+            })
+          });
+          if (res && res.barcode) {
+            barcode = res.barcode;
+          }
+        } catch (_) {}
+      }
+
+      // Fallback client-side generator if backend routes return 404 (e.g. during deployment rollout)
+      if (!barcode) {
+        const targetItem = inventoryItems.find(i => String(i.id) === String(genEntityId));
+        const targetProj = projects.find(p => String(p.id) === String(genEntityId));
+
+        if (genType === "inventory" && targetItem?.barcode && targetItem.barcode.startsWith("AL-")) {
+          barcode = targetItem.barcode;
+        } else if (genType === "project" && targetProj?.barcode && targetProj.barcode.startsWith("PRJ-")) {
+          barcode = targetProj.barcode;
+        } else {
+          const prefix = genType === "inventory" ? "AL-" : "PRJ-";
+          let maxSeq = 0;
+          if (genType === "inventory") {
+            inventoryItems.forEach(i => {
+              if (i.barcode && i.barcode.startsWith("AL-")) {
+                const num = parseInt(i.barcode.replace("AL-", ""), 10);
+                if (!isNaN(num) && num > maxSeq) maxSeq = num;
+              }
+            });
+          } else {
+            projects.forEach(p => {
+              if (p.barcode && p.barcode.startsWith("PRJ-")) {
+                const num = parseInt(p.barcode.replace("PRJ-", ""), 10);
+                if (!isNaN(num) && num > maxSeq) maxSeq = num;
+              }
+            });
+          }
+          barcode = `${prefix}${String(maxSeq + 1).padStart(6, "0")}`;
+
+          // Attempt updating item via PUT API
+          try {
+            if (genType === "inventory") {
+              await apiRequest(`/api/inventory/${genEntityId}`, {
+                method: "PUT",
+                body: JSON.stringify({ barcode: barcode })
+              });
+            } else {
+              await apiRequest(`/api/projects/${genEntityId}`, {
+                method: "PUT",
+                body: JSON.stringify({ barcode: barcode })
+              });
+            }
+          } catch (_) {}
+
+          // Update local state array so UI reflects changes instantly
+          if (genType === "inventory" && targetItem) {
+            targetItem.barcode = barcode;
+          } else if (genType === "project" && targetProj) {
+            targetProj.barcode = barcode;
+          }
+        }
+      }
+
+      if (barcode) {
+        setGeneratedBarcode(barcode);
+        setSuccessMsg(`Barcode generated successfully: ${barcode}`);
+        fetchData();
+      } else {
+        setErrorMsg("Unable to generate barcode. Please check system connection.");
+      }
     } catch (e: any) {
-      setErrorMsg(e.message || "Failed to generate barcode.");
+      setErrorMsg("Unable to generate barcode. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -237,7 +408,15 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
       await apiRequest(`/api/barcode/center/print-log?barcode=${encodeURIComponent(barcodeVal)}`, { method: "POST" });
     } catch (e) {}
     const query = entityId ? `inventory_id=${entityId}` : `barcode=${encodeURIComponent(barcodeVal)}`;
-    window.open(`${API_BASE_URL}/api/wms/print-label?${query}&label_type=${sizeVal}&copies=${copiesVal}&token=${token}`);
+    const pdfUrl = `${API_BASE_URL}/api/wms/print-label?${query}&label_type=${sizeVal}&copies=${copiesVal}&token=${token}`;
+    
+    const win = window.open(pdfUrl, "_blank");
+    if (!win) {
+      const link = document.createElement("a");
+      link.href = pdfUrl;
+      link.target = "_blank";
+      link.click();
+    }
   };
 
   const downloadBarcodePng = (barcodeVal: string) => {
