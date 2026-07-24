@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { 
   Plus, Search, ScanLine, X, Loader2, ArrowUpRight, Trash2, Edit2, 
   RotateCcw, CheckSquare, Square, AlertTriangle, ChevronLeft, ChevronRight, FileText, Barcode,
-  History, Eye, Paperclip, Download, Calendar, Upload, RefreshCw
+  History, Eye, Paperclip, Download, Calendar, Upload, RefreshCw, Camera, Smartphone, XCircle
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "./Toast";
@@ -133,6 +133,160 @@ export default function Inventory({ token, role }: { token: string; role: string
   // Confirmation Modals
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [confirmAction, setConfirmAction] = useState<() => void>(() => {});
+
+  // Direct Camera Barcode Scanning state (📷 Scan Barcode Action)
+  const [showDirectCameraScanner, setShowDirectCameraScanner] = useState(false);
+  const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null);
+  const [directScanError, setDirectScanError] = useState("");
+  const [cameraDevices, setCameraDevices] = useState<{ id: string; label: string }[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
+  const directScannerInstanceRef = useRef<any>(null);
+
+  // Request Camera Permissions & Enumerate Video Input Devices
+  useEffect(() => {
+    if (showDirectCameraScanner && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+      navigator.mediaDevices.enumerateDevices().then((devices) => {
+        const videoInputs = devices
+          .filter((d) => d.kind === "videoinput")
+          .map((d, index) => ({
+            id: d.deviceId,
+            label: d.label || `Camera ${index + 1}`
+          }));
+        setCameraDevices(videoInputs);
+        if (videoInputs.length > 0 && !selectedDeviceId) {
+          const rearCam = videoInputs.find(c => c.label.toLowerCase().includes("back") || c.label.toLowerCase().includes("rear") || c.label.toLowerCase().includes("environment"));
+          setSelectedDeviceId(rearCam ? rearCam.id : videoInputs[0].id);
+        }
+      }).catch(() => {});
+    }
+  }, [showDirectCameraScanner]);
+
+  // Native Html5Qrcode Camera Scanner Engine (high sensitivity 20 FPS continuous decoding)
+  useEffect(() => {
+    if (!showDirectCameraScanner) {
+      if (directScannerInstanceRef.current) {
+        try {
+          directScannerInstanceRef.current.stop().catch(() => {});
+        } catch (e) {}
+        directScannerInstanceRef.current = null;
+      }
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://unpkg.com/html5-qrcode";
+    script.async = true;
+    script.onload = () => {
+      const Html5Qrcode = (window as any).Html5Qrcode;
+      if (!Html5Qrcode) return;
+
+      try {
+        const html5QrCode = new Html5Qrcode("qr-reader-inventory-direct");
+        directScannerInstanceRef.current = html5QrCode;
+
+        const cameraConfig = selectedDeviceId 
+          ? { deviceId: { exact: selectedDeviceId } }
+          : { facingMode: "environment" };
+
+        const scanConfig = {
+          fps: 20,
+          qrbox: { width: 300, height: 160 },
+          aspectRatio: 1.777778,
+          experimentalFeatures: {
+            useBarCodeDetectorIfSupported: true
+          }
+        };
+
+        html5QrCode.start(
+          cameraConfig,
+          scanConfig,
+          (decodedText: string) => {
+            handleDirectBarcodeScan(decodedText);
+          },
+          () => {}
+        ).catch((err: any) => {
+          setDirectScanError("Camera permission is required to scan barcodes. Please enable camera access.");
+        });
+      } catch (e) {
+        setDirectScanError("Failed to start camera scanner.");
+      }
+    };
+    document.body.appendChild(script);
+
+    return () => {
+      if (directScannerInstanceRef.current) {
+        try {
+          directScannerInstanceRef.current.stop().catch(() => {});
+        } catch (e) {}
+      }
+    };
+  }, [showDirectCameraScanner, selectedDeviceId]);
+
+  const handleDirectBarcodeScan = async (code: string) => {
+    if (!code) return;
+    const cleanCode = code.trim();
+    setDirectScanError("");
+
+    try {
+      let matchedItem: any = null;
+
+      // 1. Try GET /api/barcode/lookup/{barcode} (Primary Barcode Master Reference_ID resolution)
+      try {
+        const masterRes = await apiRequest(`/api/barcode/lookup/${encodeURIComponent(cleanCode)}`);
+        if (masterRes && masterRes.type === "inventory" && masterRes.item) {
+          matchedItem = masterRes.item;
+        }
+      } catch (_) {}
+
+      // 2. Try GET /api/inventory/lookup/{barcode}
+      if (!matchedItem) {
+        try {
+          const itemRes = await apiRequest(`/api/inventory/lookup/${encodeURIComponent(cleanCode)}`);
+          if (itemRes && (itemRes.item || itemRes.id)) {
+            matchedItem = itemRes.item || itemRes;
+          }
+        } catch (_) {}
+      }
+
+      // 3. Fallback client-side catalog search
+      if (!matchedItem) {
+        const cleanLower = cleanCode.toLowerCase();
+        matchedItem = items.find(i => 
+          (i.barcode && i.barcode.toLowerCase() === cleanLower) ||
+          (i.sku && i.sku.toLowerCase() === cleanLower) ||
+          (i.id && String(i.id).toLowerCase() === cleanLower) ||
+          (i.name && i.name.toLowerCase().trim() === cleanLower)
+        );
+      }
+
+      if (matchedItem) {
+        setShowDirectCameraScanner(false);
+        setHighlightedItemId(matchedItem.id);
+        
+        // Reset category/status filters if needed to display item
+        if (selectedCat !== "All" && matchedItem.category_id !== selectedCat) {
+          setSelectedCat("All");
+        }
+        if (statusFilter === "archived" && !matchedItem.is_deleted) {
+          setStatusFilter("active");
+        }
+
+        showToast(`Located Material: ${matchedItem.name} (Stock: ${matchedItem.quantity} ${matchedItem.unit})`, "success");
+
+        // Smooth scroll to row
+        setTimeout(() => {
+          const rowEl = document.getElementById(`inventory-row-${matchedItem.id}`);
+          if (rowEl) {
+            rowEl.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        }, 150);
+      } else {
+        setDirectScanError(`❌ Barcode Not Found: "${cleanCode}" in master catalog.`);
+      }
+    } catch (_) {
+      setDirectScanError(`❌ Barcode Not Found: "${cleanCode}" in master catalog.`);
+    }
+  };
   const [confirmMessage, setConfirmMessage] = useState("");
 
   // Bulk confirmation modal states
@@ -880,15 +1034,14 @@ export default function Inventory({ token, role }: { token: string; role: string
           )}
           <button
             onClick={() => {
-              setShowScanModal(true);
-              setScanResult(null);
-              setShowNewReceiveForm(false);
-              setScanBarcode("");
+              setShowDirectCameraScanner(true);
+              setDirectScanError("");
             }}
-            className="border dark:border-slate-800 p-2.5 rounded-xl text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
-            title="Scan code resolver"
+            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs shadow-md transition-all cursor-pointer select-none"
+            title="Scan Inventory Barcode"
           >
-            <ScanLine className="h-4 w-4" />
+            <Camera className="h-4 w-4" />
+            <span>📷 Scan Barcode</span>
           </button>
           <button
             onClick={() => setShowImportModal(true)}
@@ -1050,7 +1203,14 @@ export default function Inventory({ token, role }: { token: string; role: string
                   const isOut = item.quantity <= 0;
                   const isLow = item.quantity <= item.minimum_stock_level && !isOut;
                   return (
-                    <tr key={item.id} className="border-b dark:border-slate-900 hover:bg-slate-50/50 dark:hover:bg-slate-900/10 transition-colors">
+                    <tr 
+                      key={item.id} 
+                      id={`inventory-row-${item.id}`}
+                      className={cn(
+                        "border-b dark:border-slate-900 hover:bg-slate-50/50 dark:hover:bg-slate-900/10 transition-all duration-300",
+                        highlightedItemId === item.id && "bg-amber-100/90 dark:bg-amber-950/80 ring-2 ring-amber-500 font-bold"
+                      )}
+                    >
                       <td className="p-5 text-center">
                         <button onClick={() => handleSelectRow(item.id)} className="p-1 text-slate-400 hover:text-indigo-500">
                           {selectedIds.includes(item.id) ? (
@@ -2368,6 +2528,50 @@ export default function Inventory({ token, role }: { token: string; role: string
                 </div>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* DIRECT CAMERA BARCODE SCANNER MODAL */}
+      {showDirectCameraScanner && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl max-w-md w-full relative space-y-4 text-white">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <h3 className="text-sm font-bold flex items-center gap-2">
+                <Camera className="w-4 h-4 text-indigo-400" /> 📷 Inventory Barcode Camera Scanner
+              </h3>
+              <button 
+                onClick={() => setShowDirectCameraScanner(false)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                <XCircle className="w-6 h-6" />
+              </button>
+            </div>
+
+            {directScanError && (
+              <div className="p-3 bg-amber-500/20 border border-amber-500/40 rounded-xl text-amber-300 text-xs font-semibold flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                <span>{directScanError}</span>
+              </div>
+            )}
+
+            {cameraDevices.length > 1 && (
+              <div className="space-y-1">
+                <label className="text-[10px] uppercase font-bold text-slate-400">Switch Camera Device</label>
+                <select
+                  value={selectedDeviceId}
+                  onChange={(e) => setSelectedDeviceId(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 text-white text-xs px-3 py-2 rounded-xl focus:outline-none"
+                >
+                  {cameraDevices.map((c) => (
+                    <option key={c.id} value={c.id}>{c.label}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div id="qr-reader-inventory-direct" className="overflow-hidden rounded-2xl bg-black border border-slate-800 aspect-video" />
+            <p className="text-slate-400 text-[10px] text-center">Align Code128 Barcode inside box to locate & highlight inventory item automatically.</p>
           </div>
         </div>
       )}
