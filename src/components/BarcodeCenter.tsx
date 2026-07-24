@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { 
   ScanBarcode, QrCode, Printer, Search, AlertTriangle, 
   CheckCircle2, XCircle, Download, Smartphone, History,
-  Box, Layers, RefreshCw, Camera, Info, Eye
+  Box, Layers, RefreshCw, Camera, Info, Eye, Zap
 } from "lucide-react";
 import { apiRequest } from "@/services/apiClient";
 import { API_BASE_URL } from "@/lib/api";
@@ -48,8 +48,8 @@ function generateCode128SvgBars(text: string): string[] {
   return codes.map(c => CODE128B_PATTERNS[c] || CODE128B_PATTERNS[0]);
 }
 
-// Scannable Code128 SVG with ISO Quiet Zones & Crisp Edge Rendering
-function Code128BarcodeSvg({ text, width = 300, height = 85 }: { text: string; width?: number; height?: number }) {
+// Ultra-High Resolution Scannable Code128 Barcode (Bold 3px Module Width + 15-Module Quiet Zones)
+function Code128BarcodeSvg({ text, width = 380, height = 110 }: { text: string; width?: number; height?: number }) {
   const patterns = generateCode128SvgBars(text || "ALI-000001");
   const patternStr = patterns.join("");
   
@@ -58,13 +58,13 @@ function Code128BarcodeSvg({ text, width = 300, height = 85 }: { text: string; w
     totalModules += parseInt(patternStr[i], 10);
   }
   
-  // ISO Quiet zone: 10 modules minimum on left and right
-  const quietZoneModules = 12;
+  // Mandatory ISO quiet zone: 15 modules left and right
+  const quietZoneModules = 15;
   const totalWidthModules = totalModules + (quietZoneModules * 2);
-  const moduleWidth = Math.max(2, Math.floor(width / totalWidthModules));
+  const moduleWidth = 3; // Fixed 3px bold integer width to eliminate subpixel blurring on screens
   
   const svgWidth = totalWidthModules * moduleWidth;
-  const barHeight = height - 24;
+  const barHeight = height - 28;
   
   let currentX = quietZoneModules * moduleWidth;
   const rects: { x: number; w: number }[] = [];
@@ -81,21 +81,22 @@ function Code128BarcodeSvg({ text, width = 300, height = 85 }: { text: string; w
   }
   
   return (
-    <svg 
-      width={svgWidth} 
-      height={height} 
-      viewBox={`0 0 ${svgWidth} ${height}`} 
-      shapeRendering="crispEdges"
-      className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm"
-    >
-      <rect x="0" y="0" width={svgWidth} height={height} fill="#FFFFFF" />
-      {rects.map((r, idx) => (
-        <rect key={idx} x={r.x} y={6} width={r.w} height={barHeight} fill="#000000" />
-      ))}
-      <text x={svgWidth / 2} y={height - 3} textAnchor="middle" fontSize="11" fontFamily="monospace" fontWeight="bold" fill="#000000">
-        {text}
-      </text>
-    </svg>
+    <div className="flex flex-col items-center justify-center bg-white p-4 rounded-2xl border-2 border-slate-300 shadow-md max-w-full overflow-x-auto">
+      <svg 
+        width={svgWidth} 
+        height={height} 
+        viewBox={`0 0 ${svgWidth} ${height}`} 
+        shapeRendering="crispEdges"
+      >
+        <rect x="0" y="0" width={svgWidth} height={height} fill="#FFFFFF" />
+        {rects.map((r, idx) => (
+          <rect key={idx} x={r.x} y={6} width={r.w} height={barHeight} fill="#000000" />
+        ))}
+        <text x={svgWidth / 2} y={height - 4} textAnchor="middle" fontSize="13" fontFamily="monospace" fontWeight="bold" fill="#000000" letterSpacing="2">
+          {text}
+        </text>
+      </svg>
+    </div>
   );
 }
 
@@ -130,7 +131,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraDevices, setCameraDevices] = useState<{ id: string; label: string }[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
-  const scannerRef = useRef<any>(null);
+  const html5QrCodeInstanceRef = useRef<any>(null);
 
   const scanInputRef = useRef<HTMLInputElement>(null);
   const scannerBufferRef = useRef<string>("");
@@ -275,14 +276,14 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     } catch (_) {}
   };
 
-  // Camera scanner initialization with 1D (Code128) & 2D formats enabled
+  // Direct Native Html5Qrcode Camera Scanner Engine (high sensitivity 20 FPS continuous decoding)
   useEffect(() => {
     if (!cameraActive) {
-      if (scannerRef.current) {
+      if (html5QrCodeInstanceRef.current) {
         try {
-          scannerRef.current.clear();
+          html5QrCodeInstanceRef.current.stop().catch(() => {});
         } catch (e) {}
-        scannerRef.current = null;
+        html5QrCodeInstanceRef.current = null;
       }
       return;
     }
@@ -291,56 +292,52 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     script.src = "https://unpkg.com/html5-qrcode";
     script.async = true;
     script.onload = () => {
-      const Html5QrcodeScanner = (window as any).Html5QrcodeScanner;
-      const Html5QrcodeSupportedFormats = (window as any).Html5QrcodeSupportedFormats;
-      if (!Html5QrcodeScanner) return;
+      const Html5Qrcode = (window as any).Html5Qrcode;
+      if (!Html5Qrcode) return;
 
-      const config: any = { 
-        fps: 15, 
-        qrbox: { width: 280, height: 180 },
-        experimentalFeatures: {
-          useBarCodeDetectorIfSupported: true
-        }
-      };
+      try {
+        const html5QrCode = new Html5Qrcode("qr-reader-barcode-center");
+        html5QrCodeInstanceRef.current = html5QrCode;
 
-      if (Html5QrcodeSupportedFormats) {
-        config.formatsToSupport = [
-          Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.CODE_39,
-          Html5QrcodeSupportedFormats.EAN_13,
-          Html5QrcodeSupportedFormats.EAN_8,
-          Html5QrcodeSupportedFormats.UPC_A,
-          Html5QrcodeSupportedFormats.UPC_E,
-          Html5QrcodeSupportedFormats.QR_CODE
-        ];
-      }
+        const cameraConfig = selectedDeviceId 
+          ? { deviceId: { exact: selectedDeviceId } }
+          : { facingMode: "environment" };
 
-      if (selectedDeviceId) {
-        config.videoConstraints = { deviceId: { exact: selectedDeviceId } };
-      }
+        const scanConfig = {
+          fps: 20,
+          qrbox: { width: 300, height: 160 },
+          aspectRatio: 1.777778,
+          experimentalFeatures: {
+            useBarCodeDetectorIfSupported: true
+          }
+        };
 
-      const scanner = new Html5QrcodeScanner(
-        "qr-reader-barcode-center",
-        config,
-        false
-      );
-
-      scanner.render(
-        (decodedText: string) => {
-          handleScannedBarcode(decodedText);
-          scanner.clear();
+        html5QrCode.start(
+          cameraConfig,
+          scanConfig,
+          (decodedText: string) => {
+            handleScannedBarcode(decodedText);
+            try {
+              html5QrCode.stop();
+            } catch (_) {}
+            setCameraActive(false);
+          },
+          () => {}
+        ).catch((err: any) => {
+          setErrorMsg("Camera permission denied or camera device in use.");
           setCameraActive(false);
-        },
-        () => {}
-      );
-      scannerRef.current = scanner;
+        });
+      } catch (e) {
+        setErrorMsg("Failed to start camera scanner.");
+        setCameraActive(false);
+      }
     };
     document.body.appendChild(script);
 
     return () => {
-      if (scannerRef.current) {
+      if (html5QrCodeInstanceRef.current) {
         try {
-          scannerRef.current.clear();
+          html5QrCodeInstanceRef.current.stop().catch(() => {});
         } catch (e) {}
       }
     };
@@ -641,7 +638,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
             <div className="flex flex-col items-center justify-center border-2 border-dashed border-slate-300 p-6 rounded-2xl bg-slate-50 space-y-3">
               <p className="font-extrabold text-sm text-center uppercase tracking-wider">{printModalData.name}</p>
               <div id={`barcode-svg-element-${printModalData.barcode}`}>
-                <Code128BarcodeSvg text={printModalData.barcode} width={300} height={85} />
+                <Code128BarcodeSvg text={printModalData.barcode} width={380} height={110} />
               </div>
               <p className="text-xs text-slate-500 font-mono">SKU: {printModalData.sku || printModalData.barcode} | Format: {printModalData.size} ({printModalData.copies} {printModalData.copies > 1 ? "copies" : "copy"})</p>
             </div>
@@ -686,7 +683,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         </div>
       </div>
 
-      {/* Camera scanner modal with Multi-Camera Selector */}
+      {/* Camera scanner modal with Native Html5Qrcode High-Speed Scanner Engine */}
       {cameraActive && (
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl max-w-md mx-auto relative space-y-4">
           <button 
@@ -696,7 +693,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
             <XCircle className="w-6 h-6" />
           </button>
           <h3 className="text-white text-sm font-bold text-center flex items-center justify-center gap-2">
-            <Smartphone className="w-4 h-4 text-indigo-400" /> Camera Scanner Mode (Code128 Optical Detection)
+            <Smartphone className="w-4 h-4 text-indigo-400" /> High-Speed Camera Scanner Mode
           </h3>
 
           {cameraDevices.length > 1 && (
@@ -714,7 +711,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
             </div>
           )}
 
-          <div id="qr-reader-barcode-center" className="overflow-hidden rounded-2xl bg-black border border-slate-800" />
+          <div id="qr-reader-barcode-center" className="overflow-hidden rounded-2xl bg-black border border-slate-800 aspect-video" />
           <p className="text-slate-450 text-[10px] text-center">Align Code128 Barcode inside box to trigger instant scan</p>
         </div>
       )}
@@ -775,7 +772,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
               <ScanBarcode className="w-4 h-4 text-indigo-500" /> Scanner Input
             </h3>
             <p className="text-slate-400 text-xs">
-              Supports USB/Wireless hardware scanners (plug & play auto-trigger ready) or camera scan.
+              Supports USB/Wireless hardware scanners (plug & play auto-trigger ready) or high-speed camera scan.
             </p>
             <div className="space-y-3">
               <div className="flex gap-2">
@@ -1071,7 +1068,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
               )}
               
               <div id={`barcode-svg-element-${generatedBarcode}`}>
-                <Code128BarcodeSvg text={generatedBarcode} width={300} height={85} />
+                <Code128BarcodeSvg text={generatedBarcode} width={380} height={110} />
               </div>
 
               <div className="flex gap-3">
