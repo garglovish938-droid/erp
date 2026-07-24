@@ -78,6 +78,16 @@ export default function Reports({ token, role }: { token: string; role: string }
         { name: "Excel", path: "/api/reports/material-requests/excel", filename: "allure_material_requests_report.xlsx" },
         { name: "PDF", path: "/api/reports/material-requests/pdf", filename: "allure_material_requests_report.pdf" }
       ]
+    },
+    {
+      id: "expenses",
+      title: "Daily Expenses & Cash Audit Log",
+      desc: "Comprehensive log of raw material purchases, fuel, food, courier, loading, and supervisor cash advance reconciliations.",
+      formats: [
+        { name: "CSV", path: "/api/reports/expenses/csv", filename: "allure_expenses_report.csv" },
+        { name: "Excel", path: "/api/reports/expenses/excel", filename: "allure_expenses_report.xlsx" },
+        { name: "PDF", path: "/api/reports/expenses/pdf", filename: "allure_expenses_report.pdf" }
+      ]
     }
   ];
 

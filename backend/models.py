@@ -1006,4 +1006,20 @@ class BarcodeHistory(Base):
     creator = relationship("User", foreign_keys=[generated_by])
 
 
+class BarcodeMaster(Base):
+    __tablename__ = "barcode_master"
+    
+    barcode_id = Column(String(36), primary_key=True, default=generate_uuid)
+    barcode_number = Column(String(50), unique=True, index=True, nullable=False)
+    module_type = Column(String(20), nullable=False) # inventory, project
+    reference_id = Column(String(36), nullable=False)
+    status = Column(String(20), default="active", nullable=False)
+    generated_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    generated_date = Column(DateTime, default=datetime.utcnow, nullable=False)
+    print_count = Column(Integer, default=0, nullable=False)
+
+    creator = relationship("User", foreign_keys=[generated_by])
+
+
+
 

@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { 
   ScanBarcode, QrCode, Printer, Search, AlertTriangle, 
   CheckCircle2, XCircle, Download, Smartphone, History,
-  Box, Layers, RefreshCw
+  Box, Layers, RefreshCw, Camera, Info, Eye
 } from "lucide-react";
 import { apiRequest } from "@/services/apiClient";
 import { API_BASE_URL } from "@/lib/api";
@@ -49,7 +49,7 @@ function generateCode128SvgBars(text: string): string[] {
 }
 
 function Code128BarcodeSvg({ text, width = 280, height = 75 }: { text: string; width?: number; height?: number }) {
-  const patterns = generateCode128SvgBars(text || "AL-000000");
+  const patterns = generateCode128SvgBars(text || "ALI-000001");
   const patternStr = patterns.join("");
   
   let totalModules = 0;
@@ -87,7 +87,25 @@ function Code128BarcodeSvg({ text, width = 280, height = 75 }: { text: string; w
 }
 
 export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
-  const [activeSubTab, setActiveSubTab] = useState<"gen" | "scan" | "print" | "history">("scan");
+  // Normalize User Role for Access Control
+  const userRole = (role || "").toLowerCase();
+  const isAdmin = ["admin", "super_admin", "factory_manager", "manager"].includes(userRole);
+  const isPurchase = ["purchase", "purchase_manager"].includes(userRole);
+  const isStore = ["store", "store_assistant", "inventory_manager"].includes(userRole);
+  const isProduction = ["production", "worker", "carpenter", "operator"].includes(userRole);
+  const isDispatch = ["dispatch", "supervisor"].includes(userRole);
+  const isAuditor = ["auditor", "accountant", "accounts_manager"].includes(userRole);
+
+  // Tab Access Definition
+  const canScan = isAdmin || isStore || isProduction || isDispatch;
+  const canGenerate = isAdmin || isPurchase || isStore;
+  const canPrint = isAdmin || isPurchase || isStore;
+  const canViewHistory = isAdmin || isPurchase || isStore || isAuditor;
+
+  // Determine Default Tab
+  const defaultTab = canScan ? "scan" : (canGenerate ? "gen" : (canPrint ? "print" : "history"));
+  const [activeSubTab, setActiveSubTab] = useState<"gen" | "scan" | "print" | "history">(defaultTab);
+
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
@@ -101,17 +119,20 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
   const [searchGenQuery, setSearchGenQuery] = useState("");
   const [searchPrintQuery, setSearchPrintQuery] = useState("");
 
-  // Camera Scanner
+  // Camera Scanner & Multi-Camera Enumeration
   const [cameraActive, setCameraActive] = useState(false);
+  const [cameraDevices, setCameraDevices] = useState<{ id: string; label: string }[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
   const scannerRef = useRef<any>(null);
 
-  // Focus Ref for Scanner Input
+  // Focus Ref for Hardware Scanner Input
   const scanInputRef = useRef<HTMLInputElement>(null);
 
   // Form State: Generate Barcode
   const [genType, setGenType] = useState<"inventory" | "project">("inventory");
   const [genEntityId, setGenEntityId] = useState("");
   const [generatedBarcode, setGeneratedBarcode] = useState("");
+  const [isDuplicate, setIsDuplicate] = useState(false);
 
   // Form State: Scan Barcode
   const [scanInput, setScanInput] = useState("");
@@ -140,6 +161,26 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
       scanInputRef.current.focus();
     }
   }, [activeSubTab]);
+
+  // Request Camera Permissions & Enumerate Video Input Devices
+  useEffect(() => {
+    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+      navigator.mediaDevices.enumerateDevices().then((devices) => {
+        const videoInputs = devices
+          .filter((d) => d.kind === "videoinput")
+          .map((d, index) => ({
+            id: d.deviceId,
+            label: d.label || `Camera ${index + 1} (${d.deviceId.slice(0, 5)}...)`
+          }));
+        setCameraDevices(videoInputs);
+        if (videoInputs.length > 0 && !selectedDeviceId) {
+          // Default to environment (rear) camera if labeled
+          const rearCam = videoInputs.find(c => c.label.toLowerCase().includes("back") || c.label.toLowerCase().includes("rear") || c.label.toLowerCase().includes("environment"));
+          setSelectedDeviceId(rearCam ? rearCam.id : videoInputs[0].id);
+        }
+      }).catch(() => {});
+    }
+  }, [cameraActive]);
 
   const fetchData = async () => {
     try {
@@ -198,7 +239,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     } catch (_) {}
   };
 
-  // Camera scanner integration (html5-qrcode)
+  // Camera scanner initialization with selected device
   useEffect(() => {
     if (!cameraActive) {
       if (scannerRef.current) {
@@ -217,9 +258,14 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
       const Html5QrcodeScanner = (window as any).Html5QrcodeScanner;
       if (!Html5QrcodeScanner) return;
 
+      const config: any = { fps: 10, qrbox: { width: 250, height: 250 } };
+      if (selectedDeviceId) {
+        config.videoConstraints = { deviceId: { exact: selectedDeviceId } };
+      }
+
       const scanner = new Html5QrcodeScanner(
         "qr-reader-barcode-center",
-        { fps: 10, qrbox: { width: 250, height: 250 } },
+        config,
         false
       );
 
@@ -242,7 +288,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         } catch (e) {}
       }
     };
-  }, [cameraActive]);
+  }, [cameraActive, selectedDeviceId]);
 
   const handleScannedBarcode = (text: string) => {
     setScanInput(text);
@@ -292,7 +338,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         } catch (_) {}
       }
 
-      // Client-side resolution fallback
+      // Client-side catalog resolution fallback
       if (!res) {
         const itemMatch = inventoryItems.find(i => 
           (i.barcode && i.barcode.toLowerCase() === cleanCode.toLowerCase()) || 
@@ -339,93 +385,81 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!genEntityId) {
-      setErrorMsg("Please select a material or project record first.");
+      setErrorMsg("Please select an existing material or project record first.");
       return;
     }
     setLoading(true);
     setErrorMsg("");
     setSuccessMsg("");
     setGeneratedBarcode("");
+    setIsDuplicate(false);
 
     try {
       let barcode = "";
+      let alreadyExists = false;
       const targetItem = inventoryItems.find(i => String(i.id) === String(genEntityId));
       const targetProj = projects.find(p => String(p.id) === String(genEntityId));
 
-      // Try primary backend generate route
-      try {
-        const res = await apiRequest("/api/barcode/center/generate", {
-          method: "POST",
-          body: JSON.stringify({
-            entity_type: genType,
-            entity_id: genEntityId
-          })
-        });
-        if (res && res.barcode) {
-          barcode = res.barcode;
-        }
-      } catch (_) {}
+      // 1. Check if record already has an assigned barcode
+      if (genType === "inventory" && targetItem?.barcode) {
+        barcode = targetItem.barcode;
+        alreadyExists = true;
+      } else if (genType === "project" && targetProj?.barcode) {
+        barcode = targetProj.barcode;
+        alreadyExists = true;
+      }
 
-      // Try alias backend generate route
+      // 2. Call backend barcode generation route if not locally assigned
       if (!barcode) {
         try {
-          const res = await apiRequest("/api/barcode/generate", {
+          const res = await apiRequest("/api/barcode/center/generate", {
             method: "POST",
             body: JSON.stringify({
               entity_type: genType,
-              entity_id: genEntityId,
-              module: genType,
-              inventory_id: genEntityId,
-              project_id: genEntityId
+              entity_id: genEntityId
             })
           });
           if (res && res.barcode) {
             barcode = res.barcode;
+            alreadyExists = !!res.already_exists;
           }
         } catch (_) {}
       }
 
-      // Universal client-side & PUT update fallback
+      // 3. Fallback client-side generator if backend route offline
       if (!barcode) {
-        if (genType === "inventory" && targetItem?.barcode && targetItem.barcode.startsWith("AL-")) {
-          barcode = targetItem.barcode;
-        } else if (genType === "project" && targetProj?.barcode && targetProj.barcode.startsWith("PRJ-")) {
-          barcode = targetProj.barcode;
+        const prefix = genType === "inventory" ? "ALI-" : "ALP-";
+        let maxSeq = 0;
+        if (genType === "inventory") {
+          inventoryItems.forEach(i => {
+            if (i.barcode && (i.barcode.startsWith("ALI-") || i.barcode.startsWith("AL-"))) {
+              const num = parseInt(i.barcode.replace(/^(ALI-|AL-)/, ""), 10);
+              if (!isNaN(num) && num > maxSeq) maxSeq = num;
+            }
+          });
         } else {
-          const prefix = genType === "inventory" ? "AL-" : "PRJ-";
-          let maxSeq = 0;
+          projects.forEach(p => {
+            if (p.barcode && (p.barcode.startsWith("ALP-") || p.barcode.startsWith("PRJ-"))) {
+              const num = parseInt(p.barcode.replace(/^(ALP-|PRJ-)/, ""), 10);
+              if (!isNaN(num) && num > maxSeq) maxSeq = num;
+            }
+          });
+        }
+        barcode = `${prefix}${String(maxSeq + 1).padStart(6, "0")}`;
+
+        try {
           if (genType === "inventory") {
-            inventoryItems.forEach(i => {
-              if (i.barcode && i.barcode.startsWith("AL-")) {
-                const num = parseInt(i.barcode.replace("AL-", ""), 10);
-                if (!isNaN(num) && num > maxSeq) maxSeq = num;
-              }
+            await apiRequest(`/api/inventory/${genEntityId}`, {
+              method: "PUT",
+              body: JSON.stringify({ barcode: barcode })
             });
           } else {
-            projects.forEach(p => {
-              if (p.barcode && p.barcode.startsWith("PRJ-")) {
-                const num = parseInt(p.barcode.replace("PRJ-", ""), 10);
-                if (!isNaN(num) && num > maxSeq) maxSeq = num;
-              }
+            await apiRequest(`/api/projects/${genEntityId}`, {
+              method: "PUT",
+              body: JSON.stringify({ barcode: barcode })
             });
           }
-          barcode = `${prefix}${String(maxSeq + 1).padStart(6, "0")}`;
-
-          // Update backend item with generated barcode via PUT
-          try {
-            if (genType === "inventory") {
-              await apiRequest(`/api/inventory/${genEntityId}`, {
-                method: "PUT",
-                body: JSON.stringify({ barcode: barcode })
-              });
-            } else {
-              await apiRequest(`/api/projects/${genEntityId}`, {
-                method: "PUT",
-                body: JSON.stringify({ barcode: barcode })
-              });
-            }
-          } catch (_) {}
-        }
+        } catch (_) {}
       }
 
       // Update local state item object
@@ -436,7 +470,12 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
       }
 
       setGeneratedBarcode(barcode);
-      setSuccessMsg(`Barcode generated successfully: ${barcode}`);
+      setIsDuplicate(alreadyExists);
+      if (alreadyExists) {
+        setErrorMsg(`Barcode Already Exists: ${barcode}`);
+      } else {
+        setSuccessMsg(`Barcode Generated Successfully: ${barcode}`);
+      }
       fetchData();
     } catch (_) {
       setErrorMsg("Unable to generate barcode. Please try again.");
@@ -528,7 +567,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
           <div className="bg-white rounded-3xl p-6 shadow-2xl max-w-lg w-full space-y-6 text-slate-900">
             <div className="flex justify-between items-center border-b pb-4">
               <h3 className="font-extrabold text-lg flex items-center gap-2">
-                <Printer className="w-5 h-5 text-indigo-600" /> Label Print Preview
+                <Printer className="w-5 h-5 text-indigo-600" /> Industrial Barcode Label Print
               </h3>
               <button 
                 onClick={() => setPrintModalData(null)}
@@ -548,12 +587,10 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
 
             <div className="flex gap-3">
               <button
-                onClick={() => {
-                  window.print();
-                }}
+                onClick={() => window.print()}
                 className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-md cursor-pointer"
               >
-                <Printer className="w-4 h-4" /> Trigger Printer / Save PDF
+                <Printer className="w-4 h-4" /> Trigger Thermal Printer / PDF
               </button>
               <button
                 onClick={() => downloadBarcodeSvg(printModalData.barcode)}
@@ -577,34 +614,55 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
             <div>
               <h2 className="text-3xl font-extrabold tracking-tight">Barcode Center</h2>
               <p className="text-slate-400 text-xs mt-1">
-                Generate, scan, print, and track industrial Code128 barcodes for warehouse materials and project registers.
+                Industrial Code128 barcode management for warehouse inventory materials and project registers.
               </p>
             </div>
           </div>
         </div>
+        <div className="z-10 bg-slate-800/80 border border-slate-700 px-4 py-2 rounded-2xl text-xs flex items-center gap-2">
+          <Info className="w-4 h-4 text-indigo-400" />
+          <span>Role: <strong className="text-white capitalize">{userRole}</strong></span>
+        </div>
       </div>
 
-      {/* Camera scanner modal wrapper */}
+      {/* Camera scanner modal with Multi-Camera Selector */}
       {cameraActive && (
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl max-w-md mx-auto relative">
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl max-w-md mx-auto relative space-y-4">
           <button 
             onClick={() => setCameraActive(false)}
             className="absolute top-4 right-4 text-slate-400 hover:text-white z-10 cursor-pointer"
           >
             <XCircle className="w-6 h-6" />
           </button>
-          <h3 className="text-white text-sm font-bold text-center mb-4 flex items-center justify-center gap-2">
+          <h3 className="text-white text-sm font-bold text-center flex items-center justify-center gap-2">
             <Smartphone className="w-4 h-4 text-indigo-400" /> Camera Scanner Mode
           </h3>
+
+          {/* Camera Device Selector Dropdown */}
+          {cameraDevices.length > 1 && (
+            <div className="space-y-1">
+              <label className="text-[10px] uppercase font-bold text-slate-400">Switch Video Input Camera</label>
+              <select
+                value={selectedDeviceId}
+                onChange={(e) => setSelectedDeviceId(e.target.value)}
+                className="w-full bg-slate-800 border border-slate-700 text-white text-xs px-3 py-2 rounded-xl focus:outline-none"
+              >
+                {cameraDevices.map((c) => (
+                  <option key={c.id} value={c.id}>{c.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div id="qr-reader-barcode-center" className="overflow-hidden rounded-2xl bg-black border border-slate-800" />
-          <p className="text-slate-450 text-[10px] text-center mt-3">Align Barcode or QR code inside the box to trigger instant scan</p>
+          <p className="text-slate-450 text-[10px] text-center">Align Barcode or QR code inside the box to trigger instant scan</p>
         </div>
       )}
 
       {/* Toast Alert Feedback */}
       {errorMsg && (
-        <div className="flex items-center gap-3 p-4 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 text-rose-800 dark:text-rose-300 rounded-2xl animate-fade-in shadow-sm">
-          <AlertTriangle className="w-5 h-5 flex-shrink-0 text-rose-500" />
+        <div className="flex items-center gap-3 p-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-amber-800 dark:text-amber-300 rounded-2xl animate-fade-in shadow-sm">
+          <AlertTriangle className="w-5 h-5 flex-shrink-0 text-amber-500" />
           <p className="text-xs font-semibold">{errorMsg}</p>
         </div>
       )}
@@ -615,14 +673,14 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         </div>
       )}
 
-      {/* Navigation Sub Tabs */}
+      {/* Navigation Sub Tabs with Role Access */}
       <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none border-b border-slate-200/60 dark:border-slate-800/60">
         {[
-          { id: "scan", label: "Scan Barcode", icon: ScanBarcode },
-          { id: "gen", label: "Generate Barcode", icon: QrCode },
-          { id: "print", label: "Print Barcode", icon: Printer },
-          { id: "history", label: "Barcode History", icon: History }
-        ].map(tab => {
+          { id: "scan", label: "Scan Barcode", icon: ScanBarcode, show: canScan },
+          { id: "gen", label: "Generate Barcode", icon: QrCode, show: canGenerate },
+          { id: "print", label: "Print Barcode", icon: Printer, show: canPrint },
+          { id: "history", label: "Barcode History", icon: History, show: canViewHistory }
+        ].filter(t => t.show).map(tab => {
           const Icon = tab.icon;
           const active = activeSubTab === tab.id;
           return (
@@ -633,6 +691,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
                 setErrorMsg("");
                 setSuccessMsg("");
                 setGeneratedBarcode("");
+                setIsDuplicate(false);
               }}
               className={cn(
                 "flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-xs tracking-wider transition-all select-none whitespace-nowrap cursor-pointer",
@@ -649,21 +708,21 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
       </div>
 
       {/* TAB 1: SCAN BARCODE */}
-      {activeSubTab === "scan" && (
+      {activeSubTab === "scan" && canScan && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="glass p-6 rounded-3xl border border-slate-200/50 dark:border-slate-800/80 shadow-md lg:col-span-1 space-y-4">
             <h3 className="font-bold text-slate-800 dark:text-slate-200 text-sm flex items-center gap-2">
-              <ScanBarcode className="w-4 h-4 text-indigo-500" /> Scanner Input
+              <ScanBarcode className="w-4 h-4 text-indigo-500" /> Hardware & Camera Scanner Input
             </h3>
             <p className="text-slate-400 text-xs">
-              Supports USB/Wireless hardware scanners (autofocus ready) or camera scan.
+              Supports USB/Wireless hardware scanners (autofocus ready), laptop webcams, and mobile camera switching.
             </p>
             <div className="space-y-3">
               <div className="flex gap-2">
                 <input
                   ref={scanInputRef}
                   type="text"
-                  placeholder="Scan or type barcode (AL-XXXXXX / PRJ-XXXXXX)..."
+                  placeholder="Scan or type barcode (ALI-XXXXXX / ALP-XXXXXX)..."
                   value={scanInput}
                   onChange={(e) => setScanInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleLookup(scanInput)}
@@ -680,8 +739,8 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
                 onClick={() => setCameraActive(!cameraActive)}
                 className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800/50 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer transition-all"
               >
-                <Smartphone className="w-4 h-4 text-indigo-500" />
-                Scan using camera
+                <Camera className="w-4 h-4 text-indigo-500" />
+                Scan using camera / Webcam
               </button>
             </div>
           </div>
@@ -827,14 +886,14 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         </div>
       )}
 
-      {/* TAB 2: GENERATE BARCODE */}
-      {activeSubTab === "gen" && (
+      {/* TAB 2: GENERATE BARCODE (WITH DUPLICATE PREVENTION) */}
+      {activeSubTab === "gen" && canGenerate && (
         <form onSubmit={handleGenerate} className="glass p-8 rounded-3xl border border-slate-200/50 dark:border-slate-800/80 shadow-md max-w-2xl mx-auto space-y-6">
           <div className="border-b border-slate-200/50 dark:border-slate-800/60 pb-4">
             <h3 className="font-black text-slate-800 dark:text-slate-100 text-lg flex items-center gap-2">
               <QrCode className="w-5 h-5 text-indigo-500" /> Generate Unique Barcode
             </h3>
-            <p className="text-slate-400 text-xs mt-1">Assign unique, sequential barcodes (`AL-XXXXXX` or `PRJ-XXXXXX`) to existing inventory materials or project registers without altering material names or quantities.</p>
+            <p className="text-slate-400 text-xs mt-1">Assign unique, sequential barcodes (`ALI-XXXXXX` or `ALP-XXXXXX`) to existing inventory materials or project registers without altering material names or quantities.</p>
           </div>
 
           <div className="space-y-4">
@@ -847,6 +906,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
                     setGenType("inventory");
                     setGenEntityId("");
                     setGeneratedBarcode("");
+                    setIsDuplicate(false);
                   }}
                   className={cn(
                     "py-2.5 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-all border",
@@ -855,7 +915,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
                       : "bg-slate-50 dark:bg-slate-900 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800"
                   )}
                 >
-                  <Box className="w-4 h-4" /> Inventory Item (AL-XXXXXX)
+                  <Box className="w-4 h-4" /> Inventory Item (ALI-XXXXXX)
                 </button>
                 <button
                   type="button"
@@ -863,6 +923,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
                     setGenType("project");
                     setGenEntityId("");
                     setGeneratedBarcode("");
+                    setIsDuplicate(false);
                   }}
                   className={cn(
                     "py-2.5 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-all border",
@@ -871,7 +932,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
                       : "bg-slate-50 dark:bg-slate-900 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800"
                   )}
                 >
-                  <Layers className="w-4 h-4" /> Project Register (PRJ-XXXXXX)
+                  <Layers className="w-4 h-4" /> Project Register (ALP-XXXXXX)
                 </button>
               </div>
             </div>
@@ -893,7 +954,11 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
               {genType === "inventory" ? (
                 <select
                   value={genEntityId}
-                  onChange={(e) => setGenEntityId(e.target.value)}
+                  onChange={(e) => {
+                    setGenEntityId(e.target.value);
+                    setGeneratedBarcode("");
+                    setIsDuplicate(false);
+                  }}
                   className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-4 py-2.5 rounded-xl text-xs text-slate-800 dark:text-slate-100 focus:outline-none"
                 >
                   <option value="">Select inventory material...</option>
@@ -906,7 +971,11 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
               ) : (
                 <select
                   value={genEntityId}
-                  onChange={(e) => setGenEntityId(e.target.value)}
+                  onChange={(e) => {
+                    setGenEntityId(e.target.value);
+                    setGeneratedBarcode("");
+                    setIsDuplicate(false);
+                  }}
                   className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-4 py-2.5 rounded-xl text-xs text-slate-800 dark:text-slate-100 focus:outline-none"
                 >
                   <option value="">Select project...</option>
@@ -925,12 +994,23 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
             disabled={loading || !genEntityId}
             className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black tracking-wider transition-all cursor-pointer shadow-md select-none disabled:opacity-50"
           >
-            {loading ? "Generating..." : "Generate Barcode"}
+            {loading ? "Checking & Generating..." : "Generate Barcode"}
           </button>
 
+          {/* DUPLICATE DETECTION NOTICE & BARCODE PREVIEW */}
           {generatedBarcode && (
-            <div className="p-6 border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30 rounded-2xl flex flex-col items-center justify-center space-y-4 animate-fade-in">
-              <p className="text-xs text-slate-400 font-bold">GENERATED ID: <span className="text-xl text-indigo-500 font-extrabold font-mono ml-1">{generatedBarcode}</span></p>
+            <div className={cn(
+              "p-6 border rounded-2xl flex flex-col items-center justify-center space-y-4 animate-fade-in",
+              isDuplicate ? "border-amber-300 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-950/20" : "border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30"
+            )}>
+              {isDuplicate ? (
+                <div className="flex items-center gap-2 text-amber-800 dark:text-amber-300 font-extrabold text-xs">
+                  <AlertTriangle className="w-4 h-4 text-amber-500" />
+                  <span>Barcode Already Exists: <strong className="font-mono text-indigo-600 dark:text-indigo-400">{generatedBarcode}</strong></span>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400 font-bold">NEWLY GENERATED ID: <span className="text-xl text-indigo-500 font-extrabold font-mono ml-1">{generatedBarcode}</span></p>
+              )}
               
               <div id={`barcode-svg-element-${generatedBarcode}`}>
                 <Code128BarcodeSvg text={generatedBarcode} width={280} height={75} />
@@ -942,13 +1022,13 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
                   onClick={() => {
                     const item = inventoryItems.find(i => String(i.id) === String(genEntityId));
                     const proj = projects.find(p => String(p.id) === String(genEntityId));
-                    const name = item?.name || proj?.name || "Material";
+                    const name = item?.name || proj?.name || "Record";
                     const sku = item?.sku || generatedBarcode;
                     openPrintModal(name, generatedBarcode, sku, 1, "50x25");
                   }}
                   className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 cursor-pointer shadow-sm"
                 >
-                  <Printer className="w-3.5 h-3.5" /> Print PDF Label
+                  <Printer className="w-3.5 h-3.5" /> Print Label
                 </button>
                 <button
                   type="button"
@@ -964,7 +1044,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
       )}
 
       {/* TAB 3: PRINT BARCODE */}
-      {activeSubTab === "print" && (
+      {activeSubTab === "print" && canPrint && (
         <div className="glass p-8 rounded-3xl border border-slate-200/50 dark:border-slate-800/80 shadow-md max-w-2xl mx-auto space-y-6">
           <div className="border-b border-slate-200/50 dark:border-slate-800/60 pb-4">
             <h3 className="font-black text-slate-800 dark:text-slate-100 text-lg flex items-center gap-2">
@@ -1082,7 +1162,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
       )}
 
       {/* TAB 4: BARCODE HISTORY */}
-      {activeSubTab === "history" && (
+      {activeSubTab === "history" && canViewHistory && (
         <div className="glass rounded-3xl border border-slate-200/50 dark:border-slate-800/80 shadow-md overflow-hidden">
           <div className="p-6 border-b border-slate-200/50 dark:border-slate-800/60 flex justify-between items-center">
             <h3 className="font-black text-slate-800 dark:text-slate-100 text-sm flex items-center gap-2">

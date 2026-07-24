@@ -1364,9 +1364,9 @@ def barcode_center_scan(
 def barcode_center_generate(
     req: schemas.BarcodeGenerateRequest,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.RoleChecker(["admin", "super_admin", "factory_manager", "project_manager", "inventory_manager", "store_assistant", "manager", "store", "accountant", "accounts_manager", "supervisor"]))
+    current_user: models.User = Depends(auth.RoleChecker(["admin", "super_admin", "factory_manager", "project_manager", "inventory_manager", "store_assistant", "manager", "store", "accountant", "accounts_manager", "supervisor", "purchase", "purchase_manager"]))
 ):
-    from models import InventoryItem, Project, BarcodeHistory
+    from models import InventoryItem, Project, BarcodeHistory, BarcodeMaster
     
     target_type = req.get_type()
     target_id = req.get_id()
@@ -1374,31 +1374,35 @@ def barcode_center_generate(
         raise HTTPException(status_code=400, detail="Missing entity_id or inventory_id/project_id")
 
     barcode = None
+    already_exists = False
+
     if target_type == "inventory":
         item = db.query(InventoryItem).filter(InventoryItem.id == target_id, InventoryItem.is_deleted == False).first()
         if not item:
             raise HTTPException(status_code=404, detail="Inventory item not found")
         
-        if item.barcode and item.barcode.startswith("AL-"):
+        if item.barcode and (item.barcode.startswith("ALI-") or item.barcode.startswith("AL-")):
             barcode = item.barcode
-            # Ensure history entry exists
-            existing_hist = db.query(BarcodeHistory).filter(BarcodeHistory.barcode == barcode).first()
-            if not existing_hist:
-                db_hist = BarcodeHistory(
-                    barcode=barcode,
-                    barcode_type="inventory",
-                    inventory_id=item.id,
-                    generated_by=current_user.id,
-                    status="active"
-                )
-                db.add(db_hist)
-                db.commit()
+            already_exists = True
         else:
-            barcode = crud.generate_auto_barcode_al(db)
+            barcode = crud.generate_auto_barcode_ali(db)
             item.barcode = barcode
             db.commit()
             
-            # Log in history
+        existing_master = db.query(BarcodeMaster).filter(BarcodeMaster.reference_id == item.id).first()
+        if not existing_master:
+            db_master = BarcodeMaster(
+                barcode_number=barcode,
+                module_type="inventory",
+                reference_id=item.id,
+                generated_by=current_user.id,
+                status="active"
+            )
+            db.add(db_master)
+            db.commit()
+
+        existing_hist = db.query(BarcodeHistory).filter(BarcodeHistory.barcode == barcode).first()
+        if not existing_hist:
             db_hist = BarcodeHistory(
                 barcode=barcode,
                 barcode_type="inventory",
@@ -1414,26 +1418,28 @@ def barcode_center_generate(
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
         
-        if project.barcode and project.barcode.startswith("PRJ-"):
+        if project.barcode and (project.barcode.startswith("ALP-") or project.barcode.startswith("PRJ-")):
             barcode = project.barcode
-            # Ensure history entry exists
-            existing_hist = db.query(BarcodeHistory).filter(BarcodeHistory.barcode == barcode).first()
-            if not existing_hist:
-                db_hist = BarcodeHistory(
-                    barcode=barcode,
-                    barcode_type="project",
-                    project_id=project.id,
-                    generated_by=current_user.id,
-                    status="active"
-                )
-                db.add(db_hist)
-                db.commit()
+            already_exists = True
         else:
-            barcode = crud.generate_auto_barcode_prj(db)
+            barcode = crud.generate_auto_barcode_alp(db)
             project.barcode = barcode
             db.commit()
-            
-            # Log in history
+
+        existing_master = db.query(BarcodeMaster).filter(BarcodeMaster.reference_id == project.id).first()
+        if not existing_master:
+            db_master = BarcodeMaster(
+                barcode_number=barcode,
+                module_type="project",
+                reference_id=project.id,
+                generated_by=current_user.id,
+                status="active"
+            )
+            db.add(db_master)
+            db.commit()
+
+        existing_hist = db.query(BarcodeHistory).filter(BarcodeHistory.barcode == barcode).first()
+        if not existing_hist:
             db_hist = BarcodeHistory(
                 barcode=barcode,
                 barcode_type="project",
@@ -1446,7 +1452,12 @@ def barcode_center_generate(
     else:
         raise HTTPException(status_code=400, detail="Invalid entity type")
         
-    return {"status": "success", "barcode": barcode}
+    return {
+        "status": "success",
+        "barcode": barcode,
+        "already_exists": already_exists,
+        "message": f"Barcode Already Exists: {barcode}" if already_exists else f"Barcode Generated Successfully: {barcode}"
+    }
 
 
 @app.get("/api/barcode/center/history", response_model=List[schemas.BarcodeHistoryResponse])
@@ -7614,17 +7625,29 @@ def get_expenses_dashboard(db: Session = Depends(get_db), current_user: User = D
 
 
 @app.get("/api/expenses/export")
+@app.get("/api/reports/expenses/csv")
+@app.get("/api/reports/expenses/excel")
+@app.get("/api/reports/expenses/pdf")
 def export_expenses(
+    request: Request,
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
     category: Optional[str] = Query(None),
-    format: str = Query("excel"),
+    format: Optional[str] = Query("excel"),
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_any_authenticated)
 ):
     """Export daily expenses as Excel, CSV, or PDF."""
     import logging
     try:
+        path = request.url.path
+        if path.endswith("/pdf"):
+            format = "pdf"
+        elif path.endswith("/csv"):
+            format = "csv"
+        elif path.endswith("/excel"):
+            format = "excel"
+
         from services.event_service import EventService
         EventService.publish(
             "REPORT_GENERATED",
@@ -7643,7 +7666,8 @@ def export_expenses(
             
         rows_raw = q.order_by(DailyExpense.expense_date.desc()).all()
         
-        total_amount = sum(exp.amount for exp in rows_raw)
+        total_amount = sum(exp.amount for exp in rows_raw if exp and exp.amount is not None)
+
         
         headers = ["Expense Date", "Category", "Description", "Vendor", "Payment Method", "Amount", "Created By"]
         

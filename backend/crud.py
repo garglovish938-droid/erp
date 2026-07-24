@@ -5171,54 +5171,45 @@ def dispatch_project_wms(db: Session, req: DispatchLogCreate, user_id: str) -> D
 
 
 def generate_auto_barcode_al(db: Session) -> str:
-    from models import InventoryItem, BarcodeHistory
-    # Find max barcode starting with AL-
-    max_inv = db.query(InventoryItem).filter(InventoryItem.barcode.like("AL-%")).order_by(InventoryItem.barcode.desc()).first()
-    max_hist = db.query(BarcodeHistory).filter(BarcodeHistory.barcode.like("AL-%")).order_by(BarcodeHistory.barcode.desc()).first()
-    
-    next_num = 1
-    val_inv = 0
-    val_hist = 0
-    
-    if max_inv and max_inv.barcode:
-        try:
-            val_inv = int(max_inv.barcode.split("-")[-1])
-        except Exception:
-            pass
-            
-    if max_hist and max_hist.barcode:
-        try:
-            val_hist = int(max_hist.barcode.split("-")[-1])
-        except Exception:
-            pass
-            
-    next_num = max(val_inv, val_hist) + 1
-    return f"AL-{next_num:06d}"
+    from models import InventoryItem, BarcodeHistory, BarcodeMaster
+    # Find max barcode starting with AL- or ALI-
+    max_num = 0
+    for bar in [i.barcode for i in db.query(InventoryItem.barcode).filter(InventoryItem.barcode.isnot(None)).all() if i[0]] + \
+               [h.barcode for h in db.query(BarcodeHistory.barcode).filter(BarcodeHistory.barcode.isnot(None)).all() if h[0]] + \
+               [m.barcode_number for m in db.query(BarcodeMaster.barcode_number).filter(BarcodeMaster.barcode_number.isnot(None)).all() if m[0]]:
+        if bar.startswith("ALI-") or bar.startswith("AL-"):
+            try:
+                num = int(bar.split("-")[-1])
+                if num > max_num:
+                    max_num = num
+            except Exception:
+                pass
+    return f"ALI-{(max_num + 1):06d}"
+
+
+def generate_auto_barcode_ali(db: Session) -> str:
+    return generate_auto_barcode_al(db)
 
 
 def generate_auto_barcode_prj(db: Session) -> str:
-    from models import Project, BarcodeHistory
-    max_prj = db.query(Project).filter(Project.barcode.like("PRJ-%")).order_by(Project.barcode.desc()).first()
-    max_hist = db.query(BarcodeHistory).filter(BarcodeHistory.barcode.like("PRJ-%")).order_by(BarcodeHistory.barcode.desc()).first()
-    
-    next_num = 1
-    val_prj = 0
-    val_hist = 0
-    
-    if max_prj and max_prj.barcode:
-        try:
-            val_prj = int(max_prj.barcode.split("-")[-1])
-        except Exception:
-            pass
-            
-    if max_hist and max_hist.barcode:
-        try:
-            val_hist = int(max_hist.barcode.split("-")[-1])
-        except Exception:
-            pass
-            
-    next_num = max(val_prj, val_hist) + 1
-    return f"PRJ-{next_num:06d}"
+    from models import Project, BarcodeHistory, BarcodeMaster
+    max_num = 0
+    for bar in [p.barcode for p in db.query(Project.barcode).filter(Project.barcode.isnot(None)).all() if p[0]] + \
+               [h.barcode for h in db.query(BarcodeHistory.barcode).filter(BarcodeHistory.barcode.isnot(None)).all() if h[0]] + \
+               [m.barcode_number for m in db.query(BarcodeMaster.barcode_number).filter(BarcodeMaster.barcode_number.isnot(None)).all() if m[0]]:
+        if bar.startswith("ALP-") or bar.startswith("PRJ-"):
+            try:
+                num = int(bar.split("-")[-1])
+                if num > max_num:
+                    max_num = num
+            except Exception:
+                pass
+    return f"ALP-{(max_num + 1):06d}"
+
+
+def generate_auto_barcode_alp(db: Session) -> str:
+    return generate_auto_barcode_prj(db)
+
 
 
 
