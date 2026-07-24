@@ -1610,8 +1610,19 @@ class BarcodeHistoryResponse(BaseModel):
 
 
 class BarcodeGenerateRequest(BaseModel):
-    entity_type: str  # "inventory" or "project"
-    entity_id: str
+    entity_type: Optional[str] = None  # "inventory" or "project"
+    entity_id: Optional[str] = None
+    module: Optional[str] = None       # "inventory" or "project"
+    inventory_id: Optional[str] = None
+    project_id: Optional[str] = None
+
+    def get_type(self) -> str:
+        t = self.entity_type or self.module or "inventory"
+        return t.lower()
+
+    def get_id(self) -> Optional[str]:
+        return self.entity_id or self.inventory_id or self.project_id
+
 
 
 

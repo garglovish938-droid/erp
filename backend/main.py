@@ -1360,6 +1360,7 @@ def barcode_center_scan(
 
 
 @app.post("/api/barcode/center/generate")
+@app.post("/api/barcode/generate")
 def barcode_center_generate(
     req: schemas.BarcodeGenerateRequest,
     db: Session = Depends(get_db),
@@ -1367,13 +1368,31 @@ def barcode_center_generate(
 ):
     from models import InventoryItem, Project, BarcodeHistory
     
+    target_type = req.get_type()
+    target_id = req.get_id()
+    if not target_id:
+        raise HTTPException(status_code=400, detail="Missing entity_id or inventory_id/project_id")
+
     barcode = None
-    if req.entity_type == "inventory":
-        item = db.query(InventoryItem).filter(InventoryItem.id == req.entity_id, InventoryItem.is_deleted == False).first()
+    if target_type == "inventory":
+        item = db.query(InventoryItem).filter(InventoryItem.id == target_id, InventoryItem.is_deleted == False).first()
         if not item:
             raise HTTPException(status_code=404, detail="Inventory item not found")
+        
         if item.barcode and item.barcode.startswith("AL-"):
             barcode = item.barcode
+            # Ensure history entry exists
+            existing_hist = db.query(BarcodeHistory).filter(BarcodeHistory.barcode == barcode).first()
+            if not existing_hist:
+                db_hist = BarcodeHistory(
+                    barcode=barcode,
+                    barcode_type="inventory",
+                    inventory_id=item.id,
+                    generated_by=current_user.id,
+                    status="active"
+                )
+                db.add(db_hist)
+                db.commit()
         else:
             barcode = crud.generate_auto_barcode_al(db)
             item.barcode = barcode
@@ -1390,12 +1409,25 @@ def barcode_center_generate(
             db.add(db_hist)
             db.commit()
             
-    elif req.entity_type == "project":
-        project = db.query(Project).filter(Project.id == req.entity_id, Project.is_deleted == False).first()
+    elif target_type == "project":
+        project = db.query(Project).filter(Project.id == target_id, Project.is_deleted == False).first()
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
+        
         if project.barcode and project.barcode.startswith("PRJ-"):
             barcode = project.barcode
+            # Ensure history entry exists
+            existing_hist = db.query(BarcodeHistory).filter(BarcodeHistory.barcode == barcode).first()
+            if not existing_hist:
+                db_hist = BarcodeHistory(
+                    barcode=barcode,
+                    barcode_type="project",
+                    project_id=project.id,
+                    generated_by=current_user.id,
+                    status="active"
+                )
+                db.add(db_hist)
+                db.commit()
         else:
             barcode = crud.generate_auto_barcode_prj(db)
             project.barcode = barcode
@@ -1418,6 +1450,7 @@ def barcode_center_generate(
 
 
 @app.get("/api/barcode/center/history", response_model=List[schemas.BarcodeHistoryResponse])
+@app.get("/api/barcode/history", response_model=List[schemas.BarcodeHistoryResponse])
 def get_barcode_history(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.require_any_authenticated)
@@ -1452,6 +1485,7 @@ def get_barcode_history(
 
 
 @app.post("/api/barcode/center/print-log")
+@app.post("/api/barcode/print-log")
 def log_barcode_print(
     barcode: str,
     db: Session = Depends(get_db),
@@ -1464,6 +1498,7 @@ def log_barcode_print(
         db.commit()
         return {"status": "success", "print_count": hist.print_count}
     return {"status": "error", "message": "Barcode not found in history"}
+
 
 
 @app.post("/api/wms/receive")
@@ -1633,41 +1668,72 @@ def get_wms_dashboard_stats(
     }
 
 @app.get("/api/wms/print-label")
+@app.get("/api/barcode/print-label")
 def wms_print_label(
-    inventory_id: str,
+    inventory_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    barcode: Optional[str] = None,
     label_type: str = "50x25",
     copies: int = 1,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.require_store_or_higher)
+    current_user: models.User = Depends(auth.require_any_authenticated)
 ):
     import io
     from fastapi.responses import StreamingResponse
-    from models import InventoryItem, LabelPrintLog
+    from models import InventoryItem, Project, LabelPrintLog
     
-    db_item = db.query(InventoryItem).filter(InventoryItem.id == inventory_id, InventoryItem.is_deleted == False).first()
-    if not db_item:
-        raise HTTPException(status_code=404, detail="Inventory item not found")
+    target_id = inventory_id or project_id
+    db_item = None
+    db_proj = None
+
+    if target_id:
+        db_item = db.query(InventoryItem).filter((InventoryItem.id == target_id) | (InventoryItem.barcode == target_id), InventoryItem.is_deleted == False).first()
+        if not db_item:
+            db_proj = db.query(Project).filter((Project.id == target_id) | (Project.barcode == target_id), Project.is_deleted == False).first()
+    elif barcode:
+        db_item = db.query(InventoryItem).filter(InventoryItem.barcode == barcode, InventoryItem.is_deleted == False).first()
+        if not db_item:
+            db_proj = db.query(Project).filter(Project.barcode == barcode, Project.is_deleted == False).first()
+
+    if not db_item and not db_proj:
+        raise HTTPException(status_code=404, detail="Material or Project not found")
         
-    log = LabelPrintLog(
-        inventory_id=db_item.id,
-        printed_by=current_user.id,
-        label_type=label_type,
-        copies=copies
-    )
-    db.add(log)
-    db.commit()
+    if db_item:
+        log = LabelPrintLog(
+            inventory_id=db_item.id,
+            printed_by=current_user.id,
+            label_type=label_type,
+            copies=copies
+        )
+        db.add(log)
+        db.commit()
     
     from reportlab.pdfgen import canvas
     from reportlab.lib.pagesizes import A4
     
     buffer = io.BytesIO()
     
+    # Class wrapper to unify drawing logic for Inventory or Project
+    class LabelObject:
+        def __init__(self, name, sku, rack, shelf, barcode, obj_id):
+            self.name = name
+            self.sku = sku
+            self.rack = rack
+            self.shelf = shelf
+            self.barcode = barcode
+            self.id = obj_id
+
+    if db_item:
+        obj = LabelObject(db_item.name, db_item.sku or db_item.barcode, db_item.rack, db_item.shelf, db_item.barcode, db_item.id)
+    else:
+        obj = LabelObject(db_proj.name, db_proj.barcode, "PRJ", "SITE", db_proj.barcode, db_proj.id)
+
     if label_type == "50x25":
         width = 50 * 2.83465
         height = 25 * 2.83465
         p = canvas.Canvas(buffer, pagesize=(width, height))
         for _ in range(copies):
-            draw_single_label(p, db_item, width, height)
+            draw_single_label(p, obj, width, height)
             p.showPage()
         p.save()
     elif label_type == "60x40":
@@ -1675,7 +1741,7 @@ def wms_print_label(
         height = 40 * 2.83465
         p = canvas.Canvas(buffer, pagesize=(width, height))
         for _ in range(copies):
-            draw_single_label(p, db_item, width, height)
+            draw_single_label(p, obj, width, height)
             p.showPage()
         p.save()
     else:
@@ -1696,7 +1762,7 @@ def wms_print_label(
                     y = a4_h - margin_y - (row + 1) * row_h
                     p.saveState()
                     p.translate(x, y)
-                    draw_single_label_a4(p, db_item, col_w, row_h)
+                    draw_single_label_a4(p, obj, col_w, row_h)
                     p.restoreState()
                     current_copy += 1
             if current_copy < copies:
@@ -1704,10 +1770,11 @@ def wms_print_label(
         p.save()
         
     buffer.seek(0)
+    filename_sku = obj.sku or obj.barcode
     return StreamingResponse(
         buffer,
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=label_{db_item.sku}.pdf"}
+        headers={"Content-Disposition": f"attachment; filename=label_{filename_sku}.pdf"}
     )
 
 def draw_single_label(p, item, w, h):
@@ -1752,6 +1819,7 @@ def draw_single_label_a4(p, item, w, h):
     draw_single_label(p, item, w - 4, h - 4)
 
 @app.get("/api/wms/barcode-image")
+@app.get("/api/barcode/image")
 def get_barcode_image(text: Optional[str] = Query(None), barcode: Optional[str] = Query(None)):
     import io
     import logging
@@ -1771,6 +1839,7 @@ def get_barcode_image(text: Optional[str] = Query(None), barcode: Optional[str] 
     except Exception as e:
         logging.error(f"Failed to generate barcode SVG: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Failed to generate barcode: {str(e)}")
+
 
 @app.get("/api/wms/qr-image")
 def get_qr_image(text: Optional[str] = Query(None), barcode: Optional[str] = Query(None)):
