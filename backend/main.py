@@ -1843,8 +1843,8 @@ def get_barcode_image(text: Optional[str] = Query(None), barcode: Optional[str] 
         raise HTTPException(status_code=400, detail="Query parameter 'text' or 'barcode' is required")
         
     try:
-        # Generate crisper vector barcode for thermal printer compatibility
-        d = createBarcodeDrawing('Code128', value=val, barHeight=40, barWidth=1.2, humanReadable=True)
+        # Generate high-resolution ISO/IEC Code128 vector barcode with 10-module quiet zone
+        d = createBarcodeDrawing('Code128', value=val, barHeight=50, barWidth=2, humanReadable=True, quiet=1, lss=15, rss=15)
         svg_data = renderSVG.drawToString(d)
         return StreamingResponse(io.BytesIO(svg_data.encode('utf-8')), media_type="image/svg+xml")
     except Exception as e:

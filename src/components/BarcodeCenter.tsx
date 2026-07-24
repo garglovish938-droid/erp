@@ -48,7 +48,8 @@ function generateCode128SvgBars(text: string): string[] {
   return codes.map(c => CODE128B_PATTERNS[c] || CODE128B_PATTERNS[0]);
 }
 
-function Code128BarcodeSvg({ text, width = 280, height = 75 }: { text: string; width?: number; height?: number }) {
+// Scannable Code128 SVG with ISO Quiet Zones & Crisp Edge Rendering
+function Code128BarcodeSvg({ text, width = 300, height = 85 }: { text: string; width?: number; height?: number }) {
   const patterns = generateCode128SvgBars(text || "ALI-000001");
   const patternStr = patterns.join("");
   
@@ -57,10 +58,15 @@ function Code128BarcodeSvg({ text, width = 280, height = 75 }: { text: string; w
     totalModules += parseInt(patternStr[i], 10);
   }
   
-  const moduleWidth = (width - 30) / totalModules;
-  const barHeight = height - 22;
+  // ISO Quiet zone: 10 modules minimum on left and right
+  const quietZoneModules = 12;
+  const totalWidthModules = totalModules + (quietZoneModules * 2);
+  const moduleWidth = Math.max(2, Math.floor(width / totalWidthModules));
   
-  let currentX = 15;
+  const svgWidth = totalWidthModules * moduleWidth;
+  const barHeight = height - 24;
+  
+  let currentX = quietZoneModules * moduleWidth;
   const rects: { x: number; w: number }[] = [];
   let isBar = true;
   
@@ -75,11 +81,18 @@ function Code128BarcodeSvg({ text, width = 280, height = 75 }: { text: string; w
   }
   
   return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
+    <svg 
+      width={svgWidth} 
+      height={height} 
+      viewBox={`0 0 ${svgWidth} ${height}`} 
+      shapeRendering="crispEdges"
+      className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm"
+    >
+      <rect x="0" y="0" width={svgWidth} height={height} fill="#FFFFFF" />
       {rects.map((r, idx) => (
         <rect key={idx} x={r.x} y={6} width={r.w} height={barHeight} fill="#000000" />
       ))}
-      <text x={width / 2} y={height - 2} textAnchor="middle" fontSize="11" fontFamily="monospace" fontWeight="bold" fill="#000000">
+      <text x={svgWidth / 2} y={height - 3} textAnchor="middle" fontSize="11" fontFamily="monospace" fontWeight="bold" fill="#000000">
         {text}
       </text>
     </svg>
@@ -157,7 +170,6 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     if (activeSubTab !== "scan") return;
 
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      // Ignore if user is actively typing inside another input element (like comments or remarks)
       const target = e.target as HTMLElement;
       if (target && target.tagName === "TEXTAREA") return;
 
@@ -173,7 +185,6 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
           handleLookup(barcodeScanned);
         }
       } else if (e.key.length === 1) {
-        // Barcode scanners type characters within 50ms intervals
         if (timeDiff > 100) {
           scannerBufferRef.current = e.key;
         } else {
@@ -351,22 +362,32 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
     try {
       let res: any = null;
       
-      // 1. Try GET inventory lookup endpoint (verified live on backend)
+      // 1. Try GET /api/barcode/lookup/{barcode} (Primary Barcode Master lookup)
       try {
-        const itemRes = await apiRequest(`/api/inventory/lookup/${encodeURIComponent(cleanCode)}`);
-        if (itemRes && (itemRes.item || itemRes.name || itemRes.id)) {
-          const matchedItem = itemRes.item || itemRes;
-          res = {
-            type: "inventory",
-            item: matchedItem,
-            supplier: itemRes.supplier,
-            last_purchase: itemRes.last_purchase,
-            project_usage: itemRes.project_usage || []
-          };
+        const masterRes = await apiRequest(`/api/barcode/lookup/${encodeURIComponent(cleanCode)}`);
+        if (masterRes && (masterRes.item || masterRes.project)) {
+          res = masterRes;
         }
       } catch (_) {}
 
-      // 2. Try GET inventory scan endpoint
+      // 2. Try GET /api/inventory/lookup/{barcode}
+      if (!res) {
+        try {
+          const itemRes = await apiRequest(`/api/inventory/lookup/${encodeURIComponent(cleanCode)}`);
+          if (itemRes && (itemRes.item || itemRes.name || itemRes.id)) {
+            const matchedItem = itemRes.item || itemRes;
+            res = {
+              type: "inventory",
+              item: matchedItem,
+              supplier: itemRes.supplier,
+              last_purchase: itemRes.last_purchase,
+              project_usage: itemRes.project_usage || []
+            };
+          }
+        } catch (_) {}
+      }
+
+      // 3. Try GET /api/inventory/scan/{barcode}
       if (!res) {
         try {
           const scanItem = await apiRequest(`/api/inventory/scan/${encodeURIComponent(cleanCode)}`);
@@ -379,16 +400,6 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
               project_usage: []
             };
           }
-        } catch (_) {}
-      }
-
-      // 3. Try POST barcode center scan route
-      if (!res) {
-        try {
-          res = await apiRequest("/api/barcode/center/scan", {
-            method: "POST",
-            body: JSON.stringify({ barcode: cleanCode })
-          });
         } catch (_) {}
       }
 
@@ -428,10 +439,10 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
         setScanResult(res);
         setSuccessMsg(`Matched record: ${res.type === "inventory" ? res.item.name : res.project.name}`);
       } else {
-        setErrorMsg(`No record matched barcode "${cleanCode}" in catalog.`);
+        setErrorMsg(`Barcode Not Found: "${cleanCode}" in master catalog.`);
       }
     } catch (_) {
-      setErrorMsg(`No record matched barcode "${cleanCode}" in catalog.`);
+      setErrorMsg(`Barcode Not Found: "${cleanCode}" in master catalog.`);
     } finally {
       setLoading(false);
     }
@@ -630,7 +641,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
             <div className="flex flex-col items-center justify-center border-2 border-dashed border-slate-300 p-6 rounded-2xl bg-slate-50 space-y-3">
               <p className="font-extrabold text-sm text-center uppercase tracking-wider">{printModalData.name}</p>
               <div id={`barcode-svg-element-${printModalData.barcode}`}>
-                <Code128BarcodeSvg text={printModalData.barcode} width={260} height={70} />
+                <Code128BarcodeSvg text={printModalData.barcode} width={300} height={85} />
               </div>
               <p className="text-xs text-slate-500 font-mono">SKU: {printModalData.sku || printModalData.barcode} | Format: {printModalData.size} ({printModalData.copies} {printModalData.copies > 1 ? "copies" : "copy"})</p>
             </div>
@@ -685,7 +696,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
             <XCircle className="w-6 h-6" />
           </button>
           <h3 className="text-white text-sm font-bold text-center flex items-center justify-center gap-2">
-            <Smartphone className="w-4 h-4 text-indigo-400" /> Camera Scanner Mode (1D & 2D Enabled)
+            <Smartphone className="w-4 h-4 text-indigo-400" /> Camera Scanner Mode (Code128 Optical Detection)
           </h3>
 
           {cameraDevices.length > 1 && (
@@ -704,7 +715,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
           )}
 
           <div id="qr-reader-barcode-center" className="overflow-hidden rounded-2xl bg-black border border-slate-800" />
-          <p className="text-slate-450 text-[10px] text-center">Align Code128 Barcode or QR code inside box to trigger instant scan</p>
+          <p className="text-slate-450 text-[10px] text-center">Align Code128 Barcode inside box to trigger instant scan</p>
         </div>
       )}
 
@@ -771,7 +782,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
                 <input
                   ref={scanInputRef}
                   type="text"
-                  placeholder="Scan or type barcode (ALI-XXXXXX / ALP-XXXXXX / 1234)..."
+                  placeholder="Scan or type barcode (ALI-XXXXXX / ALP-XXXXXX)..."
                   value={scanInput}
                   onChange={(e) => setScanInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleLookup(scanInput)}
@@ -1060,7 +1071,7 @@ export default function BarcodeCenter({ token, role }: BarcodeCenterProps) {
               )}
               
               <div id={`barcode-svg-element-${generatedBarcode}`}>
-                <Code128BarcodeSvg text={generatedBarcode} width={280} height={75} />
+                <Code128BarcodeSvg text={generatedBarcode} width={300} height={85} />
               </div>
 
               <div className="flex gap-3">
